@@ -260,6 +260,7 @@ class DCGMWatcher:
                 dcgm_group = None
             if dcgm_handle:
                 # Clean up the handle
+                dcgm_handle.Shutdown()
                 del dcgm_handle
         except Exception as e:
             log.error(f"Error cleaning up DCGM handle: {e}")
@@ -281,12 +282,17 @@ class DCGMWatcher:
                         log.error(f"Error getting DCGM handle: {e}")
                         self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
                         self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
+                        dcgm_handle = None
+                        dcgm_group = None
+                        gpu_ids = []
+                        gpu_serials = {}
                 else:
                     log.debug("Running health check")
                     health_status, connectivity_success = self._perform_health_check(dcgm_group)
 
                     if not connectivity_success:
                         log.warning("DCGM connectivity failure detected")
+                        self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
                         dcgm_handle = None
                         dcgm_group = None
                         gpu_ids = []
