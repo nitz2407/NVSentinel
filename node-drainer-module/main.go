@@ -22,19 +22,22 @@ import (
 
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/initializer"
 	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/textlogger"
 )
 
 var (
+	// These variables will be populated during the build process
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
 )
 
 func main() {
+	// Initialize klog flags to allow command-line control (e.g., -v=3)
+	klog.InitFlags(nil)
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-
-	klog.Infof("Node Drainer Module - version: %s, commit: %s, date: %s", version, commit, date)
 
 	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 
@@ -49,6 +52,15 @@ func main() {
 	var dryRun = flag.Bool("dry-run", false, "flag to run node drainer module in dry-run mode")
 
 	flag.Parse()
+
+	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
+		"version", version,
+		"module", "node-drainer-module",
+	)
+
+	klog.SetLogger(logger)
+	klog.InfoS("Starting node-drainer-module", "version", version, "commit", commit, "date", date)
+	defer klog.Flush()
 
 	klog.Infof("Mongo client cert path: %s", *mongoClientCertMountPath)
 

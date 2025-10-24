@@ -31,6 +31,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
 	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/textlogger"
 
 	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 
@@ -42,8 +43,18 @@ const (
 	True = "true"
 )
 
+var (
+	// These variables will be populated during the build process
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 //nolint:cyclop
 func main() {
+	// Initialize klog flags to allow command-line control (e.g., -v=3)
+	klog.InitFlags(nil)
+
 	socket := flag.String("socket", "", "unix socket path")
 	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
 
@@ -53,6 +64,15 @@ func main() {
 		"path where the mongodb client cert is mounted")
 
 	flag.Parse()
+
+	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
+		"version", version,
+		"module", "platform-connectors",
+	)
+
+	klog.SetLogger(logger)
+	klog.InfoS("Starting platform-connectors", "version", version, "commit", commit, "date", date)
+	defer klog.Flush()
 
 	if *socket == "" {
 		klog.Fatalf("socket is not present")
@@ -150,7 +170,10 @@ func main() {
 	close(stopCh)
 
 	if lis != nil {
-		k8sRingBuffer.ShutDownHealthMetricQueue()
+		if k8sRingBuffer != nil {
+			k8sRingBuffer.ShutDownHealthMetricQueue()
+		}
+
 		lis.Close()
 		os.Remove(*socket)
 	}

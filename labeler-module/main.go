@@ -27,9 +27,11 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/textlogger"
 )
 
 var (
+	// These variables will be populated during the build process
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
@@ -41,11 +43,18 @@ var (
 )
 
 func main() {
+	// Initialize klog flags to allow command-line control (e.g., -v=3)
 	klog.InitFlags(nil)
-	defer klog.Flush()
 	flag.Parse()
 
-	klog.Infof("Node Labeler Module - version: %s, commit: %s, date: %s", version, commit, date)
+	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
+		"version", version,
+		"module", "labeler-module",
+	)
+
+	klog.SetLogger(logger)
+	klog.InfoS("Starting labeler-module", "version", version, "commit", commit, "date", date)
+	defer klog.Flush()
 
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
@@ -74,8 +83,6 @@ func main() {
 			klog.Errorf("Failed to start metrics server: %v", err)
 		}
 	}()
-
-	klog.Info("Starting Node Labeler Module")
 
 	if err := labelerInstance.Run(ctx); err != nil {
 		klog.Fatalf("Failed to run labeler: %v", err)

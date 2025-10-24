@@ -22,6 +22,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/textlogger"
 
 	pb "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/protos"
 	fd "github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/syslog-monitor"
@@ -37,6 +38,13 @@ const (
 	defaultStateFilePath   = "/var/run/syslog_monitor/state.json" // Added default state file path
 )
 
+var (
+	// These variables will be populated during the build process
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 // ConfigFile matches the top-level structure of the YAML config file
 type ConfigFile struct {
 	Checks []fd.CheckDefinition `yaml:"checks"`
@@ -44,12 +52,8 @@ type ConfigFile struct {
 
 //nolint:cyclop,gocognit // todo
 func main() {
-	// Initialize klog early to ensure logging works
+	// Initialize klog flags to allow command-line control (e.g., -v=3)
 	klog.InitFlags(nil)
-	defer klog.Flush()
-
-	// Early startup logging to help diagnose issues
-	klog.Infof("Starting syslog-health-monitor...")
 
 	configFile := flag.String("config-file", "/etc/config/config.yaml",
 		"Path to the YAML configuration file for log checks.")
@@ -65,6 +69,15 @@ func main() {
 		"Endpoint to the XID analyser service.")
 
 	flag.Parse()
+
+	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
+		"version", version,
+		"module", "syslog-health-monitor",
+	)
+
+	klog.SetLogger(logger)
+	klog.InfoS("Starting syslog-health-monitor", "version", version, "commit", commit, "date", date)
+	defer klog.Flush()
 
 	klog.Infof("Parsed command line flags successfully")
 

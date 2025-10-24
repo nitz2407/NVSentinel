@@ -84,13 +84,13 @@ jobs:
 
         ALERTS=$(gh api "repos/${{ github.repository }}/code-scanning/alerts?ref=${{ github.ref }}&state=open" --jq 'length')
 
-        if [[ "$ALERTS" -eq 0 ]]; then
-          REPORT="## 🛡️ CodeQL Analysis\n✅ No security issues found"
-        else
+        # Only comment if security issues are found
+        if [[ "$ALERTS" -gt 0 ]]; then
           REPORT="## 🛡️ CodeQL Analysis\n🚨 Found **$ALERTS** security alert(s)\n\n🔗 [View details](https://github.com/${{ github.repository }}/security/code-scanning?query=is%3Aopen+branch%3A${{ github.ref_name }})"
+          echo -e "$REPORT" | gh pr comment "$PR_NUM" --body-file=-
+        else
+          echo "No security issues found - skipping PR comment"
         fi
-
-        echo -e "$REPORT" | gh pr comment "$PR_NUM" --body-file=-
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

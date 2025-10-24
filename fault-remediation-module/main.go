@@ -18,7 +18,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -32,10 +31,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/textlogger"
 )
 
 var (
+	// These variables will be populated during the build process
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
@@ -96,8 +97,12 @@ func getRequiredEnvVars() (*config, error) {
 		cfg.enableLogCollector = true
 	}
 
-	log.Printf("namespace: %s, version: %s, apigroup: %s, templateMountPath: %s, templateFileName: %s",
-		cfg.namespace, cfg.version, cfg.apiGroup, cfg.templateMountPath, cfg.templateFileName)
+	klog.InfoS("Configuration loaded",
+		"namespace", cfg.namespace,
+		"version", cfg.version,
+		"apiGroup", cfg.apiGroup,
+		"templateMountPath", cfg.templateMountPath,
+		"templateFileName", cfg.templateFileName)
 
 	return cfg, nil
 }
@@ -181,9 +186,8 @@ func startMetricsServer(metricsPort string) {
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
-		err := http.ListenAndServe(":"+metricsPort, nil)
-		if err != nil {
-			klog.Fatalf("Failed to start metrics server: %v", err)
+		if err := http.ListenAndServe(":"+metricsPort, nil); err != nil {
+			klog.ErrorS(err, "Metrics server failed")
 		}
 	}()
 }
@@ -214,30 +218,36 @@ func getMongoPipeline() mongo.Pipeline {
 	}
 }
 
-func main() {
+func run() error {
 	ctx := context.Background()
 
 	// Parse flags and get configuration
 	cfg := parseFlags()
 
-	klog.Infof("Starting fault-remediation-module version: %s, commit: %s, date: %s", version, commit, date)
+	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
+		"version", version,
+		"module", "fault-remediation-module",
+	)
+
+	klog.SetLogger(logger)
+	klog.InfoS("Starting fault-remediation-module", "version", version, "commit", commit, "date", date)
 
 	// Get required environment variables
 	envCfg, err := getRequiredEnvVars()
 	if err != nil {
-		log.Fatalf("Failed to get required environment variables: %v", err)
+		return fmt.Errorf("failed to get required environment variables: %w", err)
 	}
 
 	// Get MongoDB configuration
 	mongoConfig, err := getMongoDBConfig(cfg.mongoClientCertMountPath)
 	if err != nil {
-		log.Fatalf("Failed to get MongoDB configuration: %v", err)
+		return fmt.Errorf("failed to get MongoDB configuration: %w", err)
 	}
 
 	// Get token configuration
 	tokenConfig, err := getTokenConfig()
 	if err != nil {
-		log.Fatalf("Failed to get token configuration: %v", err)
+		return fmt.Errorf("failed to get token configuration: %w", err)
 	}
 
 	// Get MongoDB pipeline
@@ -252,10 +262,10 @@ func main() {
 		TemplateFileName:  envCfg.templateFileName,
 	})
 	if err != nil {
-		log.Fatalf("error while initializing kubernetes client: %v", err)
+		return fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}
 
-	log.Println("Successfully initialized k8sclient")
+	klog.Info("Successfully initialized k8sclient")
 
 	// Initialize and start reconciler
 	reconcilerCfg := reconciler.ReconcilerConfig{
@@ -274,6 +284,22 @@ func main() {
 	startMetricsServer(cfg.metricsPort)
 
 	reconciler.Start(ctx)
+
+	return nil
+}
+
+func main() {
+	// Initialize klog flags to allow command-line control (e.g., -v=3)
+	klog.InitFlags(nil)
+
+	if err := run(); err != nil {
+		klog.ErrorS(err, "Fatal error")
+		klog.Flush()
+		//nolint:gocritic // exitAfterDefer: klog.Flush() is explicitly called before os.Exit()
+		os.Exit(1)
+	}
+
+	klog.Flush()
 }
 
 func getEnvAsInt(name string, defaultValue int) (int, error) {

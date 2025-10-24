@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	klog "k8s.io/klog/v2"
+	"k8s.io/klog/v2/textlogger"
 
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
@@ -46,6 +47,7 @@ const (
 )
 
 var (
+	// These variables will be populated during the build process
 	version = "dev"
 	commit  = "none"
 	date    = "unknown"
@@ -70,9 +72,6 @@ func parseFlags() *appConfig {
 	)
 	flag.StringVar(&cfg.metricsPort, "metrics-port", defaultMetricsPortSidecar, "Port for the sidecar Prometheus metrics.")
 
-	// Initialise klog and parse flags
-	klog.InitFlags(nil)
-
 	// Parse flags after initialising klog
 	flag.Parse()
 
@@ -80,7 +79,6 @@ func parseFlags() *appConfig {
 }
 
 func logStartupInfo(cfg *appConfig) {
-	klog.Infof("Starting Quarantine Trigger Engine Sidecar - version: %s, commit: %s, date: %s", version, commit, date)
 	klog.Infof("Using configuration file: %s", cfg.configPath)
 	klog.Infof("Platform Connector UDS Path: %s", cfg.udsPath)
 	klog.Infof("MongoDB Client Cert Mount Path: %s", cfg.mongoClientCertMountPath)
@@ -155,8 +153,18 @@ func setupKubernetesClient() kubernetes.Interface {
 }
 
 func main() {
+	// Initialize klog flags to allow command-line control (e.g., -v=3)
+	klog.InitFlags(nil)
+
 	appCfg := parseFlags()
 
+	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
+		"version", version,
+		"module", "maintenance-notifier",
+	)
+
+	klog.SetLogger(logger)
+	klog.InfoS("Starting maintenance-notifier", "version", version, "commit", commit, "date", date)
 	defer klog.Flush()
 
 	logStartupInfo(appCfg)
