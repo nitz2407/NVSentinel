@@ -21,11 +21,10 @@
 
 # Module type and capabilities
 IS_GO_MODULE := 1
-HAS_DOCKER := 1
+IS_KO_MODULE := 1
 
 # Fault-quarantine-module specific settings
 CLEAN_EXTRA_FILES := fault-quarantine-module
-DOCKER_EXTRA_ARGS :=
 
 # =============================================================================
 # INCLUDE SHARED DEFINITIONS
@@ -33,7 +32,6 @@ DOCKER_EXTRA_ARGS :=
 
 include ../make/common.mk
 include ../make/go.mk
-include ../make/docker.mk
 
 # =============================================================================
 # DEFAULT TARGET
@@ -43,11 +41,26 @@ include ../make/docker.mk
 all: lint-test ## Run lint-test (default target)
 
 # =============================================================================
+# MODULE HELP
+# =============================================================================
+
+.PHONY: help
+help:
+	@echo "fault-quarantine-module Makefile - Using nvsentinel make/*.mk standards"
+	@echo ""
+	@echo "Main targets: all, lint-test, ci-test, build, test, lint, clean"
+	@echo "Ko targets: ko-build, ko-publish"
+	@echo ""
+	@echo "Build notes:"
+	@echo "  - Container images are built using ko"
+	@echo "  - Use 'make ko-build' for local builds (KO_DOCKER_REPO=ko.local by default)"
+	@echo "  - Use 'make ko-publish' to build and push (set KO_DOCKER_REPO and VERSION)"
+	@echo "  - For Tilt development, see Tiltfile"
+	@echo "  - Platforms configured in .ko.yaml (linux/amd64, linux/arm64)"
+
+# =============================================================================
 # MODULE NOTES
 # =============================================================================
 # This module handles fault detection and quarantine operations.
-# - Uses standardized repo-root Docker build context
-# - Multi-platform builds: linux/arm64,linux/amd64
-# - Build cache enabled for faster builds
-# Run 'make help' to see available targets
+# Run 'make help' to see all available targets and build instructions.
 

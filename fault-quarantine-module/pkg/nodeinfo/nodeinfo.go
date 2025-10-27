@@ -16,12 +16,13 @@ package nodeinfo
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/klog/v2"
 )
 
 type NodeInfo struct {
@@ -89,7 +90,7 @@ func (n *NodeInfo) MarkNodeQuarantineStatusCache(nodeName string, isQuarantined 
 		delete(n.quarantinedNodesMap, nodeName)
 	}
 
-	klog.V(3).Infof("Quarantined nodes map: %+v, Total length: %d", n.quarantinedNodesMap, len(n.quarantinedNodesMap))
+	slog.Debug("Quarantined nodes map", "map", n.quarantinedNodesMap, "count", len(n.quarantinedNodesMap))
 
 	n.signalWork()
 }
@@ -108,13 +109,13 @@ func (n *NodeInfo) GetNodeQuarantineStatusCache(nodeName string) bool {
 // signalWork sends a non-blocking signal to the reconciler's work channel.
 func (n *NodeInfo) signalWork() {
 	if n.workSignal == nil {
-		klog.Errorf("No channel configured for node informer")
+		slog.Error("No channel configured for node informer", "nodeInformer", n)
 		return // No channel configured
 	}
 	select {
 	case n.workSignal <- struct{}{}:
-		klog.V(3).Infof("Signalled work channel due to node change.")
+		slog.Debug("Signalled work channel due to node change.")
 	default:
-		klog.V(3).Infof("Work channel already signalled, skipping signal for node change.")
+		slog.Debug("Work channel already signalled, skipping signal for node change.")
 	}
 }

@@ -19,15 +19,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net/http"
+	"log/slog"
+	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	klog "k8s.io/klog/v2"
-	"k8s.io/klog/v2/textlogger"
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp"
@@ -54,6 +56,17 @@ var (
 	date    = "unknown"
 )
 
+// main is the entry point for the CSP Health Monitor application.
+func main() {
+	logger.SetDefaultStructuredLogger("csp-health-monitor", version)
+	slog.Info("Starting csp-health-monitor", "version", version, "commit", commit, "date", date)
+
+	if err := run(); err != nil {
+		slog.Error("CSP Health Monitor exited with error", "error", err)
+		os.Exit(1)
+	}
+}
+
 // startActiveMonitorAndLog starts the provided CSP monitor in a new goroutine
 // and logs its lifecycle and any runtime errors.
 func startActiveMonitorAndLog(
@@ -65,7 +78,7 @@ func startActiveMonitorAndLog(
 	if activeMonitor == nil {
 		// If no monitor is configured, the application cannot perform its core
 		// function.
-		klog.Fatalf("No active CSP monitor configured or enabled. Application cannot start.")
+		slog.Error("No active CSP monitor configured or enabled. Application cannot start.")
 
 		return
 	}
@@ -74,26 +87,23 @@ func startActiveMonitorAndLog(
 
 	go func() {
 		defer wg.Done()
-		klog.Infof("Starting active monitor: %s", activeMonitor.GetName())
+		slog.Info("Starting active monitor", "name", activeMonitor.GetName())
 		monitorErr := activeMonitor.StartMonitoring(ctx, eventChan)
 
 		if monitorErr != nil {
 			if !errors.Is(monitorErr, context.Canceled) && !errors.Is(monitorErr, context.DeadlineExceeded) {
 				metrics.CSPMonitorErrors.WithLabelValues(string(activeMonitor.GetName()), "runtime_error").Inc()
-				klog.Fatalf("Monitor %s stopped with critical error: %v", activeMonitor.GetName(), monitorErr)
+				slog.Error("Monitor stopped with critical error", "name", activeMonitor.GetName(), "error", monitorErr)
 			} else {
-				klog.Infof("Monitor %s shut down due to context: %v", activeMonitor.GetName(), monitorErr)
+				slog.Info("Monitor shut down due to context", "name", activeMonitor.GetName(), "error", monitorErr)
 			}
 		} else {
-			klog.Infof("Monitor %s shut down cleanly.", string(activeMonitor.GetName()))
+			slog.Info("Monitor shut down cleanly", "name", activeMonitor.GetName())
 		}
 	}()
 }
 
-func main() {
-	// Initialize klog flags to allow command-line control (e.g., -v=3)
-	klog.InitFlags(nil)
-
+func run() error {
 	configPath := flag.String("config", defaultConfigPath, "Path to the TOML configuration file.")
 	metricsPort := flag.String("metrics-port", defaultMetricsPort, "Port to expose Prometheus metrics on.")
 	kubeconfig := flag.String(
@@ -109,40 +119,33 @@ func main() {
 
 	flag.Parse()
 
-	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
-		"version", version,
-		"module", "csp-health-monitor",
-	)
-
-	klog.SetLogger(logger)
-	klog.InfoS("Starting csp-health-monitor", "version", version, "commit", commit, "date", date)
-	defer klog.Flush()
-
 	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
-		klog.Fatalf("Failed to load configuration from %s: %v", *configPath, err)
+		return fmt.Errorf("failed to load configuration from %s: %w", *configPath, err)
 	}
 
 	effectiveKubeconfigPath := *kubeconfig
 
+	// Create context with signal handling for graceful shutdown.
+	// This context will be cancelled when SIGINT or SIGTERM is received.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	store, err := datastore.NewStore(ctx, mongoClientCertMountPath)
 	if err != nil {
-		klog.Fatalf("Failed to initialize datastore: %v", err)
+		return fmt.Errorf("failed to initialize datastore: %w", err)
 	}
 
-	klog.Info("Datastore initialized successfully.")
+	slog.Info("Datastore initialized successfully.")
 
 	eventChan := make(chan model.MaintenanceEvent, eventChannelSize)
 	// Processor is lightweight; it already encapsulates required dependencies.
-	eventProcessor := eventpkg.NewProcessor(cfg, store)
-	if eventProcessor == nil {
-		klog.Fatalf("Failed to initialize event processor")
+	eventProcessor, err := eventpkg.NewProcessor(cfg, store)
+	if err != nil {
+		return fmt.Errorf("failed to initialize event processor: %w", err)
 	}
 
-	klog.Info("Event processor initialized successfully.")
+	slog.Info("Event processor initialized successfully.")
 
 	activeMonitor := initActiveMonitor(
 		ctx,
@@ -151,30 +154,63 @@ func main() {
 		store,
 	) // Pass kubeconfigPath for clients to init their own k8s clients
 
-	var wg sync.WaitGroup
+	// Parse the metrics port
+	portInt, err := strconv.Atoi(*metricsPort)
+	if err != nil {
+		return fmt.Errorf("invalid metrics port: %w", err)
+	}
 
-	startActiveMonitorAndLog(ctx, &wg, activeMonitor, eventChan)
+	// Create common HTTP server with metrics and health endpoints
+	server := srv.NewServer(
+		srv.WithPort(portInt),
+		srv.WithPrometheusMetrics(),
+		srv.WithSimpleHealth(),
+	)
 
-	wg.Add(1)
+	// Use errgroup to manage concurrent goroutines with proper cancellation
+	g, gCtx := errgroup.WithContext(ctx)
 
-	go func() {
-		defer wg.Done()
-		runEventProcessorLoop(ctx, eventChan, eventProcessor)
-		klog.Info("Event processing loop stopped.")
-	}()
+	// Start the metrics/health server.
+	// Metrics server failures are logged but do NOT terminate the service.
+	g.Go(func() error {
+		slog.Info("Starting metrics server", "port", portInt)
 
-	wg.Add(1)
+		if err := server.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
+		}
 
-	go func() {
-		defer wg.Done()
-		startMetricsServer(*metricsPort)
-	}()
+		return nil
+	})
 
-	klog.Info("CSP Health Monitor (Main Container) components started successfully.")
-	<-ctx.Done()
-	klog.Info("Shutdown signal received by main monitor. Waiting for components to shut down gracefully...")
-	wg.Wait()
-	klog.Info("CSP Health Monitor (Main Container) shut down completed.")
+	// Start the CSP monitor
+	g.Go(func() error {
+		var wg sync.WaitGroup
+
+		startActiveMonitorAndLog(gCtx, &wg, activeMonitor, eventChan)
+		wg.Wait()
+		slog.Info("Active monitor stopped.")
+
+		return nil
+	})
+
+	// Start the event processor
+	g.Go(func() error {
+		runEventProcessorLoop(gCtx, eventChan, eventProcessor)
+		slog.Info("Event processing loop stopped.")
+
+		return nil
+	})
+
+	slog.Info("CSP Health Monitor (Main Container) components started successfully.")
+
+	// Wait for all goroutines to finish
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("service error: %w", err)
+	}
+
+	slog.Info("CSP Health Monitor (Main Container) shut down completed.")
+
+	return nil
 }
 
 // initActiveMonitor instantiates the appropriate CSP monitor (GCP/AWS) based on
@@ -186,63 +222,42 @@ func initActiveMonitor(
 	store datastore.Store,
 ) csp.Monitor {
 	if cfg.GCP.Enabled {
-		klog.Info("GCP configuration is enabled.")
+		slog.Info("GCP configuration is enabled.")
 
 		gcpMonitor, err := gcpclient.NewClient(ctx, cfg.GCP, cfg.ClusterName, kubeconfigPath, store)
 		if err != nil {
 			metrics.CSPMonitorErrors.WithLabelValues(string(model.CSPGCP), "init_error").Inc()
-			klog.Errorf("Failed to initialize GCP monitor: %v. GCP will not be monitored.", err)
+			slog.Error("Failed to initialize GCP monitor. GCP will not be monitored.", "error", err)
 
 			return nil
 		}
 
-		klog.Infof("GCP monitor initialized (Project: %s)", cfg.GCP.TargetProjectID)
+		slog.Info("GCP monitor initialized", "project", cfg.GCP.TargetProjectID)
 
 		return gcpMonitor
 	}
 
 	if cfg.AWS.Enabled {
-		klog.Info("AWS configuration is enabled.")
+		slog.Info("AWS configuration is enabled.")
 
 		awsMonitor, err := awsclient.NewClient(ctx, cfg.AWS, cfg.ClusterName, kubeconfigPath, store)
 		if err != nil {
 			metrics.CSPMonitorErrors.WithLabelValues(string(model.CSPAWS), "init_error").Inc()
-			klog.Errorf("Failed to initialize AWS monitor: %v. AWS will not be monitored.", err)
+			slog.Error("Failed to initialize AWS monitor. AWS will not be monitored.", "error", err)
 
 			return nil
 		}
 
-		klog.Infof("AWS monitor initialized (Account: %s, Region: %s)", cfg.AWS.AccountID, cfg.AWS.Region)
+		slog.Info("AWS monitor initialized",
+			"account", cfg.AWS.AccountID,
+			"region", cfg.AWS.Region)
 
 		return awsMonitor
 	}
 
-	klog.Info("No CSP is explicitly enabled in the configuration (GCP or AWS).")
+	slog.Info("No CSP is explicitly enabled in the configuration (GCP or AWS).")
 
 	return nil
-}
-
-// startMetricsServer exposes Prometheus metrics for the main container.
-func startMetricsServer(port string) {
-	listenAddress := fmt.Sprintf(":%s", port)
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
-
-	server := &http.Server{
-		Addr:         listenAddress,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  15 * time.Second,
-	}
-
-	klog.Infof("Metrics server (main monitor) starting to listen on %s/metrics", listenAddress)
-
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		klog.Fatalf("Metrics server (main monitor) failed: %v", err)
-	}
-
-	klog.Info("Metrics server (main monitor) stopped.")
 }
 
 // runEventProcessorLoop consumes normalized events from eventChan and hands
@@ -252,23 +267,25 @@ func runEventProcessorLoop(
 	eventChan <-chan model.MaintenanceEvent,
 	processor *eventpkg.Processor,
 ) {
-	klog.Info("Starting event processing worker loop (main monitor)...")
+	slog.Info("Starting event processing worker loop (main monitor)...")
 
 	for {
 		select {
 		case <-ctx.Done():
-			klog.Info("Context cancelled, stopping event processing worker loop (main monitor).")
+			slog.Info("Context cancelled, stopping event processing worker loop (main monitor).")
 			return
 		case receivedEvent, ok := <-eventChan:
 			if !ok {
-				klog.Info("Event channel closed, stopping event processing worker loop (main monitor).")
+				slog.Info("Event channel closed, stopping event processing worker loop (main monitor).")
 				return
 			}
 
 			metrics.MainEventsReceived.WithLabelValues(string(receivedEvent.CSP)).Inc()
-			klog.V(1).
-				Infof("Processor received event: %s (CSP: %s, Node: %s, Status: %s)",
-					receivedEvent.EventID, receivedEvent.CSP, receivedEvent.NodeName, receivedEvent.Status)
+			slog.Info("Processor received event",
+				"eventID", receivedEvent.EventID,
+				"csp", receivedEvent.CSP,
+				"node", receivedEvent.NodeName,
+				"status", receivedEvent.Status)
 
 			start := time.Now()
 			err := processor.ProcessEvent(ctx, &receivedEvent)
@@ -277,15 +294,17 @@ func runEventProcessorLoop(
 
 			if err != nil {
 				metrics.MainProcessingErrors.WithLabelValues(string(receivedEvent.CSP), "process_event").Inc()
-				klog.Errorf(
-					"Error processing event %s (Node: %s): %v",
-					receivedEvent.EventID,
-					receivedEvent.NodeName,
-					err,
+				slog.Error(
+					"Error processing event",
+					"eventID", receivedEvent.EventID,
+					"node", receivedEvent.NodeName,
+					"error", err,
 				)
 			} else {
 				metrics.MainEventsProcessedSuccess.WithLabelValues(string(receivedEvent.CSP)).Inc()
-				klog.V(2).Infof("Successfully processed event %s", receivedEvent.EventID)
+				slog.Debug("Successfully processed event",
+					"eventID", receivedEvent.EventID,
+				)
 			}
 		}
 	}

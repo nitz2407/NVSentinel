@@ -18,7 +18,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"net/http"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -26,14 +26,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/reconciler"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/sync/errgroup"
+
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"k8s.io/klog/v2"
-	"k8s.io/klog/v2/textlogger"
 )
 
 var (
@@ -43,141 +44,183 @@ var (
 	date    = "unknown"
 )
 
-// nolint: cyclop //fix this as part of NGCC-21793
 func main() {
-	// Initialize klog flags to allow command-line control (e.g., -v=3)
-	klog.InitFlags(nil)
+	logger.SetDefaultStructuredLogger("fault-quarantine-module", version)
+	slog.Info("Starting fault-quarantine-module", "version", version, "commit", commit, "date", date)
 
-	// Create a context that gets cancelled on OS interrupt signals
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop() // Ensure the signal listener is cleaned up
+	if err := run(); err != nil {
+		slog.Error("Application encountered a fatal error", "error", err)
+		os.Exit(1)
+	}
+}
 
-	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+func parseFlags() (metricsPort, mongoClientCertMountPath, kubeconfigPath *string, dryRun, circuitBreakerEnabled *bool,
+	circuitBreakerPercentage *int, circuitBreakerDuration *time.Duration) {
+	metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 
-	var mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
+	mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
 		"path where the mongodb client cert is mounted")
 
-	var kubeconfigPath = flag.String("kubeconfig-path", "", "path to kubeconfig file")
+	kubeconfigPath = flag.String("kubeconfig-path", "", "path to kubeconfig file")
 
-	var dryRun = flag.Bool("dry-run", false, "flag to run node drainer module in dry-run mode")
+	dryRun = flag.Bool("dry-run", false, "flag to run node drainer module in dry-run mode")
 
-	var circuitBreakerPercentage = flag.Int("circuit-breaker-percentage",
+	circuitBreakerPercentage = flag.Int("circuit-breaker-percentage",
 		50, "percentage of nodes to cordon before tripping the circuit breaker")
 
-	var circuitBreakerDuration = flag.Duration("circuit-breaker-duration",
+	circuitBreakerDuration = flag.Duration("circuit-breaker-duration",
 		5*time.Minute, "duration of the circuit breaker window")
 
-	var circuitBreakerEnabled = flag.Bool("circuit-breaker-enabled", true,
+	circuitBreakerEnabled = flag.Bool("circuit-breaker-enabled", true,
 		"enable or disable fault quarantine circuit breaker")
 
 	flag.Parse()
 
-	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
-		"version", version,
-		"module", "fault-quarantine-module",
-	)
+	return
+}
 
-	klog.SetLogger(logger)
-	klog.InfoS("Starting fault-quarantine-module", "version", version, "commit", commit, "date", date)
-	defer klog.Flush()
-
-	namespace := os.Getenv("POD_NAMESPACE")
+func loadEnvConfig() (namespace, mongoURI, mongoDatabase, mongoCollection, tokenDatabase, tokenCollection string,
+	err error) {
+	namespace = os.Getenv("POD_NAMESPACE")
 	if namespace == "" {
-		klog.Fatalf("POD_NAMESPACE is not provided")
+		return "", "", "", "", "", "", fmt.Errorf("POD_NAMESPACE is not provided")
 	}
 
-	mongoURI := os.Getenv("MONGODB_URI")
+	mongoURI = os.Getenv("MONGODB_URI")
 	if mongoURI == "" {
-		klog.Fatalf("MongoDB URI is not provided")
+		return "", "", "", "", "", "", fmt.Errorf("MONGODB_URI is not provided")
 	}
 
-	mongoDatabase := os.Getenv("MONGODB_DATABASE_NAME")
+	mongoDatabase = os.Getenv("MONGODB_DATABASE_NAME")
 	if mongoDatabase == "" {
-		klog.Fatalf("MongoDB Database name is not provided")
+		return "", "", "", "", "", "", fmt.Errorf("MONGODB_DATABASE_NAME is not provided")
 	}
 
-	mongoCollection := os.Getenv("MONGODB_COLLECTION_NAME")
+	mongoCollection = os.Getenv("MONGODB_COLLECTION_NAME")
 	if mongoCollection == "" {
-		klog.Fatalf("MongoDB collection name is not provided")
+		return "", "", "", "", "", "", fmt.Errorf("MONGODB_COLLECTION_NAME is not provided")
 	}
 
-	tokenDatabase := os.Getenv("MONGODB_DATABASE_NAME")
+	tokenDatabase = os.Getenv("MONGODB_DATABASE_NAME")
 	if tokenDatabase == "" {
-		klog.Fatalf("MongoDB token database name is not provided")
+		return "", "", "", "", "", "", fmt.Errorf("MONGODB_DATABASE_NAME is not provided")
 	}
 
-	tokenCollection := os.Getenv("MONGODB_TOKEN_COLLECTION_NAME")
+	tokenCollection = os.Getenv("MONGODB_TOKEN_COLLECTION_NAME")
 	if tokenCollection == "" {
-		klog.Fatalf("MongoDB token collection name is not provided")
+		return "", "", "", "", "", "", fmt.Errorf("MongoDB token collection name is not provided")
 	}
 
-	totalTimeoutSeconds, err := getEnvAsInt("MONGODB_PING_TIMEOUT_TOTAL_SECONDS", 300)
+	return namespace, mongoURI, mongoDatabase, mongoCollection, tokenDatabase, tokenCollection, nil
+}
+
+func loadMongoTimeouts() (totalTimeoutSeconds, intervalSeconds, totalCACertTimeoutSeconds,
+	intervalCACertSeconds, unprocessedEventsMetricUpdateIntervalSeconds int, err error) {
+	totalTimeoutSeconds, err = getEnvAsInt("MONGODB_PING_TIMEOUT_TOTAL_SECONDS", 300)
 	if err != nil {
-		klog.Fatalf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %v", err)
+		return 0, 0, 0, 0, 0, fmt.Errorf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %w", err)
 	}
 
-	intervalSeconds, err := getEnvAsInt("MONGODB_PING_INTERVAL_SECONDS", 5)
+	intervalSeconds, err = getEnvAsInt("MONGODB_PING_INTERVAL_SECONDS", 5)
 	if err != nil {
-		klog.Fatalf("invalid MONGODB_PING_INTERVAL_SECONDS: %v", err)
+		return 0, 0, 0, 0, 0, fmt.Errorf("invalid MONGODB_PING_INTERVAL_SECONDS: %w", err)
 	}
 
-	totalCACertTimeoutSeconds, err := getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
+	totalCACertTimeoutSeconds, err = getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
 	if err != nil {
-		klog.Fatalf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %v", err)
+		return 0, 0, 0, 0, 0, fmt.Errorf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %w", err)
 	}
 
-	intervalCACertSeconds, err := getEnvAsInt("CA_CERT_READ_INTERVAL_SECONDS", 5)
+	intervalCACertSeconds, err = getEnvAsInt("CA_CERT_READ_INTERVAL_SECONDS", 5)
 	if err != nil {
-		klog.Fatalf("invalid CA_CERT_READ_INTERVAL_SECONDS: %v", err)
+		return 0, 0, 0, 0, 0, fmt.Errorf("invalid CA_CERT_READ_INTERVAL_SECONDS: %w", err)
 	}
 
-	unprocessedEventsMetricUpdateIntervalSeconds, err :=
+	unprocessedEventsMetricUpdateIntervalSeconds, err =
 		getEnvAsInt("UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS", 25)
 	if err != nil {
-		klog.Fatalf("invalid UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS: %v", err)
+		return 0, 0, 0, 0, 0, fmt.Errorf("invalid UNPROCESSED_EVENTS_METRIC_UPDATE_INTERVAL_SECONDS: %w", err)
 	}
 
-	mongoConfig := storewatcher.MongoDBConfig{
+	return
+}
+
+func createMongoConfig(
+	mongoURI, mongoDatabase, mongoCollection, mongoClientCertMountPath string,
+	totalTimeoutSeconds, intervalSeconds, totalCACertTimeoutSeconds, intervalCACertSeconds int,
+) storewatcher.MongoDBConfig {
+	return storewatcher.MongoDBConfig{
 		URI:        mongoURI,
 		Database:   mongoDatabase,
 		Collection: mongoCollection,
 		ClientTLSCertConfig: storewatcher.MongoDBClientTLSCertConfig{
-			TlsCertPath: filepath.Join(*mongoClientCertMountPath, "tls.crt"),
-			TlsKeyPath:  filepath.Join(*mongoClientCertMountPath, "tls.key"),
-			CaCertPath:  filepath.Join(*mongoClientCertMountPath, "ca.crt"),
+			TlsCertPath: filepath.Join(mongoClientCertMountPath, "tls.crt"),
+			TlsKeyPath:  filepath.Join(mongoClientCertMountPath, "tls.key"),
+			CaCertPath:  filepath.Join(mongoClientCertMountPath, "ca.crt"),
 		},
 		TotalPingTimeoutSeconds:    totalTimeoutSeconds,
 		TotalPingIntervalSeconds:   intervalSeconds,
 		TotalCACertTimeoutSeconds:  totalCACertTimeoutSeconds,
 		TotalCACertIntervalSeconds: intervalCACertSeconds,
 	}
+}
 
-	tokenConfig := storewatcher.TokenConfig{
+func createTokenConfig(tokenDatabase, tokenCollection string) storewatcher.TokenConfig {
+	return storewatcher.TokenConfig{
 		ClientName:      "fault-quarantine-module",
 		TokenDatabase:   tokenDatabase,
 		TokenCollection: tokenCollection,
 	}
+}
 
-	pipeline := mongo.Pipeline{
+func createPipeline() mongo.Pipeline {
+	return mongo.Pipeline{
 		{{Key: "$match", Value: bson.D{{Key: "operationType", Value: bson.D{{Key: "$in", Value: bson.A{"insert"}}}}}}},
 	}
+}
+
+func run() error {
+	// Create a context that gets cancelled on OS interrupt signals
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop() // Ensure the signal listener is cleaned up
+
+	metricsPort, mongoClientCertMountPath, kubeconfigPath, dryRun, circuitBreakerEnabled,
+		circuitBreakerPercentage, circuitBreakerDuration := parseFlags()
+
+	namespace, mongoURI, mongoDatabase, mongoCollection, tokenDatabase, tokenCollection, err := loadEnvConfig()
+	if err != nil {
+		return err
+	}
+
+	totalTimeoutSeconds, intervalSeconds, totalCACertTimeoutSeconds,
+		intervalCACertSeconds, unprocessedEventsMetricUpdateIntervalSeconds, err := loadMongoTimeouts()
+	if err != nil {
+		return err
+	}
+
+	mongoConfig := createMongoConfig(mongoURI, mongoDatabase, mongoCollection, *mongoClientCertMountPath,
+		totalTimeoutSeconds, intervalSeconds, totalCACertTimeoutSeconds, intervalCACertSeconds)
+
+	tokenConfig := createTokenConfig(tokenDatabase, tokenCollection)
+
+	pipeline := createPipeline()
 
 	tomlCfg, err := config.LoadTomlConfig("/etc/config/config.toml")
 	if err != nil {
-		klog.Fatalf("error while loading the toml config: %v", err)
+		return fmt.Errorf("error loading TOML config: %w", err)
 	}
 
 	if *dryRun {
-		klog.Info("Running in dry-run mode")
+		slog.Info("Running in dry-run mode")
 	}
 
 	// Initialize the k8s client
 	k8sClient, err := reconciler.NewFaultQuarantineClient(*kubeconfigPath, *dryRun)
 	if err != nil {
-		klog.Fatalf("error while initializing kubernetes client: %v", err)
+		return fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}
 
-	klog.Info("Successfully initialized k8sclient")
+	slog.Info("Successfully initialized k8sclient")
 
 	reconcilerCfg := reconciler.ReconcilerConfig{
 		TomlConfig:                       *tomlCfg,
@@ -201,18 +244,42 @@ func main() {
 	workSignal := make(chan struct{}, 1) // Buffer size 1 is usually sufficient
 
 	// Pass the workSignal channel to the Reconciler
-	reconciler := reconciler.NewReconciler(ctx, reconcilerCfg, workSignal)
+	rec := reconciler.NewReconciler(ctx, reconcilerCfg, workSignal)
 
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
-		err := http.ListenAndServe(":"+*metricsPort, nil)
-		if err != nil {
-			klog.Fatalf("Failed to start metrics server: %v", err)
+	// Parse the port
+	portInt, err := strconv.Atoi(*metricsPort)
+	if err != nil {
+		return fmt.Errorf("invalid metrics port: %w", err)
+	}
+
+	// Create the server
+	srv := server.NewServer(
+		server.WithPort(portInt),
+		server.WithPrometheusMetrics(),
+		server.WithSimpleHealth(),
+	)
+
+	// Start server and reconciler concurrently
+	g, gCtx := errgroup.WithContext(ctx)
+
+	// Start the metrics/health server.
+	// Metrics server failures are logged but do NOT terminate the service.
+	g.Go(func() error {
+		slog.Info("Starting metrics server", "port", portInt)
+
+		if err := srv.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
 		}
-	}()
 
-	reconciler.Start(ctx)
+		return nil
+	})
+
+	g.Go(func() error {
+		return rec.Start(gCtx)
+	})
+
+	// Wait for both goroutines to finish
+	return g.Wait()
 }
 
 func getEnvAsInt(name string, defaultValue int) (int, error) {

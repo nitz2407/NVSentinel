@@ -5,20 +5,20 @@ go 1.24.0
 toolchain go1.24.8
 
 require (
-	github.com/nvidia/nvsentinel/platform-connectors v0.0.0-20250326070254-068ef4e9b24f
-	github.com/nvidia/nvsentinel/store-client-sdk v0.0.0-20250901050746-391b5ab7018d
+	github.com/nvidia/nvsentinel/commons v0.0.0
+	github.com/nvidia/nvsentinel/data-models v0.0.0
+	github.com/nvidia/nvsentinel/platform-connectors v0.0.0
+	github.com/nvidia/nvsentinel/store-client-sdk v0.0.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	go.mongodb.org/mongo-driver v1.17.4
+	golang.org/x/sync v0.17.0
 	google.golang.org/grpc v1.76.0
 	google.golang.org/protobuf v1.36.10
 	k8s.io/apimachinery v0.34.1
 )
 
 require (
-	github.com/kr/text v0.2.0 // indirect
-	go.opentelemetry.io/otel/metric v1.38.0 // indirect
-	go.opentelemetry.io/otel/trace v1.38.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4 // indirect
@@ -45,13 +45,12 @@ require (
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	golang.org/x/crypto v0.43.0 // indirect
 	golang.org/x/net v0.46.0 // indirect
-	golang.org/x/sync v0.17.0 // indirect
 	golang.org/x/sys v0.37.0 // indirect
 	golang.org/x/text v0.30.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251014184007-4626949a642f // indirect
 	k8s.io/client-go v0.34.1 // indirect
-	k8s.io/klog/v2 v2.130.1
+	k8s.io/klog/v2 v2.130.1 // indirect
 )
 
 // Local replacements for internal modules
@@ -65,9 +64,9 @@ replace github.com/nvidia/nvsentinel/platform-connectors => ../platform-connecto
 
 replace github.com/nvidia/nvsentinel/store-client-sdk => ../store-client-sdk
 
-replace github.com/nvidia/nvsentinel/health-event-client => ../health-event-client
+replace github.com/nvidia/nvsentinel/data-models => ../data-models
 
-replace github.com/nvidia/nvsentinel/health-events-analyzer => ../health-events-analyzer
+replace github.com/nvidia/nvsentinel/health-event-client => ../health-event-client
 
 replace github.com/nvidia/nvsentinel/fault-quarantine-module => ../fault-quarantine-module
 
@@ -76,3 +75,5 @@ replace github.com/nvidia/nvsentinel/labeler-module => ../labeler-module
 replace github.com/nvidia/nvsentinel/node-drainer-module => ../node-drainer-module
 
 replace github.com/nvidia/nvsentinel/fault-remediation-module => ../fault-remediation-module
+
+replace github.com/nvidia/nvsentinel/commons => ../commons

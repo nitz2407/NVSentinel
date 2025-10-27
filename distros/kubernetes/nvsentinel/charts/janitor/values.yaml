@@ -1,0 +1,213 @@
+
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+replicaCount: 1
+
+# Image configuration
+image:
+  repository: janitor
+  pullPolicy: IfNotPresent
+  tag: "v1"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Automatically mount a ServiceAccount's API credentials?
+  automount: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+  #  - secretName: chart-example-tls
+  #    hosts:
+  #      - chart-example.local
+
+resources: {}
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+livenessProbe:
+  httpGet:
+    path: /
+    port: http
+readinessProbe:
+  httpGet:
+    path: /
+    port: http
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+# Additional volumes on the output Deployment definition.
+volumes: []
+# - name: foo
+#   secret:
+#     secretName: mysecret
+#     optional: false
+
+# Additional volumeMounts on the output Deployment definition.
+volumeMounts: []
+# - name: foo
+#   mountPath: "/etc/foo"
+#   readOnly: true
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Cloud Service Provider (CSP) Configuration
+# The janitor module supports multiple cloud providers for node reboot operations
+# Configure the appropriate CSP for your environment
+csp:
+  # CSP provider type (kind, kwok, aws, gcp, azure, oci)
+  # - kind: For local development with kind clusters (simulated reboots)
+  # - kwok: For testing with kwok (simulated nodes)
+  # - aws: For AWS EKS clusters
+  # - gcp: For Google Cloud GKE clusters  
+  # - azure: For Microsoft Azure AKS clusters
+  # - oci: For Oracle Cloud Infrastructure OKE clusters
+  provider: "kind"
+  
+  # AWS-specific configuration (only required when provider=aws)
+  aws:
+    # AWS region where the EKS cluster is running
+    # This is required for EC2 API calls to reboot nodes
+    # Example: us-east-1, us-west-2, eu-west-1
+    region: ""
+    # AWS Account ID (required for IRSA - IAM Roles for Service Accounts)
+    # Example: "123456789012"
+    accountId: ""
+    # IAM Role name for the janitor service account (IRSA)
+    # This role should have permissions to call EC2 RebootInstances
+    # Example: "eks-cluster-name-janitor" or "nvsentinel-janitor-role"
+    iamRoleName: ""
+    # Note: AWS credentials are typically provided via:
+    # - IAM roles for service accounts (IRSA) - RECOMMENDED for EKS
+    #   Requires accountId and iamRoleName to be set
+    #   The IAM role must have ec2:RebootInstances permission
+  
+  # Google Cloud Platform (GCP) specific configuration (only required when provider=gcp)
+  gcp:
+    # GCP project ID where the GKE cluster is running
+    # This is used for Compute Engine API calls
+    project: ""
+    # GCP zone where the GKE cluster nodes are located
+    # Example: us-central1-a, us-west1-b, europe-west1-c
+    zone: ""
+    # GCP Service Account email for Workload Identity (without @project.iam.gserviceaccount.com)
+    # Example: "nvsentinel-janitor" (will be formatted as nvsentinel-janitor@project-id.iam.gserviceaccount.com)
+    # This service account must have compute.instances.reset permission
+    serviceAccount: ""
+    # Note: GCP credentials are typically provided via:
+    # - Workload Identity - RECOMMENDED for GKE
+    #   Requires project and serviceAccount to be set
+    #   The GCP SA must have roles/compute.instanceAdmin.v1 or compute.instances.reset permission
+    #   Must bind Kubernetes SA to GCP SA: gcloud iam service-accounts add-iam-policy-binding
+  
+  # Microsoft Azure specific configuration (only required when provider=azure)
+  azure:
+    # Azure subscription ID containing the AKS cluster
+    # Required for Azure Resource Manager API calls
+    subscriptionId: ""
+    # Azure resource group name containing the AKS cluster
+    # This can often be auto-detected from node provider IDs
+    resourceGroup: ""
+    # Azure region/location where the AKS cluster is deployed
+    # Example: eastus, westus2, westeurope
+    location: ""
+    # Azure Managed Identity Client ID for Workload Identity
+    # Example: "12345678-1234-1234-1234-123456789012"
+    # This managed identity must have Virtual Machine Contributor role or restart permission
+    clientId: ""
+    # Note: Azure credentials are typically provided via:
+    # - Managed Identity (Workload Identity) - RECOMMENDED for AKS
+    #   Requires clientId to be set
+    #   The managed identity must have Microsoft.Compute/virtualMachines/restart/action permission
+    #   Must create federated identity credential for the Kubernetes service account
+  
+  # Oracle Cloud Infrastructure (OCI) specific configuration (only required when provider=oci)
+  oci:
+    # OCI region where the OKE cluster is running
+    # Example: us-ashburn-1, us-phoenix-1, uk-london-1
+    region: ""
+    # OCI compartment OCID containing the cluster resources
+    # Format: ocid1.compartment.oc1..aaa...
+    compartment: ""
+    # Path to OCI credentials file (optional, uses workload identity by default)
+    credentialsFile: ""
+    # OCI profile name in credentials file (default: DEFAULT)
+    profile: "DEFAULT"
+    # OCI Principal OCID for Workload Identity
+    # Format: ocid1.principal.oc1..aaa...
+    # This is the OCID of the dynamic group or service principal
+    principalId: ""
+    # Note: OCI credentials are typically provided via:
+    # - OKE Workload Identity - RECOMMENDED for OKE (default)
+    #   Requires compartment and principalId to be set
+    #   The principal must have manage instance-family permission in compartment
+    #   Must create dynamic group with matching rule for the pod
+    # Environment variables for credentials:
+    # - OCI_CREDENTIALS_FILE: Path to OCI config file (optional)
+    # - OCI_PROFILE: Profile name in config file (default: DEFAULT)

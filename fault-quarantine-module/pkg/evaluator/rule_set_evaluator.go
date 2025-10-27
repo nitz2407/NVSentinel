@@ -16,12 +16,13 @@ package evaluator
 
 import (
 	"fmt"
+	"log/slog"
 
-	multierror "github.com/hashicorp/go-multierror"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/informer"
+
+	multierror "github.com/hashicorp/go-multierror"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/klog/v2"
 )
 
 func InitializeRuleSetEvaluators(ruleSets []config.RuleSet,
@@ -41,7 +42,7 @@ func InitializeRuleSetEvaluators(ruleSets []config.RuleSet,
 				eval := NewAnyRuleSetEvaluator(evaluators, ruleSet)
 				ruleSetEvals = append(ruleSetEvals, eval)
 
-				klog.Infof("Initialized ruleSetEvaluator: %+v", ruleSet)
+				slog.Debug("Initialized ruleSetEvaluator", "ruleSet", ruleSet)
 			}
 		}
 
@@ -53,7 +54,7 @@ func InitializeRuleSetEvaluators(ruleSets []config.RuleSet,
 				eval := NewAllRuleSetEvaluator(evaluators, ruleSet)
 				ruleSetEvals = append(ruleSetEvals, eval)
 
-				klog.Infof("Initialized ruleSetEvaluator: %+v", ruleSet)
+				slog.Debug("Initialized ruleSetEvaluator", "ruleSet", ruleSet)
 			}
 		}
 	}

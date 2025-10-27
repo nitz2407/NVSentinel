@@ -16,27 +16,27 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
-	"net/http"
+	"log/slog"
+	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
-	"time"
 
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	klog "k8s.io/klog/v2"
-	"k8s.io/klog/v2/textlogger"
-
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/config"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/metrics"
 	trigger "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/triggerengine"
-	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
+
+	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 const (
@@ -78,41 +78,28 @@ func parseFlags() *appConfig {
 	return cfg
 }
 
-func logStartupInfo(cfg *appConfig) {
-	klog.Infof("Using configuration file: %s", cfg.configPath)
-	klog.Infof("Platform Connector UDS Path: %s", cfg.udsPath)
-	klog.Infof("MongoDB Client Cert Mount Path: %s", cfg.mongoClientCertMountPath)
-	klog.Infof("Exposing sidecar metrics on port: %s", cfg.metricsPort)
-	klog.V(2).Infof("Klog verbosity level is set based on the -v flag for sidecar.")
+func main() {
+	logger.SetDefaultStructuredLogger("maintenance-notifier", version)
+	slog.Info("Starting maintenance-notifier", "version", version, "commit", commit, "date", date)
+
+	if err := run(); err != nil {
+		slog.Error("Fatal error", "error", err)
+		os.Exit(1)
+	}
 }
 
-func startMetricsServer(metricsPort string) {
-	// Start metrics endpoint in a separate goroutine
-	go func() {
-		listenAddress := fmt.Sprintf(":%s", metricsPort)
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
-
-		server := &http.Server{
-			Addr:         listenAddress,
-			Handler:      mux,
-			ReadTimeout:  10 * time.Second,
-			WriteTimeout: 10 * time.Second,
-			IdleTimeout:  15 * time.Second,
-		}
-
-		klog.Infof("Metrics server (sidecar) starting to listen on %s", listenAddress)
-
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			klog.Errorf("Metrics server (sidecar) failed: %v", err)
-		}
-
-		klog.Info("Metrics server (sidecar) stopped.")
-	}()
+func logStartupInfo(cfg *appConfig) {
+	slog.Info("Using",
+		"configuration file", cfg.configPath,
+		"platform connector UDS path", cfg.udsPath,
+		"mongoDB client cert mount path", cfg.mongoClientCertMountPath,
+		"exposing sidecar metrics on port", cfg.metricsPort,
+	)
+	slog.Debug("log verbosity level is set based on the -v flag for sidecar.")
 }
 
 func setupUDSConnection(udsPath string) (*grpc.ClientConn, pb.PlatformConnectorClient) {
-	klog.Infof("Sidecar attempting to connect to Platform Connector UDS at: unix:%s", udsPath)
+	slog.Info("Sidecar attempting to connect to Platform Connector UDS", "unix", udsPath)
 	target := fmt.Sprintf("unix:%s", udsPath)
 
 	opts := []grpc.DialOption{
@@ -122,10 +109,12 @@ func setupUDSConnection(udsPath string) (*grpc.ClientConn, pb.PlatformConnectorC
 	conn, err := grpc.NewClient(target, opts...)
 	if err != nil {
 		metrics.TriggerUDSSendErrors.Inc()
-		klog.Fatalf("Sidecar failed to dial Platform Connector UDS %s: %v", target, err)
+		slog.Error("Sidecar failed to dial Platform Connector UDS",
+			"target", target,
+			"error", err)
 	}
 
-	klog.Info("Sidecar successfully connected to Platform Connector UDS.")
+	slog.Info("Sidecar successfully connected to Platform Connector UDS.")
 
 	return conn, pb.NewPlatformConnectorClient(conn)
 }
@@ -137,61 +126,49 @@ func setupKubernetesClient() kubernetes.Interface {
 
 	restCfg, err = rest.InClusterConfig()
 	if err != nil {
-		klog.Warningf("Trigger Engine: failed to obtain in-cluster Kubernetes config: %v", err)
+		slog.Warn("trigger engine, failed to obtain in-cluster Kubernetes config", "error", err)
 		return nil
 	}
 
 	k8sClient, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
-		klog.Errorf("Trigger Engine: failed to create Kubernetes clientset: %v", err)
+		slog.Error("trigger engine, failed to create Kubernetes clientset", "error", err)
 		return nil
 	}
 
-	klog.Info("Trigger Engine: Kubernetes clientset initialized successfully for node readiness checks.")
+	slog.Info("Trigger Engine: Kubernetes clientset initialized successfully for node readiness checks.")
 
 	return k8sClient
 }
 
-func main() {
-	// Initialize klog flags to allow command-line control (e.g., -v=3)
-	klog.InitFlags(nil)
-
+func run() error {
 	appCfg := parseFlags()
-
-	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
-		"version", version,
-		"module", "maintenance-notifier",
-	)
-
-	klog.SetLogger(logger)
-	klog.InfoS("Starting maintenance-notifier", "version", version, "commit", commit, "date", date)
-	defer klog.Flush()
-
 	logStartupInfo(appCfg)
 
 	cfg, err := config.LoadConfig(appCfg.configPath)
 	if err != nil {
-		klog.Fatalf("Failed to load configuration: %v", err)
+		return fmt.Errorf("failed to load configuration from %s: %w", appCfg.configPath, err)
 	}
 
+	// Create context with signal handling for graceful shutdown.
+	// This context will be cancelled when SIGINT or SIGTERM is received.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	startMetricsServer(appCfg.metricsPort)
-
 	store, err := datastore.NewStore(ctx, &appCfg.mongoClientCertMountPath)
 	if err != nil {
-		klog.Fatalf("Failed to initialize datastore for sidecar: %v", err)
+		return fmt.Errorf("failed to initialize datastore: %w", err)
 	}
 
-	klog.Info("Datastore initialized successfully for sidecar.")
+	slog.Info("Datastore initialized successfully for sidecar.")
 
 	conn, platformConnectorClient := setupUDSConnection(appCfg.udsPath)
+
 	defer func() {
-		klog.Info("Closing UDS connection for sidecar.")
+		slog.Info("Closing UDS connection for sidecar.")
 
 		if errClose := conn.Close(); errClose != nil {
-			klog.Errorf("Error closing sidecar UDS connection: %v", errClose)
+			slog.Error("Error closing sidecar UDS connection", "error", errClose)
 		}
 	}()
 
@@ -199,8 +176,49 @@ func main() {
 
 	engine := trigger.NewEngine(cfg, store, platformConnectorClient, k8sClient)
 
-	klog.Info("Trigger engine starting...")
-	engine.Start(ctx) // This is blocking
+	// Parse the metrics port
+	portInt, err := strconv.Atoi(appCfg.metricsPort)
+	if err != nil {
+		return fmt.Errorf("invalid metrics port: %w", err)
+	}
 
-	klog.Info("Quarantine Trigger Engine Sidecar shut down.")
+	// Create common HTTP server with metrics and health endpoints
+	server := srv.NewServer(
+		srv.WithPort(portInt),
+		srv.WithPrometheusMetrics(),
+		srv.WithSimpleHealth(),
+	)
+
+	// Use errgroup to manage concurrent goroutines with proper cancellation
+	g, gCtx := errgroup.WithContext(ctx)
+
+	// Start the metrics/health server.
+	// Metrics server failures are logged but do NOT terminate the service.
+	g.Go(func() error {
+		slog.Info("Starting metrics server", "port", portInt)
+
+		if err := server.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
+		}
+
+		return nil
+	})
+
+	// Start the trigger engine in a separate goroutine
+	g.Go(func() error {
+		slog.Info("Trigger engine starting...")
+		engine.Start(gCtx) // This is blocking
+		slog.Info("Trigger engine stopped.")
+
+		return nil
+	})
+
+	// Wait for both goroutines to finish
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("service error: %w", err)
+	}
+
+	slog.Info("Quarantine Trigger Engine Sidecar shut down.")
+
+	return nil
 }

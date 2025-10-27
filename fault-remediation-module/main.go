@@ -18,21 +18,24 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"net/http"
+	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/fault-remediation-module/pkg/reconciler"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
 	"github.com/nvidia/nvsentinel/statemanager"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/sync/errgroup"
+
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"k8s.io/klog/v2"
-	"k8s.io/klog/v2/textlogger"
 )
 
 var (
@@ -57,6 +60,7 @@ type config struct {
 	updateRetryDelaySeconds  int
 }
 
+// parseFlags parses command-line flags and returns a config struct.
 func parseFlags() *config {
 	cfg := &config{}
 
@@ -97,7 +101,7 @@ func getRequiredEnvVars() (*config, error) {
 		cfg.enableLogCollector = true
 	}
 
-	klog.InfoS("Configuration loaded",
+	slog.Info("Configuration loaded",
 		"namespace", cfg.namespace,
 		"version", cfg.version,
 		"apiGroup", cfg.apiGroup,
@@ -180,18 +184,6 @@ func getTokenConfig() (*storewatcher.TokenConfig, error) {
 	}, nil
 }
 
-func startMetricsServer(metricsPort string) {
-	klog.Infof("Starting a metrics port on : %s", metricsPort)
-
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
-		if err := http.ListenAndServe(":"+metricsPort, nil); err != nil {
-			klog.ErrorS(err, "Metrics server failed")
-		}
-	}()
-}
-
 func getMongoPipeline() mongo.Pipeline {
 	return mongo.Pipeline{
 		bson.D{
@@ -219,18 +211,13 @@ func getMongoPipeline() mongo.Pipeline {
 }
 
 func run() error {
-	ctx := context.Background()
+	// Create a context that listens for OS interrupt signals (SIGINT, SIGTERM).
+	// This enables proper graceful shutdown in Kubernetes environments
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	// Parse flags and get configuration
 	cfg := parseFlags()
-
-	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
-		"version", version,
-		"module", "fault-remediation-module",
-	)
-
-	klog.SetLogger(logger)
-	klog.InfoS("Starting fault-remediation-module", "version", version, "commit", commit, "date", date)
 
 	// Get required environment variables
 	envCfg, err := getRequiredEnvVars()
@@ -265,7 +252,7 @@ func run() error {
 		return fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}
 
-	klog.Info("Successfully initialized k8sclient")
+	slog.Info("Successfully initialized k8sclient")
 
 	// Initialize and start reconciler
 	reconcilerCfg := reconciler.ReconcilerConfig{
@@ -281,25 +268,50 @@ func run() error {
 
 	reconciler := reconciler.NewReconciler(reconcilerCfg, cfg.dryRun)
 
-	startMetricsServer(cfg.metricsPort)
+	// Parse the metrics port
+	portInt, err := strconv.Atoi(cfg.metricsPort)
+	if err != nil {
+		return fmt.Errorf("invalid metrics port: %w", err)
+	}
 
-	reconciler.Start(ctx)
+	// Create the server
+	srv := server.NewServer(
+		server.WithPort(portInt),
+		server.WithPrometheusMetrics(),
+		server.WithSimpleHealth(),
+	)
 
-	return nil
+	// Start server and reconciler concurrently
+	g, gCtx := errgroup.WithContext(ctx)
+
+	// Start the metrics/health server.
+	// Metrics server failures are logged but do NOT terminate the service.
+	g.Go(func() error {
+		slog.Info("Starting metrics server", "port", portInt)
+
+		if err := srv.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
+		}
+
+		return nil
+	})
+
+	g.Go(func() error {
+		return reconciler.Start(gCtx)
+	})
+
+	// Wait for both goroutines to finish
+	return g.Wait()
 }
 
 func main() {
-	// Initialize klog flags to allow command-line control (e.g., -v=3)
-	klog.InitFlags(nil)
+	logger.SetDefaultStructuredLogger("fault-remediation-module", version)
+	slog.Info("Starting fault-remediation-module", "version", version, "commit", commit, "date", date)
 
 	if err := run(); err != nil {
-		klog.ErrorS(err, "Fatal error")
-		klog.Flush()
-		//nolint:gocritic // exitAfterDefer: klog.Flush() is explicitly called before os.Exit()
+		slog.Error("Fatal error", "error", err)
 		os.Exit(1)
 	}
-
-	klog.Flush()
 }
 
 func getEnvAsInt(name string, defaultValue int) (int, error) {

@@ -17,26 +17,26 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
+	"time"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	srv "github.com/nvidia/nvsentinel/commons/pkg/server"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/kubernetes"
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/connectors/store"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-
-	"k8s.io/apimachinery/pkg/util/json"
-
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/ringbuffer"
-	"k8s.io/klog/v2"
-	"k8s.io/klog/v2/textlogger"
-
-	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
-
 	"github.com/nvidia/nvsentinel/platform-connectors/pkg/server"
+	"golang.org/x/sync/errgroup"
+
 	"google.golang.org/grpc"
+	"k8s.io/apimachinery/pkg/util/json"
 )
 
 const (
@@ -50,32 +50,178 @@ var (
 	date    = "unknown"
 )
 
-//nolint:cyclop
 func main() {
-	// Initialize klog flags to allow command-line control (e.g., -v=3)
-	klog.InitFlags(nil)
+	logger.SetDefaultStructuredLogger("platform-connectors", version)
+	slog.Info("Starting platform-connectors", "version", version, "commit", commit, "date", date)
 
+	if err := run(); err != nil {
+		slog.Error("Platform connectors exited with error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func loadConfig(configFilePath string) (map[string]interface{}, error) {
+	data, err := os.ReadFile(configFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read platform-connector-configmap with err %w", err)
+	}
+
+	result := make(map[string]interface{})
+
+	err = json.Unmarshal(data, &result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal platform-connector-configmap with err %w", err)
+	}
+
+	return result, nil
+}
+
+func initializeK8sConnector(
+	ctx context.Context,
+	config map[string]interface{},
+	stopCh chan struct{},
+) (*ringbuffer.RingBuffer, error) {
+	k8sRingBuffer := ringbuffer.NewRingBuffer("kubernetes", ctx)
+	server.InitializeAndAttachRingBufferForConnectors(k8sRingBuffer)
+
+	qpsTemp, ok := config["K8sConnectorQps"].(float64)
+	if !ok {
+		return nil, fmt.Errorf("failed to convert K8sConnectorQps to float: %v", config["K8sConnectorQps"])
+	}
+
+	qps := float32(qpsTemp)
+
+	burst, ok := config["K8sConnectorBurst"].(int64)
+	if !ok {
+		return nil, fmt.Errorf("failed to convert K8sConnectorBurst to int: %v", config["K8sConnectorBurst"])
+	}
+
+	k8sConnector, err := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst), stopCh)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize K8sConnector: %w", err)
+	}
+
+	go k8sConnector.FetchAndProcessHealthMetric(ctx)
+
+	return k8sRingBuffer, nil
+}
+
+func initializeMongoDBConnector(
+	ctx context.Context,
+	mongoClientCertMountPath string,
+) (*store.MongoDbStoreConnector, error) {
+	ringBuffer := ringbuffer.NewRingBuffer("mongodbStore", ctx)
+	server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
+
+	storeConnector, err := store.InitializeMongoDbStoreConnector(ctx, ringBuffer, mongoClientCertMountPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize MongoDB store connector: %w", err)
+	}
+
+	go storeConnector.FetchAndProcessHealthMetric(ctx)
+
+	return storeConnector, nil
+}
+
+func startGRPCServer(socket string) (net.Listener, error) {
+	err := os.Remove(socket)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to remove existing socket: %w", err)
+	}
+
+	lis, err := net.Listen("unix", socket)
+	if err != nil {
+		return nil, fmt.Errorf("failed to listen on unix socket %s: %w", socket, err)
+	}
+
+	var opts []grpc.ServerOption
+	grpcServer := grpc.NewServer(opts...)
+	pb.RegisterPlatformConnectorServer(grpcServer, &server.PlatformConnectorServer{})
+
+	go func() {
+		err = grpcServer.Serve(lis)
+		if err != nil {
+			slog.Error("Not able to accept incoming connections", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	return lis, nil
+}
+
+func initializeConnectors(
+	ctx context.Context,
+	config map[string]interface{},
+	stopCh chan struct{},
+	mongoClientCertMountPath string,
+) (*ringbuffer.RingBuffer, *store.MongoDbStoreConnector, error) {
+	var (
+		k8sRingBuffer  *ringbuffer.RingBuffer
+		storeConnector *store.MongoDbStoreConnector
+		err            error
+	)
+
+	if config["enableK8sPlatformConnector"] == True {
+		k8sRingBuffer, err = initializeK8sConnector(ctx, config, stopCh)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize K8s connector: %w", err)
+		}
+	}
+
+	if config["enableMongoDBStorePlatformConnector"] == True {
+		storeConnector, err = initializeMongoDBConnector(ctx, mongoClientCertMountPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize MongoDB store connector: %w", err)
+		}
+	}
+
+	return k8sRingBuffer, storeConnector, nil
+}
+
+func cleanupResources(
+	socket string,
+	lis net.Listener,
+	k8sRingBuffer *ringbuffer.RingBuffer,
+	storeConnector *store.MongoDbStoreConnector,
+) error {
+	if lis != nil {
+		if k8sRingBuffer != nil {
+			k8sRingBuffer.ShutDownHealthMetricQueue()
+		}
+
+		if err := lis.Close(); err != nil {
+			slog.Error("Failed to close listener", "error", err)
+		}
+
+		// Remove the socket file
+		if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
+			slog.Error("Failed to remove socket file", "error", err)
+		}
+	}
+
+	if storeConnector != nil {
+		disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer disconnectCancel()
+
+		if err := storeConnector.Disconnect(disconnectCtx); err != nil {
+			return fmt.Errorf("error disconnecting MongoDB store connector: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func run() error {
 	socket := flag.String("socket", "", "unix socket path")
 	configFilePath := flag.String("config", "/etc/config/config.json", "path to the config file")
-
-	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
-
-	var mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
+	metricsPort := flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+	mongoClientCertMountPath := flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
 		"path where the mongodb client cert is mounted")
 
 	flag.Parse()
 
-	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
-		"version", version,
-		"module", "platform-connectors",
-	)
-
-	klog.SetLogger(logger)
-	klog.InfoS("Starting platform-connectors", "version", version, "commit", commit, "date", date)
-	defer klog.Flush()
-
 	if *socket == "" {
-		klog.Fatalf("socket is not present")
+		return fmt.Errorf("socket is not present")
 	}
 
 	sigs := make(chan os.Signal, 1)
@@ -84,99 +230,81 @@ func main() {
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
 
-	data, err := os.ReadFile(*configFilePath)
+	defer cancel()
+
+	config, err := loadConfig(*configFilePath)
 	if err != nil {
-		klog.Fatalf("Failed to read platform-connector-configmap with err %s", err)
+		return err
 	}
 
-	result := make(map[string]interface{})
-
-	err = json.Unmarshal(data, &result)
+	k8sRingBuffer, storeConnector, err := initializeConnectors(ctx, config, stopCh, *mongoClientCertMountPath)
 	if err != nil {
-		klog.Fatalf("Failed to unmarshal the configmap data with error %s", err)
+		return err
 	}
 
-	enableK8sPlatformConnector := result["enableK8sPlatformConnector"]
-	enableMongoDBStorePlatformConnector := result["enableMongoDBStorePlatformConnector"]
-
-	var k8sRingBuffer *ringbuffer.RingBuffer
-	k8sRingBuffer = nil
-
-	if enableK8sPlatformConnector == True {
-		k8sRingBuffer = ringbuffer.NewRingBuffer("kubernetes", ctx)
-		server.InitializeAndAttachRingBufferForConnectors(k8sRingBuffer)
-
-		qpsTemp, ok := result["K8sConnectorQps"].(float64)
-		if !ok {
-			klog.Fatalf("failed to convert K8sConnectorQps to float: %v", result["K8sConnectorQps"])
-		}
-
-		qps := float32(qpsTemp)
-
-		burst, ok := result["K8sConnectorBurst"].(int64)
-		if !ok {
-			klog.Fatalf("failed to convert K8sConnectorBurst to int: %v", result["K8sConnectorBurst"])
-		}
-
-		k8sConnector := kubernetes.InitializeK8sConnector(ctx, k8sRingBuffer, qps, int(burst), stopCh)
-
-		go k8sConnector.FetchAndProcessHealthMetric(ctx)
-	}
-
-	if enableMongoDBStorePlatformConnector == True {
-		ringBuffer := ringbuffer.NewRingBuffer("mongodbStore", ctx)
-		server.InitializeAndAttachRingBufferForConnectors(ringBuffer)
-		storeConnector := store.InitializeMongoDbStoreConnector(ctx, ringBuffer, *mongoClientCertMountPath)
-
-		go storeConnector.FetchAndProcessHealthMetric(ctx)
-	}
-
-	err = os.Remove(*socket)
-	if err != nil && !os.IsNotExist(err) {
-		klog.Fatalf("failed to remove existing socket with error %s", err)
-	}
-
-	lis, err := net.Listen("unix", *socket)
+	lis, err := startGRPCServer(*socket)
 	if err != nil {
-		klog.Fatalf("Error creating platform-connector unixsocket %s", err)
+		return err
 	}
 
-	var opts []grpc.ServerOption
-	grpcServer := grpc.NewServer(opts...)
-
-	pb.RegisterPlatformConnectorServer(grpcServer, &server.PlatformConnectorServer{})
-
-	go func() {
-		err = grpcServer.Serve(lis)
-		if err != nil {
-			klog.Fatalf("Not able to accept incoming connections. Error is %s", err)
-		}
-	}()
-
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
-		err := http.ListenAndServe(":"+*metricsPort, nil)
-		if err != nil {
-			klog.Fatalf("Failed to start metrics server: %v", err)
-		}
-	}()
-
-	klog.Infof("Waiting for signal")
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-sigs
-	klog.Infof("Received signal %v", sig)
-
-	close(stopCh)
-
-	if lis != nil {
-		if k8sRingBuffer != nil {
-			k8sRingBuffer.ShutDownHealthMetricQueue()
-		}
-
-		lis.Close()
-		os.Remove(*socket)
+	// Parse the metrics port
+	portInt, err := strconv.Atoi(*metricsPort)
+	if err != nil {
+		return fmt.Errorf("invalid metrics port: %w", err)
 	}
 
-	cancel()
+	// Create server
+	srv := srv.NewServer(
+		srv.WithPort(portInt),
+		srv.WithPrometheusMetrics(),
+		srv.WithSimpleHealth(),
+	)
+
+	// Start server in errgroup alongside the store and k8s connectors
+	g, gCtx := errgroup.WithContext(ctx)
+
+	// Start the metrics/health server.
+	// Metrics server failures are logged but do NOT terminate the service.
+	g.Go(func() error {
+		slog.Info("Starting metrics server", "port", portInt)
+
+		if err := srv.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
+		}
+
+		return nil
+	})
+
+	g.Go(func() error {
+		slog.Info("Waiting for SIGINT/SIGTERM or context cancellation")
+		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+		defer func() {
+			// Always stop signal delivery and close channel to avoid leaks.
+			signal.Stop(sigs)
+			close(sigs)
+		}()
+
+		select {
+		case sig := <-sigs:
+			slog.Info("Received signal", "signal", sig)
+		case <-gCtx.Done():
+			slog.Info("Context cancelled, initiating shutdown")
+		}
+
+		close(stopCh)
+
+		// Cleanup all resources
+		if err := cleanupResources(*socket, lis, k8sRingBuffer, storeConnector); err != nil {
+			return err
+		}
+
+		// Also cancel the root to propagate shutdown to any other goroutines.
+		cancel()
+
+		return nil
+	})
+
+	// Wait for both goroutines to finish
+	return g.Wait()
 }

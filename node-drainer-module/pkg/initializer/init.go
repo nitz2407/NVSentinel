@@ -17,7 +17,7 @@ package initializer
 import (
 	"context"
 	"fmt"
-	"net/http"
+	"log/slog"
 	"time"
 
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/config"
@@ -27,11 +27,10 @@ import (
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/reconciler"
 	"github.com/nvidia/nvsentinel/statemanager"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"go.mongodb.org/mongo-driver/mongo"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/klog/v2"
 )
 
 type InitializationParams struct {
@@ -48,31 +47,8 @@ type Components struct {
 	QueueManager queue.EventQueueManager
 }
 
-func StartMetricsServer(port string) error {
-	klog.Infof("Starting a metrics port on : %s", port)
-
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
-
-	server := &http.Server{
-		Addr:         ":" + port,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-	}
-
-	go func() {
-		err := server.ListenAndServe()
-		if err != nil && err != http.ErrServerClosed {
-			klog.Errorf("Metrics server error: %v", err)
-		}
-	}()
-
-	return nil
-}
-
 func InitializeAll(ctx context.Context, params InitializationParams) (*Components, error) {
-	klog.Info("Starting node drainer initialization")
+	slog.Info("Starting node drainer initialization")
 
 	envConfig, err := config.LoadEnvConfig()
 	if err != nil {
@@ -89,7 +65,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 	}
 
 	if params.DryRun {
-		klog.Info("Running in dry-run mode")
+		slog.Info("Running in dry-run mode")
 	}
 
 	clientSet, err := initializeKubernetesClient(params.KubeconfigPath)
@@ -97,7 +73,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		return nil, fmt.Errorf("error while initializing kubernetes client: %w", err)
 	}
 
-	klog.Info("Successfully initialized kubernetes client")
+	slog.Info("Successfully initialized kubernetes client")
 
 	informersInstance, err := initializeInformers(clientSet, &tomlCfg.NotReadyTimeoutMinutes, params.DryRun)
 	if err != nil {
@@ -124,7 +100,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 		collection,
 	)
 
-	klog.Info("Initialization completed successfully")
+	slog.Info("Initialization completed successfully")
 
 	return &Components{
 		Informers:    informersInstance,

@@ -18,23 +18,24 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"net/http"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
+	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 	config "github.com/nvidia/nvsentinel/health-events-analyzer/pkg/config"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/publisher"
 	"github.com/nvidia/nvsentinel/health-events-analyzer/pkg/reconciler"
-	pb "github.com/nvidia/nvsentinel/platform-connectors/pkg/protos"
 	"github.com/nvidia/nvsentinel/store-client-sdk/pkg/storewatcher"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/sync/errgroup"
+
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"k8s.io/klog/v2"
-	"k8s.io/klog/v2/textlogger"
 )
 
 var (
@@ -44,98 +45,88 @@ var (
 	date    = "unknown"
 )
 
-//nolint:cyclop // todo
 func main() {
-	// Initialize klog flags to allow command-line control (e.g., -v=3)
-	klog.InitFlags(nil)
+	logger.SetDefaultStructuredLogger("health-events-analyzer", version)
+	slog.Info("Starting health-events-analyzer", "version", version, "commit", commit, "date", date)
 
-	ctx := context.Background()
+	if err := run(); err != nil {
+		slog.Error("Fatal error", "error", err)
+		os.Exit(1)
+	}
+}
 
-	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
-
-	var socket = flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
-
-	var mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
-		"path where the mongodb client cert is mounted")
-
-	flag.Parse()
-
-	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
-		"version", version,
-		"module", "health-events-analyzer",
-	)
-
-	klog.SetLogger(logger)
-	klog.InfoS("Starting health-events-analyzer", "version", version, "commit", commit, "date", date)
-	defer klog.Flush()
-
+func loadMongoConfig(mongoClientCertMountPath string) (storewatcher.MongoDBConfig, error) {
 	mongoURI := os.Getenv("MONGODB_URI")
 	if mongoURI == "" {
-		klog.Fatalf("MongoDB URI is not provided")
+		return storewatcher.MongoDBConfig{}, fmt.Errorf("MONGODB_URI is not set")
 	}
 
 	mongoDatabase := os.Getenv("MONGODB_DATABASE_NAME")
 	if mongoDatabase == "" {
-		klog.Fatalf("MongoDB Database name is not provided")
+		return storewatcher.MongoDBConfig{}, fmt.Errorf("MONGODB_DATABASE_NAME is not set")
 	}
 
 	mongoCollection := os.Getenv("MONGODB_COLLECTION_NAME")
 	if mongoCollection == "" {
-		klog.Fatalf("MongoDB collection name is not provided")
-	}
-
-	tokenDatabase := os.Getenv("MONGODB_DATABASE_NAME")
-	if tokenDatabase == "" {
-		klog.Fatalf("MongoDB token database name is not provided")
-	}
-
-	tokenCollection := os.Getenv("MONGODB_TOKEN_COLLECTION_NAME")
-	if tokenCollection == "" {
-		klog.Fatalf("MongoDB token collection name is not provided")
+		return storewatcher.MongoDBConfig{}, fmt.Errorf("MONGODB_COLLECTION_NAME is not set")
 	}
 
 	totalTimeoutSeconds, err := getEnvAsInt("MONGODB_PING_TIMEOUT_TOTAL_SECONDS", 300)
 	if err != nil {
-		klog.Fatalf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %v", err)
+		return storewatcher.MongoDBConfig{}, fmt.Errorf("invalid MONGODB_PING_TIMEOUT_TOTAL_SECONDS: %w", err)
 	}
 
 	intervalSeconds, err := getEnvAsInt("MONGODB_PING_INTERVAL_SECONDS", 5)
 	if err != nil {
-		klog.Fatalf("invalid MONGODB_PING_INTERVAL_SECONDS: %v", err)
+		return storewatcher.MongoDBConfig{}, fmt.Errorf("invalid MONGODB_PING_INTERVAL_SECONDS: %w", err)
 	}
 
 	totalCACertTimeoutSeconds, err := getEnvAsInt("CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS", 360)
 	if err != nil {
-		klog.Fatalf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %v", err)
+		return storewatcher.MongoDBConfig{}, fmt.Errorf("invalid CA_CERT_MOUNT_TIMEOUT_TOTAL_SECONDS: %w", err)
 	}
 
 	intervalCACertSeconds, err := getEnvAsInt("CA_CERT_READ_INTERVAL_SECONDS", 5)
 	if err != nil {
-		klog.Fatalf("invalid CA_CERT_READ_INTERVAL_SECONDS: %v", err)
+		return storewatcher.MongoDBConfig{}, fmt.Errorf("invalid CA_CERT_READ_INTERVAL_SECONDS: %w", err)
 	}
 
-	mongoConfig := storewatcher.MongoDBConfig{
+	return storewatcher.MongoDBConfig{
 		URI:        mongoURI,
 		Database:   mongoDatabase,
 		Collection: mongoCollection,
 		ClientTLSCertConfig: storewatcher.MongoDBClientTLSCertConfig{
-			TlsCertPath: filepath.Join(*mongoClientCertMountPath, "tls.crt"),
-			TlsKeyPath:  filepath.Join(*mongoClientCertMountPath, "tls.key"),
-			CaCertPath:  filepath.Join(*mongoClientCertMountPath, "ca.crt"),
+			TlsCertPath: filepath.Join(mongoClientCertMountPath, "tls.crt"),
+			TlsKeyPath:  filepath.Join(mongoClientCertMountPath, "tls.key"),
+			CaCertPath:  filepath.Join(mongoClientCertMountPath, "ca.crt"),
 		},
 		TotalPingTimeoutSeconds:    totalTimeoutSeconds,
 		TotalPingIntervalSeconds:   intervalSeconds,
 		TotalCACertTimeoutSeconds:  totalCACertTimeoutSeconds,
 		TotalCACertIntervalSeconds: intervalCACertSeconds,
+	}, nil
+}
+
+func loadTokenConfig() (storewatcher.TokenConfig, error) {
+	tokenDatabase := os.Getenv("MONGODB_DATABASE_NAME")
+	if tokenDatabase == "" {
+		return storewatcher.TokenConfig{}, fmt.Errorf("MONGODB_DATABASE_NAME is not set")
 	}
 
-	tokenConfig := storewatcher.TokenConfig{
+	tokenCollection := os.Getenv("MONGODB_TOKEN_COLLECTION_NAME")
+	if tokenCollection == "" {
+		return storewatcher.TokenConfig{}, fmt.Errorf("MONGODB_TOKEN_COLLECTION_NAME is not set")
+	}
+
+	return storewatcher.TokenConfig{
 		ClientName:      "health-events-analyzer",
 		TokenDatabase:   tokenDatabase,
 		TokenCollection: tokenCollection,
-	}
+	}, nil
+}
 
-	pipeline := mongo.Pipeline{
+func createPipeline() mongo.Pipeline {
+	return mongo.Pipeline{
 		bson.D{
 			{Key: "$match", Value: bson.D{
 				{Key: "operationType", Value: "insert"},
@@ -144,23 +135,55 @@ func main() {
 			}},
 		},
 	}
+}
 
-	var opts []grpc.DialOption
-	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+func connectToPlatform(socket string) (*publisher.PublisherConfig, *grpc.ClientConn, error) {
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 
-	conn, err := grpc.NewClient(*socket, opts...)
+	conn, err := grpc.NewClient(socket, opts...)
 	if err != nil {
-		panic(err)
+		return nil, nil, fmt.Errorf("failed to dial platform connector UDS %s: %w", socket, err)
 	}
-	defer conn.Close()
 
 	platformConnectorClient := pb.NewPlatformConnectorClient(conn)
-	publisher := publisher.NewPublisher(platformConnectorClient)
+	pub := publisher.NewPublisher(platformConnectorClient)
+
+	return pub, conn, nil
+}
+
+func run() error {
+	ctx := context.Background()
+
+	metricsPort := flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+	socket := flag.String("socket", "unix:///var/run/nvsentinel.sock", "unix domain socket")
+
+	mongoClientCertMountPath := flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
+		"path where the mongodb client cert is mounted")
+
+	flag.Parse()
+
+	mongoConfig, err := loadMongoConfig(*mongoClientCertMountPath)
+	if err != nil {
+		return err
+	}
+
+	tokenConfig, err := loadTokenConfig()
+	if err != nil {
+		return err
+	}
+
+	pipeline := createPipeline()
+
+	pub, conn, err := connectToPlatform(*socket)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
 
 	// Parse the TOML content
 	tomlConfig, err := config.LoadTomlConfig("/etc/config/config.toml")
 	if err != nil {
-		klog.Fatalf("Failed to load config file: %v", err)
+		return fmt.Errorf("error loading TOML config: %w", err)
 	}
 
 	reconcilerCfg := reconciler.HealthEventsAnalyzerReconcilerConfig{
@@ -168,21 +191,45 @@ func main() {
 		TokenConfig:                      tokenConfig,
 		MongoPipeline:                    pipeline,
 		HealthEventsAnalyzerRules:        tomlConfig,
-		Publisher:                        publisher,
+		Publisher:                        pub,
 	}
 
-	reconciler := reconciler.NewReconciler(reconcilerCfg)
+	rec := reconciler.NewReconciler(reconcilerCfg)
 
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		//nolint:gosec // G114: Ignoring the use of http.ListenAndServe without timeouts
-		err := http.ListenAndServe(":"+*metricsPort, nil)
-		if err != nil {
-			klog.Fatalf("Failed to start metrics server: %v", err)
+	// Parse the metrics port
+	portInt, err := strconv.Atoi(*metricsPort)
+	if err != nil {
+		return fmt.Errorf("invalid metrics port: %w", err)
+	}
+
+	// Create the server
+	srv := server.NewServer(
+		server.WithPort(portInt),
+		server.WithPrometheusMetrics(),
+		server.WithSimpleHealth(),
+	)
+
+	// Start server and reconciler concurrently
+	g, gCtx := errgroup.WithContext(ctx)
+
+	// Start the metrics/health server.
+	// Metrics server failures are logged but do NOT terminate the service.
+	g.Go(func() error {
+		slog.Info("Starting metrics server", "port", portInt)
+
+		if err := srv.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
 		}
-	}()
 
-	reconciler.Start(ctx)
+		return nil
+	})
+
+	g.Go(func() error {
+		return rec.Start(gCtx)
+	})
+
+	// Wait for both goroutines to finish
+	return g.Wait()
 }
 
 func getEnvAsInt(name string, defaultValue int) (int, error) {

@@ -17,12 +17,17 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"log/slog"
+	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/logger"
+	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	"github.com/nvidia/nvsentinel/node-drainer-module/pkg/initializer"
-	"k8s.io/klog/v2"
-	"k8s.io/klog/v2/textlogger"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -33,36 +38,34 @@ var (
 )
 
 func main() {
-	// Initialize klog flags to allow command-line control (e.g., -v=3)
-	klog.InitFlags(nil)
+	logger.SetDefaultStructuredLogger("node-drainer-module", version)
+	slog.Info("Starting node-drainer-module", "version", version, "commit", commit, "date", date)
 
+	if err := run(); err != nil {
+		slog.Error("Node drainer module exited with error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	var metricsPort = flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
+	metricsPort := flag.String("metrics-port", "2112", "port to expose Prometheus metrics on")
 
-	var mongoClientCertMountPath = flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
+	mongoClientCertMountPath := flag.String("mongo-client-cert-mount-path", "/etc/ssl/mongo-client",
 		"path where the mongodb client cert is mounted")
 
-	var kubeconfigPath = flag.String("kubeconfig-path", "", "path to kubeconfig file")
+	kubeconfigPath := flag.String("kubeconfig-path", "", "path to kubeconfig file")
 
-	var tomlConfigPath = flag.String("config-path", "/etc/config/config.toml",
+	tomlConfigPath := flag.String("config-path", "/etc/config/config.toml",
 		"path where the node drainer config file is present")
 
-	var dryRun = flag.Bool("dry-run", false, "flag to run node drainer module in dry-run mode")
+	dryRun := flag.Bool("dry-run", false, "flag to run node drainer module in dry-run mode")
 
 	flag.Parse()
 
-	logger := textlogger.NewLogger(textlogger.NewConfig()).WithValues(
-		"version", version,
-		"module", "node-drainer-module",
-	)
-
-	klog.SetLogger(logger)
-	klog.InfoS("Starting node-drainer-module", "version", version, "commit", commit, "date", date)
-	defer klog.Flush()
-
-	klog.Infof("Mongo client cert path: %s", *mongoClientCertMountPath)
+	slog.Info("Mongo client cert", "path", *mongoClientCertMountPath)
 
 	params := initializer.InitializationParams{
 		MongoClientCertMountPath: *mongoClientCertMountPath,
@@ -74,53 +77,98 @@ func main() {
 
 	components, err := initializer.InitializeAll(ctx, params)
 	if err != nil {
-		klog.Fatalf("Initialization failed: %v", err)
+		return fmt.Errorf("failed to initialize components: %w", err)
 	}
 
 	// Informers must sync before processing events
-	klog.Info("Starting Kubernetes informers")
+	slog.Info("Starting Kubernetes informers")
 
 	if err := components.Informers.Run(ctx); err != nil {
-		klog.Fatalf("Failed to start informers: %v", err)
+		return fmt.Errorf("failed to start informers: %w", err)
 	}
 
-	klog.Info("Kubernetes informers started and synced")
+	slog.Info("Kubernetes informers started and synced")
 
-	klog.Info("Starting queue worker")
+	slog.Info("Starting queue worker")
 	components.QueueManager.Start(ctx)
 
-	klog.Info("Starting MongoDB event watcher")
+	slog.Info("Starting MongoDB event watcher")
 
 	criticalError := make(chan error)
 
 	go func() {
 		if err := components.EventWatcher.Start(ctx); err != nil {
-			klog.Errorf("Event watcher failed: %v", err)
-
+			slog.Error("Event watcher failed", "error", err)
 			criticalError <- err
 		}
 	}()
 
-	klog.Info("All components started successfully")
+	slog.Info("All components started successfully")
 
-	if err := initializer.StartMetricsServer(*metricsPort); err != nil {
-		klog.Errorf("Failed to start metrics server: %v", err)
+	// Parse the metrics port
+	portInt, err := strconv.Atoi(*metricsPort)
+	if err != nil {
+		return fmt.Errorf("invalid metrics port: %w", err)
 	}
 
-	select {
-	case <-ctx.Done():
-	case err := <-criticalError:
-		klog.Errorf("Critical component failure: %v", err)
-		stop() // Cancel context to trigger shutdown
-	}
+	// Create the server
+	srv := server.NewServer(
+		server.WithPort(portInt),
+		server.WithPrometheusMetrics(),
+		server.WithSimpleHealth(),
+	)
 
-	klog.Info("Shutting down node drainer")
+	// Start server in errgroup alongside event watcher monitoring
+	g, gCtx := errgroup.WithContext(ctx)
 
-	if err := components.EventWatcher.Stop(); err != nil {
-		klog.Errorf("Failed to stop event watcher: %v", err)
-	}
+	// Start the metrics/health server.
+	// Metrics server failures are logged but do NOT terminate the service.
+	g.Go(func() error {
+		slog.Info("Starting metrics server", "port", portInt)
 
-	components.QueueManager.Shutdown()
+		if err := srv.Serve(gCtx); err != nil {
+			slog.Error("Metrics server failed - continuing without metrics", "error", err)
+		}
 
-	klog.Info("Node drainer stopped")
+		return nil
+	})
+
+	// Monitor for critical errors or graceful shutdown signals.
+	g.Go(func() error {
+		select {
+		case <-gCtx.Done():
+			// Context was cancelled (SIGTERM/SIGINT or another goroutine failed)
+			slog.Info("Context cancelled, initiating shutdown")
+		case err := <-criticalError:
+			// Critical component (event watcher) failed
+			slog.Error("Critical component failure", "error", err)
+			stop() // Cancel context to trigger shutdown of other components
+
+			slog.Info("Shutting down node drainer")
+
+			if errStop := components.EventWatcher.Stop(); errStop != nil {
+				return fmt.Errorf("failed to stop event watcher: %w", errStop)
+			}
+
+			components.QueueManager.Shutdown()
+			slog.Info("Node drainer stopped")
+
+			return fmt.Errorf("critical component failure: %w", err)
+		}
+
+		// Normal shutdown path (context cancelled without critical error)
+		slog.Info("Shutting down node drainer")
+
+		if errStop := components.EventWatcher.Stop(); errStop != nil {
+			return fmt.Errorf("failed to stop event watcher: %w", errStop)
+		}
+
+		components.QueueManager.Shutdown()
+		slog.Info("Node drainer stopped")
+
+		return nil
+	})
+
+	// Wait for both goroutines to finish
+	return g.Wait()
 }

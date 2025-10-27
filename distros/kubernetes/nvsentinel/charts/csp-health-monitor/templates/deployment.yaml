@@ -53,14 +53,13 @@ spec:
           type: DirectoryOrCreate
       containers:
         - name: {{ .Chart.Name }}
-          image: "{{ ((.Values.global).cspHealthMonitor).image.repository | default "ghcr.io/nvidia/nvsentinel-csp-health-monitor" }}:{{ ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          image: "{{ ((.Values.global).cspHealthMonitor).image.repository | default "ghcr.io/nvidia/nvsentinel/csp-health-monitor" }}:{{ ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ ((.Values.global).cspHealthMonitor).image.pullPolicy | default "IfNotPresent" }}
           command: ["/app/csp-health-monitor"]
           args:
           - "--config=/etc/config/config.toml"
           - "--metrics-port={{ ((.Values.global).metricsPort) | default 2112 }}"
           - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
-          - "-v={{ .Values.logLevel }}"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           ports:
@@ -73,13 +72,16 @@ spec:
           - name: mongo-app-client-cert
             mountPath: {{ .Values.clientCertMountPath }}
             readOnly: true
+          env:
+            - name: LOG_LEVEL
+              value: "{{ .Values.logLevel }}"
           envFrom:
             - configMapRef:
                 name: mongodb-config
                 optional: true
 
         - name: maintenance-notifier
-          image: "{{ ((.Values.global).cspHealthMonitor).image.repository | default "ghcr.io/nvidia/nvsentinel-csp-health-monitor" }}:{{ ((.Values.global).image).tag | default .Chart.AppVersion }}"
+          image: "{{ ((.Values.global).cspHealthMonitor).image.repository | default "ghcr.io/nvidia/nvsentinel/csp-health-monitor" }}:{{ ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ ((.Values.global).cspHealthMonitor).image.pullPolicy | default "IfNotPresent" }}
           securityContext:
             runAsUser: 0
@@ -89,7 +91,6 @@ spec:
           - "--mongo-client-cert-mount-path={{ .Values.clientCertMountPath }}"
           - "--uds-path={{ .Values.udsPath }}"
           - "--metrics-port={{ .Values.quarantineTriggerEngine.metricsPort }}"
-          - "-v={{ .Values.quarantineTriggerEngine.logLevel | default .Values.logLevel }}"
           resources:
             {{- toYaml .Values.quarantineTriggerEngine.resources | default .Values.resources | nindent 12 }}
           ports:
@@ -104,6 +105,9 @@ spec:
             readOnly: true
           - name: platform-connector-uds
             mountPath: /run/nvsentinel
+          env:
+            - name: LOG_LEVEL
+              value: "{{ .Values.quarantineTriggerEngine.logLevel | default .Values.logLevel }}"
           envFrom:
             - configMapRef:
                 name: mongodb-config
