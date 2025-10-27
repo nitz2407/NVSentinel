@@ -119,7 +119,8 @@ k8s_resource(
         'selfsigned-ca-issuer:issuer',
         'mongo-server-cert-0:certificate',
         'mongo-app-client-cert:certificate',
-        'mongo-dgxcops-client-cert:certificate'
+        'mongo-dgxcops-client-cert:certificate',
+        'nvsentinel-janitor-webhook-cert:certificate'
     ],
     resource_deps=['cert-manager'],
 )
