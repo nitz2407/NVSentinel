@@ -19,16 +19,24 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+VERSIONS_FILE="${REPO_ROOT}/.versions.yaml"
+
+# Load versions from .versions.yaml
+KWOK_VERSION=$(yq eval '.testing_tools.kwok' "$VERSIONS_FILE")
+KWOK_CHART_VERSION=$(yq eval '.testing_tools.kwok_chart' "$VERSIONS_FILE")
+HELM_VERSION=$(yq eval '.testing_tools.helm' "$VERSIONS_FILE")
+PROMETHEUS_OPERATOR_VERSION=$(yq eval '.cluster.prometheus_operator' "$VERSIONS_FILE")
+GPU_OPERATOR_VERSION=$(yq eval '.cluster.gpu_operator' "$VERSIONS_FILE")
+CERT_MANAGER_VERSION=$(yq eval '.cluster.cert_manager' "$VERSIONS_FILE")
+
+# Configuration
 CLUSTER_NAME="${CLUSTER_NAME:-nvsentinel-uat}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
-CSP="${CSP:-aws}"
-
-PROMETHEUS_OPERATOR_VERSION="${PROMETHEUS_OPERATOR_VERSION:-78.5.0}"
-GPU_OPERATOR_VERSION="${GPU_OPERATOR_VERSION:-v25.10.0}"
-CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-1.19.1}"
+CSP="${CSP:-kind}"  # Default to kind for local development
 NVSENTINEL_VERSION="${NVSENTINEL_VERSION:-}"
+FAKE_GPU_NODE_COUNT="${FAKE_GPU_NODE_COUNT:-10}"
 
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 VALUES_DIR="${SCRIPT_DIR}/${CSP}"
 
 PROMETHEUS_VALUES="${VALUES_DIR}/prometheus-operator-values.yaml"
@@ -73,6 +81,53 @@ install_cert_manager() {
     log "cert-manager installed successfully ✓"
 }
 
+install_kwok() {
+    log "Installing KWOK (app version: $KWOK_VERSION, chart version: $KWOK_CHART_VERSION)..."
+    
+    helm repo add sigs-kwok https://kwok.sigs.k8s.io/charts/
+    helm repo update
+    
+    if ! helm upgrade --install kwok sigs-kwok/kwok \
+        --namespace kube-system \
+        --version "$KWOK_CHART_VERSION" \
+        --set hostNetwork=true \
+        --wait \
+        --timeout=5m; then
+        error "Failed to install KWOK"
+    fi
+    
+    log "KWOK controller installed successfully ✓"
+    
+    if ! helm upgrade --install kwok-stage-fast sigs-kwok/stage-fast \
+        --namespace kube-system \
+        --version "$KWOK_CHART_VERSION" \
+        --wait \
+        --timeout=5m; then
+        error "Failed to install KWOK stage-fast"
+    fi
+    
+    log "KWOK stage-fast installed successfully ✓"
+}
+
+create_fake_gpu_nodes() {
+    log "Creating $FAKE_GPU_NODE_COUNT fake GPU nodes..."
+    
+    local node_template="${VALUES_DIR}/kwok-node-template.yaml"
+    
+    if [[ ! -f "$node_template" ]]; then
+        error "KWOK node template not found at $node_template"
+    fi
+    
+    for i in $(seq 1 "$FAKE_GPU_NODE_COUNT"); do
+        if ! sed "s/kwok-node-PLACEHOLDER/kwok-gpu-node-${i}/g" "$node_template" | kubectl apply -f -; then
+            error "Failed to create fake GPU node kwok-gpu-node-${i}"
+        fi
+    done
+    
+    log "Fake GPU nodes created successfully ✓"
+    kubectl get nodes -l type=kwok
+}
+
 install_gpu_operator() {
     log "Installing NVIDIA GPU Operator (version $GPU_OPERATOR_VERSION)..."
     
@@ -104,6 +159,40 @@ wait_for_gpu_operator() {
     log "GPU Operator ClusterPolicy is ready ✓"
 }
 
+install_fake_gpu_stack() {
+    log "Installing fake GPU driver and DCGM for Kind..."
+    
+    kubectl create namespace gpu-operator --dry-run=client -o yaml | kubectl apply -f -
+    
+    if ! kubectl apply -f "${VALUES_DIR}/nvidia-driver-daemonset.yaml"; then
+        error "Failed to install fake GPU driver"
+    fi
+    
+    if ! kubectl apply -f "${VALUES_DIR}/nvidia-dcgm-daemonset.yaml"; then
+        error "Failed to install fake DCGM"
+    fi
+    
+    log "Fake GPU stack installed successfully ✓"
+}
+
+wait_for_fake_gpu_stack() {
+    log "Waiting for fake GPU daemonsets to be ready..."
+    
+    if ! kubectl rollout status daemonset/nvidia-driver-daemonset \
+        -n gpu-operator \
+        --timeout=5m; then
+        error "Fake GPU driver daemonset did not become ready"
+    fi
+    
+    if ! kubectl rollout status daemonset/nvidia-dcgm \
+        -n gpu-operator \
+        --timeout=5m; then
+        error "Fake DCGM daemonset did not become ready"
+    fi
+    
+    log "Fake GPU stack is ready ✓"
+}
+
 install_nvsentinel() {
     log "Installing NVSentinel (version: $NVSENTINEL_VERSION)..."
     
@@ -126,7 +215,7 @@ install_nvsentinel() {
         --create-namespace \
         --values "$NVSENTINEL_VALUES" \
         --set global.image.tag="$NVSENTINEL_VERSION" \
-        "${extra_set_args[@]}" \
+        "${extra_set_args[@]:-}" \
         --timeout 20m \
         --wait; then
         error "Failed to install NVSentinel"
@@ -137,11 +226,26 @@ install_nvsentinel() {
 
 main() {
     log "Starting application installation for NVSentinel UAT testing..."
+    log "Target CSP: $CSP (override with CSP=<aws|azure|gcp|kind|oci>)"
+    log "Versions from .versions.yaml:"
+    log "  - KWOK: $KWOK_VERSION (chart: $KWOK_CHART_VERSION)"
+    log "  - Prometheus Operator: $PROMETHEUS_OPERATOR_VERSION"
+    log "  - GPU Operator: $GPU_OPERATOR_VERSION"
+    log "  - cert-manager: $CERT_MANAGER_VERSION"
     
     install_prometheus_operator
     install_cert_manager
-    install_gpu_operator
-    wait_for_gpu_operator
+    
+    if [[ "$CSP" == "kind" ]]; then
+        install_kwok
+        create_fake_gpu_nodes
+        install_fake_gpu_stack
+        wait_for_fake_gpu_stack
+    else
+        install_gpu_operator
+        wait_for_gpu_operator
+    fi
+    
     install_nvsentinel
     
     log "All applications installed successfully ✓"
