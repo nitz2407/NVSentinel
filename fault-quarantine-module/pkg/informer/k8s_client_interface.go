@@ -12,28 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package reconciler
+package informer
 
 import (
 	"context"
 
+	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/breaker"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/config"
-	"k8s.io/client-go/kubernetes"
+	v1 "k8s.io/api/core/v1"
 )
 
 // K8sClientInterface defines the methods used by Reconciler from k8sClient
 type K8sClientInterface interface {
-	GetNodeAnnotations(ctx context.Context, nodeName string) (map[string]string, error)
-	GetNodesWithAnnotation(ctx context.Context, annotationKey string) ([]string, error)
-	TaintAndCordonNodeAndSetAnnotations(ctx context.Context, nodeName string,
+	QuarantineNodeAndSetAnnotations(ctx context.Context, nodeName string,
 		taints []config.Taint, isCordon bool, annotations map[string]string, labelMap map[string]string) error
-	UnTaintAndUnCordonNodeAndRemoveAnnotations(ctx context.Context, nodeName string,
-		taints []config.Taint, isUncordon bool, annotationKeys []string, labelsToRemove []string,
+	UnQuarantineNodeAndRemoveAnnotations(ctx context.Context, nodeName string,
+		taints []config.Taint, annotationKeys []string, labelsToRemove []string,
 		labelMap map[string]string) error
-	UpdateNodeAnnotations(ctx context.Context, nodeName string, annotations map[string]string) error
-	GetK8sClient() kubernetes.Interface
-	EnsureCircuitBreakerConfigMap(ctx context.Context, name, namespace string, initialStatus string) error
-	ReadCircuitBreakerState(ctx context.Context, name, namespace string) (string, error)
-	WriteCircuitBreakerState(ctx context.Context, name, namespace, status string) error
-	GetTotalGpuNodes(ctx context.Context) (int, error)
+	HandleManualUncordonCleanup(ctx context.Context, nodeName string, taintsToRemove []config.Taint,
+		annotationsToRemove []string, annotationsToAdd map[string]string, labelsToRemove []string) error
+	UpdateNode(ctx context.Context, nodeName string, updateFn func(*v1.Node) error) error
+	EnsureCircuitBreakerConfigMap(ctx context.Context, name, namespace string, initialStatus breaker.State) error
+	ReadCircuitBreakerState(ctx context.Context, name, namespace string) (breaker.State, error)
+	WriteCircuitBreakerState(ctx context.Context, name, namespace string, state breaker.State) error
+	GetTotalNodes(ctx context.Context) (int, error)
 }

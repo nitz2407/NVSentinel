@@ -15,21 +15,79 @@
 package evaluator
 
 import (
+	"context"
+	"log"
+	"os"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/informer"
-	"github.com/nvidia/nvsentinel/fault-quarantine-module/pkg/nodeinfo"
-	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
+
+var (
+	testClient *kubernetes.Clientset
+	testEnv    *envtest.Environment
+)
+
+func TestMain(m *testing.M) {
+	var err error
+
+	testEnv = &envtest.Environment{}
+
+	testRestConfig, err := testEnv.Start()
+	if err != nil {
+		log.Fatalf("Failed to start test environment: %v", err)
+	}
+
+	testClient, err = kubernetes.NewForConfig(testRestConfig)
+	if err != nil {
+		log.Fatalf("Failed to create kubernetes client: %v", err)
+	}
+
+	exitCode := m.Run()
+
+	if err := testEnv.Stop(); err != nil {
+		log.Fatalf("Failed to stop test environment: %v", err)
+	}
+	os.Exit(exitCode)
+}
+
+func createTestNode(ctx context.Context, t *testing.T, name string, labels map[string]string) {
+	t.Helper()
+
+	if labels == nil {
+		labels = make(map[string]string)
+	}
+
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   name,
+			Labels: labels,
+		},
+		Spec: corev1.NodeSpec{},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{
+				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+
+	_, err := testClient.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Failed to create test node %s: %v", name, err)
+	}
+}
 
 func TestEvaluate(t *testing.T) {
 	expression := "event.agent == 'GPU' && event.checkName == 'XidError' && ('31' in event.errorCode || '42' in event.errorCode)"
@@ -113,49 +171,35 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			nodeName := "test-node-" + primitive.NewObjectID().Hex()[:8]
 
-			// Create mock node object with labels from test case
-			node := &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "test-node",
-					Labels: tt.nodeLabels, // Keep original labels from test case
-				},
-				Spec: corev1.NodeSpec{},
-			}
+			createTestNode(ctx, t, nodeName, tt.nodeLabels)
+			defer func() {
+				_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+			}()
 
-			// Ensure the required label for the informer exists.
-			// The NodeInformer specifically looks for GpuNodeLabel ("nvidia.com/gpu.present").
-			if node.Labels == nil {
-				node.Labels = make(map[string]string)
-			}
-			// Add the label the informer expects, preserving existing labels
-			node.Labels[informer.GpuNodeLabel] = "true"
-
-			clientset := fake.NewSimpleClientset(node)
-			workSignal := make(chan struct{}, 1)
-			// Use 0 resync period for tests unless specific timing is needed
-			nodeInfo := nodeinfo.NewNodeInfo(workSignal)
-			nodeInformer, err := informer.NewNodeInformer(clientset, 0, workSignal, nodeInfo)
+			nodeInformer, err := informer.NewNodeInformer(testClient, 0)
 			if err != nil {
 				t.Fatalf("Failed to create NodeInformer: %v", err)
 			}
+
 			stopCh := make(chan struct{})
 			defer close(stopCh)
 
 			go nodeInformer.Run(stopCh)
 
-			// Wait for the cache to sync
-			if ok := cache.WaitForCacheSync(stopCh, nodeInformer.HasSynced); !ok {
-				t.Fatalf("failed to wait for caches to sync")
+			if ok := cache.WaitForCacheSync(stopCh, nodeInformer.GetInformer().HasSynced); !ok {
+				t.Fatalf("NodeInformer failed to sync")
 			}
-			// Create evaluator with mocked client
+
 			evaluator, err := NewNodeRuleEvaluator(tt.expression, nodeInformer.Lister())
 			if err != nil && !tt.expectError {
 				t.Fatalf("Failed to create NodeToSkipLabelRuleEvaluator: %v", err)
 			}
 			if evaluator != nil {
 				isEvaluated, err := evaluator.Evaluate(&protos.HealthEvent{
-					NodeName: "test-node",
+					NodeName: nodeName,
 				})
 				if (err != nil) != tt.expectError {
 					t.Errorf("Failed to evaluate expression: %s: %+v", tt.name, err)

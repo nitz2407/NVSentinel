@@ -1,4 +1,4 @@
-# Logger SDK Makefile
+# Commons Makefile
 # Individual module build and test targets
 
 # Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
@@ -40,8 +40,8 @@ all: lint-test ## Run lint-test (default target)
 # =============================================================================
 # MODULE NOTES
 # =============================================================================
-# This is a library module providing centralized logging initialization.
-# - Library module providing structured logging utilities
+# This is a library module providing common utilities for NVSentinel.
+# - Library module providing structured logging and configuration management
 # - No binary output or Docker builds
-# - Used by all nvsentinel modules for consistent logging setup
+# - Used by all nvsentinel modules for consistent logging and config loading
 # Run 'make help' to see available targets
