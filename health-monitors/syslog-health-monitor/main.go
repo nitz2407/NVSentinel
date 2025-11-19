@@ -51,7 +51,7 @@ var (
 	date    = "unknown"
 
 	// Command-line flags
-	checksList = flag.String("checks", "SysLogsXIDError,SysLogsSXIDError,SysLogsGPUFallenOff",
+	checksList = flag.String("checks", "SysLogsXIDError,SysLogsSXIDError,SysLogsGPUFallenOff,SysLogsGPUDriverError",
 		"Comma separated listed of checks to enable")
 	platformConnectorSocket = flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock",
 		"Path to the platform-connector UDS socket.")

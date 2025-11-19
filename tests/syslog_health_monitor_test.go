@@ -434,3 +434,123 @@ func TestSyslogHealthMonitorSXIDDetection(t *testing.T) {
 
 	testEnv.Test(t, feature.Feature())
 }
+
+// TestSyslogHealthMonitorGPUDriverErrorDetection tests GPU driver error detection
+func TestSyslogHealthMonitorGPUDriverErrorDetection(t *testing.T) {
+	feature := features.New("Syslog Health Monitor - GPU Driver Error Detection").
+		WithLabel("suite", "syslog-health-monitor").
+		WithLabel("component", "gpu-driver-error-detection")
+
+	var testNodeName string
+	var syslogPod *v1.Pod
+
+	feature.Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		syslogPod, err = helpers.GetPodOnWorkerNode(ctx, t, client, helpers.NVSentinelNamespace, "syslog-health-monitor")
+		require.NoError(t, err, "failed to find syslog health monitor pod")
+		require.NotNil(t, syslogPod, "syslog health monitor pod should exist")
+
+		testNodeName = syslogPod.Spec.NodeName
+		t.Logf("Using syslog health monitor pod: %s on node: %s", syslogPod.Name, testNodeName)
+
+		t.Logf("Setting up port-forward to pod %s on port %d", syslogPod.Name, stubJournalHTTPPort)
+		stopChan, readyChan := helpers.PortForwardPod(
+			ctx,
+			client.RESTConfig(),
+			syslogPod.Namespace,
+			syslogPod.Name,
+			stubJournalHTTPPort,
+			stubJournalHTTPPort,
+		)
+		<-readyChan
+		t.Log("Port-forward ready")
+
+		t.Logf("Setting ManagedByNVSentinel=false on node %s", testNodeName)
+		err = helpers.SetNodeManagedByNVSentinel(ctx, client, testNodeName, false)
+		require.NoError(t, err, "failed to set ManagedByNVSentinel label")
+
+		ctx = context.WithValue(ctx, keyNodeName, testNodeName)
+		ctx = context.WithValue(ctx, keySyslogPodName, syslogPod.Name)
+		ctx = context.WithValue(ctx, keyStopChan, stopChan)
+		return ctx
+	})
+
+	feature.Assess("Inject nvidia-modeset GPU driver errors and verify immediate detection", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client, err := c.NewClient()
+		require.NoError(t, err, "failed to create kubernetes client")
+
+		nodeName := ctx.Value(keyNodeName).(string)
+
+		// Inject nvidia-modeset driver errors for different GPUs
+		gpuDriverErrorMessages := []string{
+			"[3877811.229924] nvidia-modeset: ERROR: GPU:2: Error while waiting for GPU progress: 0x0000c77d:0 2:0:4048:4040",
+			"[3877816.230964] nvidia-modeset: ERROR: GPU:2: Error while waiting for GPU progress: 0x0000c77d:0 2:0:4048:4040",
+			"[5712009.640262] nvidia-modeset: ERROR: GPU:1: Error while waiting for GPU progress: 0x0000c77d:0 2:0:4048:4040",
+			"[5712014.641592] nvidia-modeset: ERROR: GPU:1: Error while waiting for GPU progress: 0x0000c77d:0 2:0:4048:4040",
+		}
+
+		// Expected patterns for node condition (all errors should be reported)
+		expectedConditionPatterns := []string{
+			`ErrorCode:GPU_DRIVER_ERROR GPU:2 GPU 2: nvidia-modeset driver error detected.*Error code: 0x0000c77d:0.*Details: 2:0:4048:4040.*nvidia-driver-daemonset and device-plugin daemonset may be crashing.*Original message:.*nvidia-modeset: ERROR: GPU:2.*Recommended Action=RESTART_BM`,
+			`ErrorCode:GPU_DRIVER_ERROR GPU:1 GPU 1: nvidia-modeset driver error detected.*Error code: 0x0000c77d:0.*Details: 2:0:4048:4040.*nvidia-driver-daemonset and device-plugin daemonset may be crashing.*Original message:.*nvidia-modeset: ERROR: GPU:1.*Recommended Action=RESTART_BM`,
+		}
+
+		helpers.InjectSyslogMessages(t, stubJournalHTTPPort, gpuDriverErrorMessages)
+
+		t.Log("Verifying node condition contains GPU driver errors")
+		require.Eventually(t, func() bool {
+			return helpers.VerifyNodeConditionMatchesSequence(t, ctx, client, nodeName,
+				"SysLogsGPUDriverError", "SysLogsGPUDriverErrorIsNotHealthy", expectedConditionPatterns)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "Node condition should contain GPU driver errors for GPU 1 and GPU 2")
+
+		t.Log("Verifying events contain GPU driver errors")
+		require.Eventually(t, func() bool {
+			// Should have events for both GPU 1 and GPU 2
+			return helpers.VerifyEventsMatchPatterns(t, ctx, client, nodeName,
+				"SysLogsGPUDriverError", "SysLogsGPUDriverErrorIsNotHealthy", expectedConditionPatterns)
+		}, helpers.EventuallyWaitTimeout, helpers.WaitInterval, "Events should contain GPU driver errors")
+
+		t.Log("Note: First errors for GPU 1 and GPU 2 were reported immediately (stateless - no threshold)")
+
+		return ctx
+	})
+
+	feature.Teardown(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		if stopChanVal := ctx.Value(keyStopChan); stopChanVal != nil {
+			t.Log("Stopping port-forward")
+			close(stopChanVal.(chan struct{}))
+		}
+
+		client, err := c.NewClient()
+		if err != nil {
+			t.Logf("Warning: failed to create client for teardown: %v", err)
+			return ctx
+		}
+
+		nodeNameVal := ctx.Value(keyNodeName)
+		if nodeNameVal == nil {
+			t.Log("Skipping teardown: nodeName not set (setup likely failed early)")
+			return ctx
+		}
+		nodeName := nodeNameVal.(string)
+
+		// Clear the condition by injecting healthy events or waiting for timeout
+		// Since this is a stateless handler, we need to wait for the condition to clear naturally
+		// or implement a clearing mechanism in the handler
+
+		t.Logf("Waiting for SysLogsGPUDriverError condition to clear (if applicable)")
+		// Note: The condition will clear when healthy events are received or after timeout
+
+		t.Logf("Removing ManagedByNVSentinel label from node %s", nodeName)
+		err = helpers.RemoveNodeManagedByNVSentinelLabel(ctx, client, nodeName)
+		if err != nil {
+			t.Logf("Warning: failed to remove label: %v", err)
+		}
+
+		return ctx
+	})
+
+	testEnv.Test(t, feature.Feature())
+}

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/gpudriver"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/gpufallen"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/sxid"
 	"github.com/nvidia/nvsentinel/health-monitors/syslog-health-monitor/pkg/types"
@@ -130,6 +131,16 @@ func NewSyslogMonitorWithFactory(
 			}
 
 			sm.checkToHandlerMap[check.Name] = gpuFallenHandler
+
+		case GPUDriverErrorCheck:
+			gpuDriverHandler, err := gpudriver.NewGPUDriverErrorHandler(
+				nodeName, defaultAgentName, defaultComponentClass, check.Name)
+			if err != nil {
+				slog.Error("Error initializing GPU Driver Error handler", "error", err.Error())
+				return nil, fmt.Errorf("failed to initialize GPU Driver Error handler: %w", err)
+			}
+
+			sm.checkToHandlerMap[check.Name] = gpuDriverHandler
 
 		default:
 			slog.Error("Unsupported check", "check", check.Name)
