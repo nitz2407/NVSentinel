@@ -1,0 +1,88 @@
+# kube-prometheus-stack values tuned for a KWOK-scale NVSentinel harness.
+#
+# Goals:
+#  - 15s scrape interval (Observability requirement O1/O3).
+#  - Headroom to scrape tens of thousands of fake nodes' cAdvisor/kubelet
+#    endpoints WITHOUT scraping every KWOK node (KWOK nodes expose no real
+#    kubelet, so node-exporter/kubelet scrape jobs are pointless and expensive).
+#  - Retain enough history to diff a >=24h SYS-1 run later.
+#
+# NOTE: sizing below assumes the 10 real 16 vCPU / 32 GB nodes from the
+# Constraints table. Adjust requests/limits to your sandbox.
+
+fullnameOverride: prometheus
+
+prometheus:
+  prometheusSpec:
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    retention: 15d
+    retentionSize: "40GB"
+    # Discover ServiceMonitors/PodMonitors in ALL namespaces regardless of
+    # helm-release labels, so NVSentinel + MongoDB + the harness are captured.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: "2"
+        memory: 8Gi
+      limits:
+        memory: 16Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 60Gi
+    # KWOK nodes have no running kubelet; scraping them wastes scrape budget and
+    # produces "down" targets. Keep only the real-node kubelet/cadvisor targets.
+    additionalScrapeConfigs: []
+
+# The KWOK fake nodes have no kubelet, so the node-exporter DaemonSet and
+# kubelet scrape jobs must be constrained to real nodes only.
+nodeExporter:
+  enabled: true
+kube-state-metrics:
+  # KSM watches every node/pod object — at 50k nodes this is the single most
+  # important scaling knob. Give it real headroom.
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      memory: 6Gi
+  # Shard KSM if a single replica cannot keep up at the node ceiling.
+  # replicas: 2
+
+kubelet:
+  enabled: true
+  serviceMonitor:
+    # Only real nodes run a kubelet; KWOK nodes will show as down otherwise.
+    # (No selector knob upstream — rely on relabeling in additionalScrapeConfigs
+    # if KWOK "down" targets pollute your alerts.)
+    cAdvisor: true
+
+grafana:
+  enabled: true
+  defaultDashboardsEnabled: true
+  adminPassword: "harness"   # sandbox only; not a secret
+  resources:
+    requests:
+      cpu: "250m"
+      memory: 512Mi
+
+alertmanager:
+  enabled: false   # Phase 0 does not page; scenarios assert via harness checks.
+
+# Trim control-plane scrape jobs that a managed CSP cluster does not expose.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false

@@ -1,0 +1,103 @@
+# Kind-local slim overlay. Layer this AFTER values-harness.yaml:
+#   helm upgrade --install ... -f values-harness.yaml -f values-harness-kind.yaml
+#
+# Purpose: make the full NVSentinel stack fit on a single small kind node
+# (~2 vCPU / ~5-6 GiB Docker VM) for a functional Phase 0 smoke test.
+#
+# What it changes vs values-harness.yaml:
+#   - Disables Prometheus-operator CRs (PodMonitor / ServiceMonitor) because the
+#     kind profile does NOT install kube-prometheus-stack (no CRDs present).
+#   - MongoDB -> single replica, no arbiter, no metrics exporter, small PVC,
+#     modest CPU/memory (production sizing is irrelevant for a functional test).
+#   - Every component trimmed to small CPU/memory requests so the scheduler can
+#     fit them all on one node. These are NOT production sizings.
+
+podMonitor:
+  enabled: false
+
+# janitor mounts janitor-provider's gRPC cert (secret janitor-provider-grpc-cert),
+# so the provider must be enabled alongside janitor for the P0.4 action path.
+global:
+  janitorProvider:
+    enabled: true
+
+janitor-provider:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+platformConnector:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
+
+fault-quarantine:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+health-events-analyzer:
+  resources:
+    requests:
+      cpu: 150m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+fault-remediation:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+node-drainer:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+mongodb-store:
+  mongodb:
+    replicaCount: 1
+    # existingSecrets length MUST equal replicaCount (bitnami validation); the
+    # mongodb-store cert-manager template only mints mongo-server-cert-0 when
+    # replicaCount=1, so the default 3-entry list must be trimmed to match.
+    tls:
+      replicaset:
+        existingSecrets:
+          - "mongo-server-cert-0"
+    arbiter:
+      enabled: false
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    persistence:
+      enabled: true
+      size: 2Gi
+    metrics:
+      enabled: false
+      serviceMonitor:
+        enabled: false

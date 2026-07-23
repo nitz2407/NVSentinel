@@ -1,0 +1,10 @@
+results/
+*.bak
+# built harnessctl binaries (image is built/pushed, binaries are not committed)
+harnessctl/harnessctl
+harnessctl/harnessctl-*
+
+# Re-include the shared shell library: the repo-root .gitignore has a broad
+# `lib/` rule, but this lib/common.sh is sourced by the phase0 install scripts.
+!lib/
+!lib/**
