@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -39,8 +40,11 @@ type clients struct {
 	dynamic dynamic.Interface
 }
 
-// newClients builds a REST config from in-cluster config (when running as a Job)
-// or the local kubeconfig with an optional context override (operator CLI).
+// newClients builds a REST config from in-cluster config (when staged onto an
+// in-cluster injector pod) or the caller's current kubeconfig context. Selecting
+// the right context is the operator's responsibility — the harness never
+// overrides it, so the typed clients and the kubectl shell-outs (image-free
+// exec/cp) always target the same cluster the caller has selected.
 func newClients(cfg Config) (*clients, error) {
 	var restCfg *rest.Config
 	var err error
@@ -49,11 +53,7 @@ func newClients(cfg Config) (*clients, error) {
 		restCfg = inCluster
 	} else {
 		rules := clientcmd.NewDefaultClientConfigLoadingRules()
-		overrides := &clientcmd.ConfigOverrides{}
-		if cfg.KubeContext != "" {
-			overrides.CurrentContext = cfg.KubeContext
-		}
-		restCfg, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides).ClientConfig()
+		restCfg, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{}).ClientConfig()
 		if err != nil {
 			return nil, fmt.Errorf("load kubeconfig: %w", err)
 		}
@@ -84,6 +84,18 @@ func buildNode(cfg Config, idx int) *corev1.Node {
 		corev1.ResourcePods:                   resource.MustParse(fmt.Sprintf("%d", cfg.NodeMaxPods)),
 		corev1.ResourceName("nvidia.com/gpu"): resource.MustParse(gpu),
 	}
+	spec := corev1.NodeSpec{
+		Taints: []corev1.Taint{{
+			Key:    "kwok.x-k8s.io/node",
+			Value:  "fake",
+			Effect: corev1.TaintEffectNoSchedule,
+		}},
+	}
+	// On managed clusters, a provider-less Node is deleted by the cloud-node
+	// lifecycle controller; a synthetic providerID keeps KWOK fakes alive.
+	if cfg.ProviderIDScheme != "" {
+		spec.ProviderID = cfg.ProviderIDScheme + "://" + name
+	}
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -105,13 +117,7 @@ func buildNode(cfg Config, idx int) *corev1.Node {
 				"nvidia.com/gpu.deploy.device-plugin": "true",
 			},
 		},
-		Spec: corev1.NodeSpec{
-			Taints: []corev1.Taint{{
-				Key:    "kwok.x-k8s.io/node",
-				Value:  "fake",
-				Effect: corev1.TaintEffectNoSchedule,
-			}},
-		},
+		Spec: spec,
 		Status: corev1.NodeStatus{
 			Capacity:    capacity,
 			Allocatable: capacity,
@@ -126,30 +132,116 @@ func buildNode(cfg Config, idx int) *corev1.Node {
 	}
 }
 
-// scaleNodes creates simulated nodes up to cfg.NodeCount with bounded
-// concurrency. Idempotent: existing nodes are skipped. Returns (created,
-// skipped, error-count).
-func (c *clients) scaleNodes(ctx context.Context, cfg Config) (int, int, int) {
-	existing := c.countKwokNodes(ctx)
-	infof("existing kwok nodes: %d; target: %d", existing, cfg.NodeCount)
-	if existing >= cfg.NodeCount {
-		return 0, existing, 0
+// nodeCreateBackoff retries a single node Create through a burst of server-side
+// throttling (APF 429s) instead of dropping the node. Exponential with jitter,
+// capped — long enough to ride out a create storm, bounded so a genuinely broken
+// create still surfaces.
+var nodeCreateBackoff = wait.Backoff{
+	Duration: 200 * time.Millisecond,
+	Factor:   2.0,
+	Jitter:   0.2,
+	Steps:    6,
+	Cap:      10 * time.Second,
+}
+
+// isTransientCreateErr is true for errors that a retry can plausibly clear
+// (throttling, timeouts, transient control-plane unavailability). AlreadyExists
+// is deliberately NOT transient — the caller treats it as "skipped".
+func isTransientCreateErr(err error) bool {
+	return apierrors.IsTooManyRequests(err) ||
+		apierrors.IsServerTimeout(err) ||
+		apierrors.IsTimeout(err) ||
+		apierrors.IsInternalError(err) ||
+		apierrors.IsServiceUnavailable(err)
+}
+
+// listKwokNodeNames returns the set of currently-existing kwok node names, so
+// scaleNodes can compute which target indices are actually MISSING (filling
+// scattered gaps) rather than assuming existing nodes occupy [0, count).
+func (c *clients) listKwokNodeNames(ctx context.Context) map[string]struct{} {
+	set := make(map[string]struct{})
+	list, err := c.kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: kwokNodeLabel})
+	if err != nil {
+		warnf("list kwok nodes: %v", err)
+		return set
 	}
+	for i := range list.Items {
+		set[list.Items[i].Name] = struct{}{}
+	}
+	return set
+}
+
+// missingIndices returns every target index in [0, NodeCount) whose node name is
+// absent from `existing`. This is what makes bring-up idempotent AND gap-filling:
+// re-running after a partial create converges on the full target set.
+func missingIndices(cfg Config, existing map[string]struct{}) []int {
+	out := make([]int, 0)
+	for i := 0; i < cfg.NodeCount; i++ {
+		name := fmt.Sprintf("%s-%d", cfg.NodePrefix, i)
+		if _, ok := existing[name]; !ok {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// scaleNodes brings the simulated fleet to exactly cfg.NodeCount nodes. It is
+// idempotent and self-healing: it creates only the MISSING indices (filling
+// scattered gaps, not just appending), retries each create through transient
+// throttling, and repeats passes until nothing is missing or a pass makes no
+// progress. Returns (created, skipped, failed).
+func (c *clients) scaleNodes(ctx context.Context, cfg Config) (int, int, int) {
+	existing := c.listKwokNodeNames(ctx)
+	infof("existing kwok nodes: %d; target: %d", len(existing), cfg.NodeCount)
+	skipped := len(existing)
 
 	conc := cfg.NodeBatch
 	if conc < 1 {
 		conc = 100
 	}
+
+	const maxPasses = 8
+	var totalCreated, lastFailed int64
+	prevMissing := -1
+	for pass := 1; pass <= maxPasses; pass++ {
+		missing := missingIndices(cfg, existing)
+		if len(missing) == 0 {
+			break
+		}
+		if len(missing) == prevMissing {
+			warnf("scale pass %d made no progress (%d still missing); stopping", pass, len(missing))
+			break
+		}
+		if pass > 1 {
+			infof("scale pass %d: %d nodes still missing, retrying", pass, len(missing))
+		}
+		prevMissing = len(missing)
+
+		created, failed := c.createNodes(ctx, cfg, missing, conc)
+		totalCreated += created
+		lastFailed = failed
+		if ctx.Err() != nil {
+			break
+		}
+		existing = c.listKwokNodeNames(ctx)
+	}
+	return int(totalCreated), skipped, int(lastFailed)
+}
+
+// createNodes creates the given indices with bounded concurrency, returning
+// (created, failed). AlreadyExists is not counted as failure.
+func (c *clients) createNodes(ctx context.Context, cfg Config, indices []int, conc int) (int64, int64) {
 	sem := make(chan struct{}, conc)
 	var wg sync.WaitGroup
-	var created, skipped, failed int64
+	var created, failed int64
+	total := len(indices)
 
-	for i := existing; i < cfg.NodeCount; i++ {
+	for _, i := range indices {
 		select {
 		case <-ctx.Done():
-			warnf("scale interrupted at index %d", i)
+			warnf("scale interrupted")
 			wg.Wait()
-			return int(created), int(skipped), int(failed)
+			return created, failed
 		case sem <- struct{}{}:
 		}
 		wg.Add(1)
@@ -158,28 +250,30 @@ func (c *clients) scaleNodes(ctx context.Context, cfg Config) (int, int, int) {
 			defer func() { <-sem }()
 			if err := c.createOneNode(ctx, cfg, idx); err != nil {
 				if apierrors.IsAlreadyExists(err) {
-					atomic.AddInt64(&skipped, 1)
 					return
 				}
-				atomic.AddInt64(&failed, 1)
-				if failed < 10 {
+				if n := atomic.AddInt64(&failed, 1); n <= 10 {
 					warnf("create node %d: %v", idx, err)
 				}
 				return
 			}
-			n := atomic.AddInt64(&created, 1)
-			if n%2000 == 0 {
-				infof("  created %d/%d nodes", existing+int(n), cfg.NodeCount)
+			if n := atomic.AddInt64(&created, 1); n%2000 == 0 {
+				infof("  created %d/%d nodes this pass", n, total)
 			}
 		}(i)
 	}
 	wg.Wait()
-	return int(created), int(skipped), int(failed)
+	return created, failed
 }
 
 func (c *clients) createOneNode(ctx context.Context, cfg Config, idx int) error {
 	node := buildNode(cfg, idx)
-	if _, err := c.kube.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{}); err != nil {
+	// Retry the create through transient throttling (APF 429s) so a create burst
+	// does not silently drop nodes.
+	if err := retry.OnError(nodeCreateBackoff, isTransientCreateErr, func() error {
+		_, e := c.kube.CoreV1().Nodes().Create(ctx, node, metav1.CreateOptions{})
+		return e
+	}); err != nil {
 		return err
 	}
 	// Best-effort: ensure capacity/allocatable/nodeInfo are persisted (status is
@@ -215,7 +309,16 @@ func (c *clients) countKwokNodes(ctx context.Context) int {
 // waitNodesReady uses a label-scoped node informer (single LIST + WATCH) and
 // polls the in-memory lister until `target` nodes are Ready or timeout elapses.
 // Returns (readyCount, ok).
-func (c *clients) waitNodesReady(ctx context.Context, target int, timeout time.Duration) (int, bool) {
+// waitNodesReady blocks until ALL `target` simulated nodes report Ready (or the
+// timeout elapses). It self-heals the one failure mode that otherwise leaves a
+// handful of nodes stuck Unknown forever: the kwok-controller can miss the ADD
+// watch event for some nodes during a large create burst and, with no periodic
+// resync, never manages them (no lease, "Kubelet never posted node status"). If
+// readiness stalls below target for `onStallAfter`, `onStall` is invoked (the
+// caller restarts the kwok-controller, forcing a full re-list that picks up the
+// missed nodes) up to `maxStallHeals` times. Returns the observed ready count
+// and whether the full target was reached.
+func (c *clients) waitNodesReady(ctx context.Context, target int, timeout time.Duration, onStall func() error) (int, bool) {
 	factory := informers.NewSharedInformerFactoryWithOptions(
 		c.kube, 0,
 		informers.WithTweakListOptions(func(o *metav1.ListOptions) { o.LabelSelector = kwokNodeLabel }),
@@ -229,18 +332,42 @@ func (c *clients) waitNodesReady(ctx context.Context, target int, timeout time.D
 		warnf("node informer cache did not sync; falling back to direct list")
 	}
 
+	const maxStallHeals = 3
+	onStallAfter := time.Duration(envInt("NODE_READY_STALL_SECONDS", 90)) * time.Second
 	deadline := time.Now().Add(timeout)
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	last := 0
+	best := 0
+	lastProgress := time.Now()
+	heals := 0
 	for {
 		ready := countReady(lister)
 		if ready != last {
 			infof("kwok nodes Ready: %d/%d", ready, target)
 			last = ready
 		}
+		// Track genuine forward progress by the best-ever ready count, not the last
+		// sample: near target a few nodes' leases transiently flap (…4996→4999→4996…),
+		// and keying off the last sample resets the stall timer on every up-tick,
+		// so a single truly-stuck node (missed ADD, no lease) never self-heals.
+		if ready > best {
+			best = ready
+			lastProgress = time.Now()
+		}
 		if ready >= target {
 			return ready, true
+		}
+		// Self-heal a stalled create: readiness hasn't advanced for a while but
+		// we're short of target — almost always kwok-controller missed some ADDs.
+		if onStall != nil && heals < maxStallHeals && time.Since(lastProgress) >= onStallAfter {
+			warnf("node readiness stalled at %d/%d for %s — restarting kwok-controller to force a full re-list (heal %d/%d)",
+				ready, target, onStallAfter, heals+1, maxStallHeals)
+			if err := onStall(); err != nil {
+				warnf("stall heal failed: %v", err)
+			}
+			heals++
+			lastProgress = time.Now()
 		}
 		if time.Now().After(deadline) {
 			return ready, false
@@ -317,22 +444,15 @@ func (c *clients) firstKwokNode(ctx context.Context) (string, error) {
 	return list.Items[0].Name, nil
 }
 
-// firstRealNode returns a node WITHOUT the type=kwok label (a real node).
-func (c *clients) firstRealNode(ctx context.Context) (string, error) {
-	list, err := c.kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return "", err
-	}
-	for _, n := range list.Items {
-		if n.Labels["type"] != "kwok" {
-			return n.Name, nil
-		}
-	}
-	return "", fmt.Errorf("no real (non-kwok) node found")
-}
-
 func (c *clients) labelNode(ctx context.Context, node, key, value string) error {
 	patch := []byte(fmt.Sprintf(`{"metadata":{"labels":{%q:%q}}}`, key, value))
+	_, err := c.kube.CoreV1().Nodes().Patch(ctx, node, types.MergePatchType, patch, metav1.PatchOptions{})
+	return err
+}
+
+// unlabelNode removes a label from a node (merge-patch with a null value).
+func (c *clients) unlabelNode(ctx context.Context, node, key string) error {
+	patch := []byte(fmt.Sprintf(`{"metadata":{"labels":{%q:null}}}`, key))
 	_, err := c.kube.CoreV1().Nodes().Patch(ctx, node, types.MergePatchType, patch, metav1.PatchOptions{})
 	return err
 }
@@ -427,11 +547,17 @@ func (c *clients) applyRebootNode(ctx context.Context, name, node string) error 
 }
 
 func (c *clients) applyGPUReset(ctx context.Context, name, node string) error {
+	// An empty `selector` object (not omitted) still means "reset all GPUs on the
+	// node" per the CRD, but keeps spec.selector non-nil. The janitor validating
+	// webhook (through at least v1.15.0) reads obj.Spec.Selector.UUIDs without a
+	// nil check (janitor_webhook.go gpuResetValidator.ValidateCreate), so a
+	// selector-less GPUReset makes the webhook panic and the create is denied.
+	// Sending {} avoids that product bug while preserving reset-all semantics.
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "janitor.dgxc.nvidia.com/v1alpha1",
 		"kind":       "GPUReset",
 		"metadata":   map[string]any{"name": name},
-		"spec":       map[string]any{"nodeName": node},
+		"spec":       map[string]any{"nodeName": node, "selector": map[string]any{}},
 	}}
 	_, err := c.dynamic.Resource(gpuresetGVR).Create(ctx, obj, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {

@@ -15,6 +15,10 @@ version_args=()
 if [[ -n "${NVS_CHART_VERSION}" ]]; then
   version_args=(--version "${NVS_CHART_VERSION}")
   log "installing NVSentinel ${NVS_CHART_VERSION} from ${NVS_CHART}"
+elif [[ "${NVS_CHART}" == oci://* ]]; then
+  # OCI registries expose no "latest" index; Helm fails with a cryptic
+  # "Unable to locate any tags" error. Fail early with actionable guidance.
+  fatal "NVS_CHART_VERSION is empty but ${NVS_CHART} is an OCI chart — pin a tag (e.g. v1.16.0) in config/harness.env"
 else
   log "installing latest NVSentinel from ${NVS_CHART}"
 fi

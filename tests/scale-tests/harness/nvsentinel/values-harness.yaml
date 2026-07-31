@@ -18,7 +18,21 @@ global:
   # Do NOT tolerate the fake-node taint here; affinity below is the hard guard.
   tolerations: []
   nodeSelector: {}
-  affinity: {}
+  # Central singletons (fault-quarantine, node-drainer, fault-remediation,
+  # health-events-analyzer, janitor, labeler, …) tolerate all taints so they can
+  # run on real GPU nodes — which means they would ALSO schedule onto fake KWOK
+  # nodes, where KWOK fakes them Ready while they do nothing. Components honor
+  # `global.affinity` (`.Values.global.affinity | default .Values.affinity`), so
+  # pin every component off KWOK nodes here. (`NotIn [kwok]` still matches real
+  # nodes that have no `type` label.)
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: type
+                operator: NotIn
+                values: ["kwok"]
 
   gpuHealthMonitor:
     enabled: false        # no real GPUs; fatal events are injected instead
@@ -32,6 +46,8 @@ global:
     enabled: true
   janitor:
     enabled: true         # required for P0.4 action path
+  janitorProvider:
+    enabled: true         # RebootNode delegates to janitor-provider; required for the P0.4 reboot Job
   cspHealthMonitor:
     enabled: false
   syslogHealthMonitor:
@@ -94,6 +110,36 @@ janitor:
     # Keep completed CRs within the validating-webhook LIST budget (H4). Short
     # for the harness; production sizing is a separate decision.
     defaultTTL: "24h"
+  config:
+    controllers:
+      rebootNode:
+        # KWOK cycles the node quickly; no real CSP cooldown to wait out.
+        timeout: "5m"
+      gpuReset:
+        timeout: "5m"
+        # After the reset Job succeeds, the gpu-reset controller normally tears
+        # down and then RESTORES the node's gpu-operator "managed services"
+        # (device-plugin, dcgm, …) and blocks on those pods becoming Ready
+        # (RestoreTimeout 10m in the built-in "gpu-operator" registry). On a fake
+        # KWOK node there is no gpu-operator, so restore can never succeed and the
+        # GPUReset CR would hang in InProgress until it fails. An empty
+        # serviceManager name selects the no-op manager (gpuservices.NewManager
+        # returns Manager{Name:""}), so the controller skips teardown/restore
+        # (ServicesRestored=Skipped) and the CR reaches Succeeded once the reset
+        # Job completes — which is exactly what P0.4 asserts.
+        serviceManager:
+          name: ""
+
+# P0.4 reboot path. The harness runs entirely on simulated KWOK nodes (no real
+# CSP, no kubelet), so use the built-in `kind` CSP provider — the janitor-provider
+# default. Its SendRebootSignal simulates the CSP round-trip (short sleep) and
+# IsNodeReady reports the node back within seconds, so the RebootNode CR completes
+# without any real node restart or privileged reboot Job. harnessctl still cycles
+# the target node's bootID (NotReady -> Ready) during P0.4, so the reboot is
+# observably reflected on the Node object even though the provider is simulated.
+janitor-provider:
+  csp:
+    provider: "kind"
 
 mongodb-store:
   mongodb:

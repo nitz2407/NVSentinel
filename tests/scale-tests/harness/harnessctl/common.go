@@ -117,6 +117,10 @@ func escapeXML(s string) string {
 	return string(out)
 }
 
+// ptr returns a pointer to v — a small helper for the many *T fields in the
+// Kubernetes API types.
+func ptr[T any](v T) *T { return &v }
+
 // writeArtifact writes an arbitrary named artifact into the results dir.
 func writeArtifact(dir, name string, v any) {
 	_ = os.MkdirAll(dir, 0o755)

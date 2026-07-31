@@ -23,8 +23,11 @@ hlm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
   --wait --timeout 15m
 
 log "waiting for prometheus + kube-state-metrics to be ready"
+# With fullnameOverride=prometheus (see values-kube-prometheus-stack.yaml) the
+# operator Deployment is named "prometheus-operator", not the stock
+# "prometheus-kube-prometheus-operator".
 wait_for 300 10 "prometheus operator rollout" \
-  kc -n "${MONITORING_NAMESPACE}" rollout status deploy/prometheus-kube-prometheus-operator --timeout=10s
+  kc -n "${MONITORING_NAMESPACE}" rollout status deploy/prometheus-operator --timeout=10s
 wait_for 300 10 "kube-state-metrics rollout" \
   kc -n "${MONITORING_NAMESPACE}" rollout status deploy/prometheus-kube-state-metrics --timeout=10s
 

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -37,7 +38,15 @@ type ReconcileReport struct {
 	MaxLoss       float64  `json:"max_loss_fraction"`
 	Verdict       string   `json:"verdict"`
 	MissingSample []string `json:"missing_sample,omitempty"`
-	GeneratedAt   string   `json:"generated_at_utc"`
+	// P0.3 end-to-end node visibility: for a sample of accounted events, assert
+	// the NodeName stored in the datastore matches the node the harness injected
+	// against — proving events are attributed to the right node, not just landed.
+	NodeChecked        int      `json:"node_checked"`
+	NodeMatched        int      `json:"node_matched"`
+	NodeMismatched     int      `json:"node_mismatched"`
+	NodeMismatchSample []string `json:"node_mismatch_sample,omitempty"`
+	NodeAttrNote       string   `json:"node_attr_note,omitempty"`
+	GeneratedAt        string   `json:"generated_at_utc"`
 }
 
 // runReconcile is the in-cluster P0.3 reconciler: reads the injection ledger and
@@ -45,6 +54,7 @@ type ReconcileReport struct {
 // MB-5 / SYS-5 zero-loss checks.
 func runReconcile(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("reconcile", flag.ExitOnError)
+	direct := fs.Bool("direct", false, "connect straight to MongoDB (default: run in-cluster via a resident injector, deriving the expected total from the live pool). Set automatically when invoked inside an injector.")
 	uri := fs.String("uri", env("MONGO_URI", "mongodb://localhost:27017"), "MongoDB connection URI")
 	db := fs.String("db", env("MONGO_DATABASE", "HealthEventsDatabase"), "database name")
 	coll := fs.String("collection", env("MONGO_COLLECTION", "HealthEvents"), "collection name")
@@ -52,9 +62,11 @@ func runReconcile(ctx context.Context, args []string) error {
 	runLabel := fs.String("run-label", "nvs_harness_run", "metadata key holding the run id")
 	idLabel := fs.String("id-label", "nvs_harness_id", "metadata key holding the per-event id")
 	runID := fs.String("run-id", "", "correlation run id to reconcile (required)")
-	ledgerPath := fs.String("ledger", "/results/injection-ledger.jsonl", "injection ledger path")
+	ledgerPath := fs.String("ledger", "/results/injection-ledger.jsonl", "injection ledger path (empty + -expect-injected => count-only mode)")
+	expectInjected := fs.Int("expect-injected", 0, "count-only mode (P0.5 pool): expected injected total when no single ledger exists")
 	reportPath := fs.String("report", "/results/reconcile-report.json", "where to write the JSON report")
 	maxLoss := fs.Float64("max-loss-fraction", 0.0, "max acceptable missing fraction for PASS")
+	nodeSample := fs.Int("node-sample", 200, "sample size for verifying stored NodeName attribution (0 disables; ignored in count-only mode)")
 	timeout := fs.Duration("timeout", 60*time.Second, "datastore query timeout")
 	// TLS / X.509 knobs so reconcile works against a MongoDB with requireTLS +
 	// mTLS (the NVSentinel mongodb-store chart default) as well as plain installs.
@@ -67,10 +79,17 @@ func runReconcile(ctx context.Context, args []string) error {
 	if *runID == "" {
 		return fmt.Errorf("-run-id is required")
 	}
+
+	// Distributed mode (default): account the run in-cluster via a resident
+	// injector — the operator counterpart to `inject` firing all injectors.
+	if !*direct {
+		return runReconcileDistributed(ctx, *runID)
+	}
+
 	rep, err := reconcile(ctx, reconcileParams{
 		uri: *uri, db: *db, coll: *coll, fieldPfx: *fieldPfx,
 		runLabel: *runLabel, idLabel: *idLabel, runID: *runID,
-		ledgerPath: *ledgerPath, maxLoss: *maxLoss, timeout: *timeout,
+		ledgerPath: *ledgerPath, expectInjected: *expectInjected, maxLoss: *maxLoss, nodeSample: *nodeSample, timeout: *timeout,
 		tlsCertDir: *tlsCertDir, tlsInsecure: *tlsInsecure,
 		authMech: *authMech, authSource: *authSource,
 	})
@@ -83,7 +102,77 @@ func runReconcile(ctx context.Context, args []string) error {
 		warnf("could not write report %s: %v", *reportPath, err)
 	}
 	if rep.Verdict != "PASS" {
-		return fmt.Errorf("reconcile FAIL: missing=%d loss=%.4f", rep.Missing, rep.LossFraction)
+		return fmt.Errorf("reconcile FAIL: missing=%d loss=%.4f node_mismatched=%d/%d",
+			rep.Missing, rep.LossFraction, rep.NodeMismatched, rep.NodeChecked)
+	}
+	if rep.NodeAttrNote != "" {
+		infof("%s", rep.NodeAttrNote)
+	}
+	return nil
+}
+
+// runReconcileDistributed accounts every injected event for a run without a
+// centralized ledger: it fans a shard-scoped per-ID + NodeName reconcile out to
+// every resident injector (each reads ITS OWN shard ledgers against a datastore
+// query scoped to just those IDs, inheriting in-cluster MongoDB reachability +
+// mTLS), then aggregates the summaries into a fleet-wide verdict. This is the
+// operator counterpart to `inject` firing all injectors.
+func runReconcileDistributed(ctx context.Context, runID string) error {
+	cfg := loadConfig()
+	c, err := newClients(cfg)
+	if err != nil {
+		return err
+	}
+	geo, err := c.resolvePoolGeometry(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	// Ensure the binary is staged on every connector node (idempotent) so the
+	// resident injectors can run reconcile even if `inject` staged elsewhere.
+	localBin, err := resolveLocalBinary(cfg.HarnessBin)
+	if err != nil {
+		return err
+	}
+	wantSum, err := localBinarySum(localBin)
+	if err != nil {
+		return err
+	}
+	if _, err := c.stageBinaryToAllInjectors(ctx, cfg, geo, localBin, wantSum, false); err != nil {
+		return err
+	}
+	conn, err := c.deriveMongoConn(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
+	// Watch the SUT (cordoning, remediation CRs, control-plane restarts, MongoDB
+	// quorum/CPU saturation) for the whole drain+reconcile so failures like the
+	// connector-pool MongoDB collapse are recorded, not silently swallowed.
+	stopMonitor := c.startReconcileMonitor(ctx, cfg, runID)
+	defer stopMonitor()
+
+	// Wait for the async write plane to drain instead of a fixed sleep: poll the
+	// datastore's stored count for the run until it stops growing (or reaches the
+	// expected total), then reconcile.
+	if err := c.waitStoredStable(ctx, cfg, geo, conn, runID); err != nil {
+		warnf("drain wait: %v (reconciling anyway)", err)
+	}
+
+	rep, err := c.reconcilePerNode(ctx, cfg, geo, conn, runID)
+	if err != nil {
+		return fmt.Errorf("distributed reconcile: %w", err)
+	}
+	b, _ := json.MarshalIndent(rep, "", "  ")
+	fmt.Println(string(b))
+	writeArtifact(cfg.ResultsDir, "reconcile-report.json", rep)
+	infof("[P0.3 reconcile] run-id=%s injected=%d accounted=%d missing=%d loss=%.4f node=%d/%d verdict=%s",
+		runID, rep.Injected, rep.Accounted, rep.Missing, rep.LossFraction, rep.NodeMatched, rep.NodeChecked, rep.Verdict)
+	if rep.NodeAttrNote != "" {
+		infof("%s", rep.NodeAttrNote)
+	}
+	if rep.Verdict != "PASS" {
+		return fmt.Errorf("reconcile FAIL: missing=%d loss=%.4f node_mismatched=%d/%d",
+			rep.Missing, rep.LossFraction, rep.NodeMismatched, rep.NodeChecked)
 	}
 	return nil
 }
@@ -92,7 +181,9 @@ type reconcileParams struct {
 	uri, db, coll, fieldPfx  string
 	runLabel, idLabel, runID string
 	ledgerPath               string
+	expectInjected           int
 	maxLoss                  float64
+	nodeSample               int
 	timeout                  time.Duration
 	tlsCertDir               string
 	tlsInsecure              bool
@@ -103,6 +194,15 @@ type reconcileParams struct {
 // auth settings so the reconciler can talk to a plain, TLS, or mTLS/X.509 store.
 func mongoClientOptions(p reconcileParams) (*options.ClientOptions, error) {
 	opts := options.Client().ApplyURI(p.uri)
+	// Under the distributed P0.3 reconcile, ~10 injectors open mTLS/X.509
+	// connections to the same MongoDB at once; the driver's default 30s server
+	// selection can lapse during that handshake burst. Give selection/connect the
+	// full query timeout and keep each shard's pool tiny so concurrent injectors
+	// don't multiply connection pressure.
+	if p.timeout > 0 {
+		opts.SetServerSelectionTimeout(p.timeout).SetConnectTimeout(p.timeout)
+	}
+	opts.SetMaxPoolSize(4)
 	if p.tlsCertDir != "" {
 		tlsCfg, err := buildMongoTLSConfig(p.tlsCertDir, p.tlsInsecure)
 		if err != nil {
@@ -152,12 +252,19 @@ func fileExists(p string) bool {
 }
 
 func reconcile(ctx context.Context, p reconcileParams) (ReconcileReport, error) {
-	injected, acked, err := readLedger(p.ledgerPath)
+	// Count-only mode (P0.5 connector pool): with many pod-local ledgers there is
+	// no single injected-ID set to diff, so account for the run by comparing the
+	// datastore's stored count for the run id against the expected injected total.
+	if p.ledgerPath == "" {
+		return reconcileByCount(ctx, p)
+	}
+
+	injected, acked, err := readLedger(p.ledgerPath, p.runID)
 	if err != nil {
 		return ReconcileReport{}, err
 	}
 	if len(injected) == 0 {
-		return ReconcileReport{}, fmt.Errorf("ledger %s had no entries", p.ledgerPath)
+		return ReconcileReport{}, fmt.Errorf("ledger %s had no entries for run-id %s", p.ledgerPath, p.runID)
 	}
 	infof("ledger: injected=%d acked=%d run-id=%s", len(injected), acked, p.runID)
 
@@ -176,22 +283,35 @@ func reconcile(ctx context.Context, p reconcileParams) (ReconcileReport, error) 
 
 	runKey := fmt.Sprintf("%s.metadata.%s", p.fieldPfx, p.runLabel)
 	idKey := fmt.Sprintf("%s.metadata.%s", p.fieldPfx, p.idLabel)
+	nodeKeyLower := fmt.Sprintf("%s.nodename", p.fieldPfx)
+	nodeKey := fmt.Sprintf("%s.nodeName", p.fieldPfx)
+	nodeKeySnake := fmt.Sprintf("%s.node_name", p.fieldPfx)
 
+	// Scope the datastore read to just this ledger's own IDs, not the whole run.
+	// For a single-shard `-direct` run that's simply tighter; for the distributed
+	// P0.3 reconcile it's what makes per-node fan-out possible — each injector
+	// reads only its shard instead of every node re-reading the entire run.
+	ids := make([]string, 0, len(injected))
+	for id := range injected {
+		ids = append(ids, id)
+	}
 	cur, err := client.Database(p.db).Collection(p.coll).Find(qctx,
-		bson.M{runKey: p.runID}, options.Find().SetProjection(bson.M{idKey: 1}))
+		bson.M{runKey: p.runID, idKey: bson.M{"$in": ids}},
+		options.Find().SetProjection(bson.M{idKey: 1, nodeKeyLower: 1, nodeKey: 1, nodeKeySnake: 1}))
 	if err != nil {
 		return ReconcileReport{}, fmt.Errorf("mongo find: %w", err)
 	}
 	defer cur.Close(qctx)
 
-	stored := map[string]struct{}{}
+	// id -> stored NodeName (empty string means the doc had no node field).
+	storedNode := map[string]string{}
 	for cur.Next(qctx) {
 		var doc bson.M
 		if err := cur.Decode(&doc); err != nil {
 			continue
 		}
 		if id := extractStoredID(doc, p.fieldPfx, p.idLabel); id != "" {
-			stored[id] = struct{}{}
+			storedNode[id] = extractStoredNode(doc, p.fieldPfx)
 		}
 	}
 	if err := cur.Err(); err != nil {
@@ -201,14 +321,14 @@ func reconcile(ctx context.Context, p reconcileParams) (ReconcileReport, error) 
 	accounted := 0
 	missing := make([]string, 0)
 	for id := range injected {
-		if _, ok := stored[id]; ok {
+		if _, ok := storedNode[id]; ok {
 			accounted++
 		} else {
 			missing = append(missing, id)
 		}
 	}
 	unexpected := 0
-	for id := range stored {
+	for id := range storedNode {
 		if _, ok := injected[id]; !ok {
 			unexpected++
 		}
@@ -222,21 +342,138 @@ func reconcile(ctx context.Context, p reconcileParams) (ReconcileReport, error) 
 	if len(sample) > 20 {
 		sample = sample[:20]
 	}
-	return ReconcileReport{
-		RunID: p.runID, Injected: len(injected), Acked: acked, StoredForRun: len(stored),
+
+	rep := ReconcileReport{
+		RunID: p.runID, Injected: len(injected), Acked: acked, StoredForRun: len(storedNode),
 		Accounted: accounted, Missing: len(missing), Unexpected: unexpected,
 		LossFraction: loss, MaxLoss: p.maxLoss, Verdict: verdict,
 		MissingSample: sample, GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	verifyNodeAttribution(&rep, injected, storedNode, p.nodeSample)
+	return rep, nil
+}
+
+// verifyNodeAttribution asserts end-to-end node visibility (P0.3): for a sample
+// of accounted events, the NodeName the datastore stored must equal the node the
+// harness injected against. A mismatch fails the reconcile. If the datastore has
+// no node field at all for the whole sample (e.g. a chart serializes it under an
+// unexpected path), attribution is reported as unverified with a note rather
+// than failing an otherwise clean zero-loss run.
+func verifyNodeAttribution(rep *ReconcileReport, injected, storedNode map[string]string, sampleMax int) {
+	if sampleMax <= 0 {
+		rep.NodeAttrNote = "node attribution check disabled (-node-sample 0)"
+		return
+	}
+	matched, mismatched, emptyStored := 0, 0, 0
+	mmSample := make([]string, 0, 20)
+	for id, want := range injected {
+		got, ok := storedNode[id]
+		if !ok {
+			continue // not accounted; already counted as missing
+		}
+		if got == "" {
+			// No node field stored: not verifiable, don't count as checked.
+			emptyStored++
+			continue
+		}
+		if got == want {
+			matched++
+		} else {
+			mismatched++
+			if len(mmSample) < 20 {
+				mmSample = append(mmSample, fmt.Sprintf("%s: injected=%q stored=%q", id, want, got))
+			}
+		}
+		if matched+mismatched >= sampleMax {
+			break
+		}
+	}
+
+	checked := matched + mismatched
+	rep.NodeChecked = checked
+	rep.NodeMatched = matched
+	rep.NodeMismatched = mismatched
+
+	switch {
+	case checked == 0 && emptyStored > 0:
+		// Every accounted doc lacked a node field: almost certainly a schema/path
+		// mismatch, not real misattribution. Surface it without failing the run.
+		rep.NodeAttrNote = fmt.Sprintf("node attribution UNVERIFIED: datastore had no NodeName on all %d accounted docs (schema/path?)", emptyStored)
+	case checked == 0:
+		rep.NodeAttrNote = "no accounted events to sample for node attribution"
+	case mismatched > 0:
+		rep.NodeMismatchSample = mmSample
+		rep.NodeAttrNote = fmt.Sprintf("node attribution FAIL: %d/%d sampled events stored the wrong NodeName", mismatched, checked)
+		rep.Verdict = "FAIL"
+	default:
+		rep.NodeAttrNote = fmt.Sprintf("node attribution OK: %d/%d sampled events attributed to the correct node", matched, checked)
+	}
+}
+
+// reconcileByCount accounts for a run without an injection ledger: it counts the
+// documents the datastore holds for the run id and compares that against the
+// expected injected total (P0.5 pool, where each connector keeps its own ledger).
+func reconcileByCount(ctx context.Context, p reconcileParams) (ReconcileReport, error) {
+	if p.expectInjected <= 0 {
+		return ReconcileReport{}, fmt.Errorf("count-only reconcile needs -expect-injected > 0")
+	}
+	qctx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
+
+	opts, err := mongoClientOptions(p)
+	if err != nil {
+		return ReconcileReport{}, fmt.Errorf("mongo options: %w", err)
+	}
+	client, err := mongo.Connect(qctx, opts)
+	if err != nil {
+		return ReconcileReport{}, fmt.Errorf("mongo connect: %w", err)
+	}
+	defer client.Disconnect(context.Background())
+
+	runKey := fmt.Sprintf("%s.metadata.%s", p.fieldPfx, p.runLabel)
+	stored, err := client.Database(p.db).Collection(p.coll).CountDocuments(qctx, bson.M{runKey: p.runID})
+	if err != nil {
+		return ReconcileReport{}, fmt.Errorf("mongo count: %w", err)
+	}
+	storedN := int(stored)
+
+	missing := p.expectInjected - storedN
+	if missing < 0 {
+		missing = 0
+	}
+	accounted := p.expectInjected - missing
+	loss := float64(missing) / float64(p.expectInjected)
+	verdict := "PASS"
+	if loss > p.maxLoss {
+		verdict = "FAIL"
+	}
+	infof("count-only reconcile: expect=%d stored=%d missing=%d run-id=%s", p.expectInjected, storedN, missing, p.runID)
+	return ReconcileReport{
+		RunID: p.runID, Injected: p.expectInjected, Acked: p.expectInjected, StoredForRun: storedN,
+		Accounted: accounted, Missing: missing, Unexpected: 0,
+		LossFraction: loss, MaxLoss: p.maxLoss, Verdict: verdict,
+		NodeAttrNote: "node attribution not verified in count-only mode (no per-event ledger)",
+		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
 	}, nil
 }
 
-func readLedger(path string) (map[string]struct{}, int, error) {
+// readLedger returns each injected event id mapped to the node the harness
+// attributed it to (for P0.3 NodeName verification), plus the acked count.
+// Entries are scoped to runID: the merged shard ledger on a pool node can retain
+// stale led-*.jsonl files from earlier runs / pool topologies, and every event id
+// is "<run-id>-<seq>-<hex>", so filtering by the run-id prefix keeps reconcile
+// correct regardless of leftover ledgers. An empty runID disables filtering.
+func readLedger(path, runID string) (map[string]string, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, fmt.Errorf("open ledger %s: %w", path, err)
 	}
 	defer f.Close()
-	ids := map[string]struct{}{}
+	prefix := ""
+	if runID != "" {
+		prefix = runID + "-"
+	}
+	idNode := map[string]string{}
 	acked := 0
 	s := bufio.NewScanner(f)
 	s.Buffer(make([]byte, 1024*1024), 8*1024*1024)
@@ -249,14 +486,15 @@ func readLedger(path string) (map[string]struct{}, int, error) {
 		if err := json.Unmarshal(line, &e); err != nil {
 			continue
 		}
-		if e.ID != "" {
-			ids[e.ID] = struct{}{}
+		if e.ID == "" || (prefix != "" && !strings.HasPrefix(e.ID, prefix)) {
+			continue
 		}
+		idNode[e.ID] = e.Node
 		if e.Acked {
 			acked++
 		}
 	}
-	return ids, acked, nil
+	return idNode, acked, nil
 }
 
 func extractStoredID(doc bson.M, prefix, idLabel string) string {
@@ -270,6 +508,23 @@ func extractStoredID(doc bson.M, prefix, idLabel string) string {
 	}
 	if v, ok := meta[idLabel].(string); ok {
 		return v
+	}
+	return ""
+}
+
+// extractStoredNode pulls the NodeName the datastore recorded for the event. The
+// datastore serializes the health_event proto with all-lowercase field names, so
+// the node lands at `<prefix>.nodename`; the camelCase/snake_case variants are
+// accepted as fallbacks across chart/serializer versions.
+func extractStoredNode(doc bson.M, prefix string) string {
+	sub, ok := doc[prefix].(bson.M)
+	if !ok {
+		return ""
+	}
+	for _, k := range []string{"nodename", "nodeName", "node_name"} {
+		if v, ok := sub[k].(string); ok && v != "" {
+			return v
+		}
 	}
 	return ""
 }

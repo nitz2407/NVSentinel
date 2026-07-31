@@ -20,6 +20,12 @@ podMonitor:
 global:
   janitorProvider:
     enabled: true
+  # The local chart defaults component images to the `main` tag, which is not
+  # published for every component on ghcr.io. Pin to a released tag so a
+  # from-source kind smoke test can pull all images. (The real-cluster path uses
+  # the public OCI chart, whose images track the chart version instead.)
+  image:
+    tag: "v1.15.0"
 
 janitor-provider:
   resources:

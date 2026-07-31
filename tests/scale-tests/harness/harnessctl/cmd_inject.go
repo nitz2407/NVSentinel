@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -34,14 +35,23 @@ type ledgerEntry struct {
 	Acked    bool   `json:"acked"`
 }
 
-// runInject is the in-cluster P0.3 injector: it attributes events to KWOK node
-// names, stamps a correlation id into HealthEvent.id + metadata, and writes an
-// injection ledger the reconciler consumes.
+// runInject is the P0.3 injector. It has two modes:
+//
+//   - Distributed (default, no -socket): a single invocation fires every resident
+//     injector deployed by connector-pool, each driving its local connector
+//     shards in parallel — "one inject fires all injectors". This is the
+//     operator-facing command.
+//   - Primitive (-socket set): drive one connector's Unix socket. This is what
+//     each resident injector runs internally, one process per node.
+//
+// Both attribute events to KWOK node names and stamp a correlation id into
+// HealthEvent.id + metadata that the reconciler accounts.
 func runInject(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("inject", flag.ExitOnError)
-	socket := fs.String("socket", "/var/run/nvsentinel.sock", "platform connector Unix socket path")
+	socket := fs.String("socket", "", "connector Unix socket; empty => distributed mode: fan out across every resident injector deployed by connector-pool")
 	nodePrefix := fs.String("node-prefix", "kwok-gpu", "simulated node name prefix")
 	nodeCount := fs.Int("nodes", 50000, "number of simulated node names to spread events across")
+	nodeOffset := fs.Int("node-offset", 0, "start index for generated node names (P0.5 pool sharding: pod N owns [offset, offset+nodes))")
 	nodesFrom := fs.String("nodes-from", "", "optional file of node names (one per line)")
 	total := fs.Int("count", 10000, "total events to inject")
 	rate := fs.Float64("rate", 500, "target events/sec")
@@ -56,9 +66,20 @@ func runInject(ctx context.Context, args []string) error {
 	if *runID == "" {
 		*runID = fmt.Sprintf("run-%d-%s", time.Now().Unix(), randHex(4))
 	}
+
+	// Distributed mode: one command fires every resident injector in the pool.
+	if *socket == "" {
+		cfg := loadConfig()
+		c, err := newClients(cfg)
+		if err != nil {
+			return err
+		}
+		return c.injectAcrossPool(ctx, cfg, *rate, *runID)
+	}
+
 	infof("injector run-id=%s socket=%s nodes=%d count=%d rate=%.1f/s", *runID, *socket, *nodeCount, *total, *rate)
 
-	nodes := buildNodeNames(*nodesFrom, *nodePrefix, *nodeCount)
+	nodes := buildNodeNames(*nodesFrom, *nodePrefix, *nodeOffset, *nodeCount)
 	if len(nodes) == 0 {
 		return fmt.Errorf("no node names to attribute events to")
 	}
@@ -115,7 +136,7 @@ func runInject(ctx context.Context, args []string) error {
 	return nil
 }
 
-func buildNodeNames(from, prefix string, count int) []string {
+func buildNodeNames(from, prefix string, offset, count int) []string {
 	if from != "" {
 		f, err := os.Open(from)
 		if err != nil {
@@ -132,9 +153,12 @@ func buildNodeNames(from, prefix string, count int) []string {
 		}
 		return out
 	}
+	if offset < 0 {
+		offset = 0
+	}
 	out := make([]string, 0, count)
 	for i := 0; i < count; i++ {
-		out = append(out, fmt.Sprintf("%s-%d", prefix, i))
+		out = append(out, fmt.Sprintf("%s-%d", prefix, offset+i))
 	}
 	return out
 }
@@ -143,12 +167,20 @@ func buildEvent(node, id, runID, runLabel, idLabel string, fatalFrac float64, fa
 	meta := map[string]string{runLabel: runID, idLabel: id}
 	switch {
 	case mrand.Float64() < fatalFrac:
+		// Emit the real syslog GPU-XID signature: RecommendedAction=COMPONENT_RESET
+		// with a supported GPU_UUID impacted entity (+ PCI), so the node-drainer's
+		// partial-drain path finds a supported entity and advances (cordon ->
+		// drain -> GPUReset CR) instead of failing with "no supported entities for
+		// a partial drain". A stable per-node UUID keeps re-runs idempotent.
 		return &pb.HealthEvent{
 			Version: 1, Id: id, Agent: fatalAgent, ComponentClass: "GPU", CheckName: "GpuXidError",
 			IsFatal: true, IsHealthy: false, Message: "XID 79 - GPU has fallen off the bus (harness)",
 			RecommendedAction: pb.RecommendedAction_COMPONENT_RESET, ErrorCode: []string{"79"},
-			EntitiesImpacted: []*pb.Entity{{EntityType: "gpu", EntityValue: "0"}},
-			Metadata:         meta, NodeName: node, GeneratedTimestamp: timestamppb.Now(),
+			EntitiesImpacted: []*pb.Entity{
+				{EntityType: "PCI", EntityValue: "0000:03:00"},
+				{EntityType: "GPU_UUID", EntityValue: gpuUUIDForNode(node)},
+			},
+			Metadata: meta, NodeName: node, GeneratedTimestamp: timestamppb.Now(),
 		}, "fatal"
 	case mrand.Intn(100) < 70:
 		return &pb.HealthEvent{
@@ -168,8 +200,14 @@ func buildEvent(node, id, runID, runLabel, idLabel string, fatalFrac float64, fa
 	}
 }
 
+var sendErrLogged bool
+
 func sendEvent(ctx context.Context, client pb.PlatformConnectorClient, evt *pb.HealthEvent) bool {
 	_, err := client.HealthEventOccurredV1(ctx, &pb.HealthEvents{Version: 1, Events: []*pb.HealthEvent{evt}})
+	if err != nil && !sendErrLogged {
+		errorf("first send error (logged once): %v", err)
+		sendErrLogged = true
+	}
 	return err == nil
 }
 
@@ -177,6 +215,15 @@ func writeLedger(w *bufio.Writer, e ledgerEntry) {
 	b, _ := json.Marshal(e)
 	_, _ = w.Write(b)
 	_ = w.WriteByte('\n')
+}
+
+// gpuUUIDForNode derives a stable, realistic GPU UUID (GPU-8-4-4-4-12 hex form)
+// from the node name so a given node always maps to the same GPU_UUID entity.
+// This matches the entity type the node-drainer supports for COMPONENT_RESET
+// partial drains (model.EntityTypeToResourceNames["GPU_UUID"]).
+func gpuUUIDForNode(node string) string {
+	h := sha256.Sum256([]byte("gpu0/" + node))
+	return fmt.Sprintf("GPU-%x-%x-%x-%x-%x", h[0:4], h[4:6], h[6:8], h[8:10], h[10:16])
 }
 
 func randHex(n int) string {

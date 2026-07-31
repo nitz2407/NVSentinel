@@ -9,7 +9,9 @@
 #   2. Janitor Job pods (reboot / GPU reset) that reach Succeeded after a
 #      configurable delay (S4 / P0.4) so the janitor action MTTR is non-trivial.
 #
-# The scaler substitutes __JOB_COMPLETE_DELAY__ -> ${KWOK_JOB_COMPLETE_DELAY}s.
+# 20-install-kwok.sh substitutes __JOB_COMPLETE_DELAY__ with
+# (KWOK_JOB_COMPLETE_DELAY * 1000), i.e. the delay in milliseconds, since
+# durationMilliseconds below expects a millisecond integer.
 #
 # IMPORTANT: validate these against the exact KWOK version pinned in
 # config/harness.env (KWOK_VERSION); the Stage schema is v1alpha1 and evolves.

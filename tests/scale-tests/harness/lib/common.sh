@@ -28,6 +28,16 @@ if [[ -z "${_HARNESS_ENV_LOADED:-}" ]]; then
   export _HARNESS_ENV_LOADED=1
 fi
 
+# Fixed cluster constants — the same on every target cluster, so they are not
+# surfaced in harness.env. Still overridable via the environment for the rare
+# non-standard cluster. (harnessctl carries the identical defaults in config.go.)
+export NVS_NAMESPACE="${NVS_NAMESPACE:-nvsentinel}"
+export MONITORING_NAMESPACE="${MONITORING_NAMESPACE:-monitoring}"
+export CERT_MANAGER_NAMESPACE="${CERT_MANAGER_NAMESPACE:-cert-manager}"
+# KWOK's upstream kwok.yaml is applied verbatim and hardcodes namespace
+# kube-system, so the controller can only ever land there; this just matches it.
+export KWOK_NAMESPACE="${KWOK_NAMESPACE:-kube-system}"
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -41,23 +51,11 @@ fatal() { err "$*"; exit 1; }
 step() { printf '\n%s ===== %s =====\n' "$(_ts)" "$*" >&2; }
 
 # ---------------------------------------------------------------------------
-# kubectl / helm wrappers (honor HARNESS_KUBE_CONTEXT)
+# kubectl / helm wrappers — use whatever context the caller has set. Setting the
+# correct context before running is the operator's responsibility.
 # ---------------------------------------------------------------------------
-kc() {
-  if [[ -n "${HARNESS_KUBE_CONTEXT}" ]]; then
-    kubectl --context "${HARNESS_KUBE_CONTEXT}" "$@"
-  else
-    kubectl "$@"
-  fi
-}
-
-hlm() {
-  if [[ -n "${HARNESS_KUBE_CONTEXT}" ]]; then
-    helm --kube-context "${HARNESS_KUBE_CONTEXT}" "$@"
-  else
-    helm "$@"
-  fi
-}
+kc()  { kubectl "$@"; }
+hlm() { helm "$@"; }
 
 # ---------------------------------------------------------------------------
 # Preconditions
@@ -130,7 +128,8 @@ record_result() {
 # ---------------------------------------------------------------------------
 prom_query() {
   local query="$1"
-  local svc="prometheus-kube-prometheus-prometheus"
+  # Matches fullnameOverride=prometheus in values-kube-prometheus-stack.yaml.
+  local svc="${PROM_SERVICE:-prometheus-prometheus}"
   # Uses `kubectl exec` into the prometheus pod's curl-less environment is
   # unreliable, so we port-forward briefly. Callers that need many queries
   # should hold a port-forward open themselves.

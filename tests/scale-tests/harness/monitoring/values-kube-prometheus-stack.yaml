@@ -18,6 +18,10 @@ prometheus:
     evaluationInterval: 15s
     retention: 15d
     retentionSize: "40GB"
+    # Compress the WAL: at tens of thousands of targets the WAL is a large share
+    # of Prometheus' memory/disk churn; compression trades a little CPU for a lot
+    # of headroom at the node ceiling.
+    walCompression: true
     # Discover ServiceMonitors/PodMonitors in ALL namespaces regardless of
     # helm-release labels, so NVSentinel + MongoDB + the harness are captured.
     serviceMonitorSelectorNilUsesHelmValues: false
@@ -45,6 +49,24 @@ prometheus:
 # kubelet scrape jobs must be constrained to real nodes only.
 nodeExporter:
   enabled: true
+
+# node-exporter is a DaemonSet whose default tolerations include
+# `{operator: Exists, effect: NoSchedule}`, which tolerates the KWOK
+# `kwok.x-k8s.io/node=fake:NoSchedule` taint — so without this it would place a
+# pod on EVERY KWOK node (50k pods at the P0.2 target that can never run on a
+# missing kubelet). The DaemonSet controller honors nodeAffinity, so exclude
+# fake nodes here (subchart values live under `prometheus-node-exporter`, not
+# `nodeExporter`). This is what keeps P0.2 cluster CPU/memory within bounds.
+prometheus-node-exporter:
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: type
+                operator: NotIn
+                values: ["kwok"]
+
 kube-state-metrics:
   # KSM watches every node/pod object — at 50k nodes this is the single most
   # important scaling knob. Give it real headroom.
@@ -60,10 +82,41 @@ kube-state-metrics:
 kubelet:
   enabled: true
   serviceMonitor:
-    # Only real nodes run a kubelet; KWOK nodes will show as down otherwise.
-    # (No selector knob upstream — rely on relabeling in additionalScrapeConfigs
-    # if KWOK "down" targets pollute your alerts.)
+    # THE kubelet-scale knob. The prometheus-operator maintains a single `kubelet`
+    # Endpoints object with one address per Node, so at the P0.2 target Prometheus
+    # is handed ~50k kubelet + ~50k cAdvisor targets — every KWOK one permanently
+    # "down" (no real kubelet), each retried every scrapeInterval. That wastes the
+    # scrape budget, inflates Prometheus memory with churn, and buries real-node
+    # health in a sea of down targets.
+    #
+    # There is no per-node selector upstream, so we DROP KWOK targets before the
+    # scrape via relabeling. `attachMetadata.node: true` exposes each target's Node
+    # object labels as `__meta_kubernetes_node_label_*`, letting us match the same
+    # `type=kwok` convention used everywhere else in the harness (prefix-agnostic —
+    # survives a change to KWOK_NODE_PREFIX). Overriding `relabelings` /
+    # `cAdvisorRelabelings` REPLACES the chart defaults, so the default
+    # `metrics_path` rewrite is repeated here before the drop.
+    attachMetadata:
+      node: true
     cAdvisor: true
+    # /metrics/probes and /metrics/resource would each add another ~50k-target
+    # scrape set; they carry nothing Phase 0 asserts on, so switch them off.
+    probes: false
+    resource: false
+    relabelings:
+      - action: replace
+        sourceLabels: [__metrics_path__]
+        targetLabel: metrics_path
+      - action: drop
+        sourceLabels: [__meta_kubernetes_node_label_type]
+        regex: kwok
+    cAdvisorRelabelings:
+      - action: replace
+        sourceLabels: [__metrics_path__]
+        targetLabel: metrics_path
+      - action: drop
+        sourceLabels: [__meta_kubernetes_node_label_type]
+        regex: kwok
 
 grafana:
   enabled: true

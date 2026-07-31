@@ -1,6 +1,6 @@
 results/
 *.bak
-# built harnessctl binaries (image is built/pushed, binaries are not committed)
+# built harnessctl binaries (staged into the cluster at runtime, not committed)
 harnessctl/harnessctl
 harnessctl/harnessctl-*
 
