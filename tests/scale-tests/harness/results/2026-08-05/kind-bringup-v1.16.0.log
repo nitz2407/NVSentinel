@@ -1,0 +1,227 @@
+
+2026-08-05T10:51:37Z ===== P0.1 bring-up: verifying cluster reachability =====
+2026-08-05T10:51:37Z [INFO]  cluster reachable: kubernetes v1.34.0
+
+2026-08-05T10:51:37Z ===== P0.1 bring-up: detecting components =====
+2026-08-05T10:51:37Z [INFO]    kube-prometheus-stack  MISSING
+2026-08-05T10:51:37Z [INFO]    metrics-server         MISSING
+2026-08-05T10:51:37Z [INFO]    kwok                   MISSING
+2026-08-05T10:51:37Z [INFO]    cert-manager           MISSING
+2026-08-05T10:51:37Z [INFO]    nvsentinel             MISSING
+2026-08-05T10:51:37Z [INFO]      - janitor (in-chart)  MISSING
+
+2026-08-05T10:51:37Z ===== P0.1 bring-up: installing 5 script(s) from phase0 =====
+2026-08-05T10:51:37Z [INFO]  running install script: phase0/10-install-monitoring.sh
+
+2026-08-05T10:51:37Z ===== P0.1 monitoring: kube-prometheus-stack =====
+2026-08-05T10:51:37Z [INFO]  creating namespace prometheus
+namespace/prometheus created
+2026-08-05T10:51:38Z [INFO]  adding prometheus-community helm repo (idempotent)
+2026-08-05T10:51:38Z [INFO]  installing/upgrading kube-prometheus-stack 65.5.0
+Release "prometheus" does not exist. Installing it now.
+W0805 16:21:40.670734 4013282 warnings.go:70] unrecognized format "int32"
+W0805 16:21:40.670767 4013282 warnings.go:70] unrecognized format "int64"
+W0805 16:21:40.775948 4013282 warnings.go:70] unrecognized format "int32"
+W0805 16:21:40.775979 4013282 warnings.go:70] unrecognized format "int64"
+W0805 16:21:40.806557 4013282 warnings.go:70] unrecognized format "int64"
+W0805 16:21:40.843868 4013282 warnings.go:70] unrecognized format "int64"
+W0805 16:21:40.922481 4013282 warnings.go:70] unrecognized format "int64"
+W0805 16:21:40.922519 4013282 warnings.go:70] unrecognized format "int32"
+W0805 16:21:41.028453 4013282 warnings.go:70] unrecognized format "int32"
+W0805 16:21:41.028481 4013282 warnings.go:70] unrecognized format "int64"
+W0805 16:21:41.160131 4013282 warnings.go:70] unrecognized format "int64"
+W0805 16:21:41.160157 4013282 warnings.go:70] unrecognized format "int32"
+W0805 16:21:41.192852 4013282 warnings.go:70] unrecognized format "int64"
+W0805 16:21:41.261583 4013282 warnings.go:70] unrecognized format "int32"
+W0805 16:21:41.261604 4013282 warnings.go:70] unrecognized format "int64"
+W0805 16:21:52.522838 4013282 warnings.go:70] spec.SessionAffinity is ignored for headless services
+NAME: prometheus
+LAST DEPLOYED: Wed Aug  5 16:21:41 2026
+NAMESPACE: prometheus
+STATUS: deployed
+REVISION: 1
+NOTES:
+kube-prometheus-stack has been installed. Check its status by running:
+  kubectl --namespace prometheus get pods -l "release=prometheus"
+
+Visit https://github.com/prometheus-operator/kube-prometheus for instructions on how to create & configure Alertmanager and Prometheus instances using the Operator.
+2026-08-05T10:53:32Z [INFO]  waiting for prometheus + kube-state-metrics to be ready
+2026-08-05T10:53:32Z [INFO]  waiting (<=300s) for: prometheus operator rollout
+deployment "prometheus-operator" successfully rolled out
+2026-08-05T10:53:32Z [INFO]  ready: prometheus operator rollout
+2026-08-05T10:53:32Z [INFO]  waiting (<=300s) for: kube-state-metrics rollout
+deployment "prometheus-kube-state-metrics" successfully rolled out
+2026-08-05T10:53:32Z [INFO]  ready: kube-state-metrics rollout
+2026-08-05T10:53:32Z [INFO]  monitoring stack ready in namespace prometheus
+2026-08-05T10:53:32Z [INFO]  running install script: phase0/15-install-metrics-server.sh
+
+2026-08-05T10:53:32Z ===== P0.1 metrics-server: install v0.7.2 =====
+2026-08-05T10:53:32Z [INFO]  applying metrics-server v0.7.2
+serviceaccount/metrics-server created
+clusterrole.rbac.authorization.k8s.io/system:aggregated-metrics-reader created
+clusterrole.rbac.authorization.k8s.io/system:metrics-server created
+rolebinding.rbac.authorization.k8s.io/metrics-server-auth-reader created
+clusterrolebinding.rbac.authorization.k8s.io/metrics-server:system:auth-delegator created
+clusterrolebinding.rbac.authorization.k8s.io/system:metrics-server created
+service/metrics-server created
+deployment.apps/metrics-server created
+apiservice.apiregistration.k8s.io/v1beta1.metrics.k8s.io created
+2026-08-05T10:53:33Z [INFO]  enabling --kubelet-insecure-tls (self-signed kubelet serving certs)
+deployment.apps/metrics-server patched
+2026-08-05T10:53:33Z [INFO]  waiting for metrics-server rollout
+2026-08-05T10:53:33Z [INFO]  waiting (<=180s) for: metrics-server rollout
+Waiting for deployment spec update to be observed...
+Waiting for deployment "metrics-server" rollout to finish: 0 out of 1 new replicas have been updated...
+Waiting for deployment "metrics-server" rollout to finish: 1 old replicas are pending termination...
+error: timed out waiting for the condition
+Waiting for deployment "metrics-server" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "metrics-server" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "metrics-server" rollout to finish: 1 old replicas are pending termination...
+deployment "metrics-server" successfully rolled out
+2026-08-05T10:53:59Z [INFO]  ready: metrics-server rollout
+2026-08-05T10:53:59Z [INFO]  waiting for metrics.k8s.io to serve node metrics
+2026-08-05T10:53:59Z [INFO]  waiting (<=120s) for: metrics.k8s.io node metrics
+2026-08-05T10:54:09Z [INFO]  ready: metrics.k8s.io node metrics
+2026-08-05T10:54:09Z [INFO]  metrics-server ready in namespace kube-system
+2026-08-05T10:54:09Z [INFO]  running install script: phase0/20-install-kwok.sh
+
+2026-08-05T10:54:09Z ===== P0.1 KWOK: controller + stages (v0.6.1) =====
+2026-08-05T10:54:09Z [INFO]  applying KWOK CRDs + controller
+customresourcedefinition.apiextensions.k8s.io/attaches.kwok.x-k8s.io created
+customresourcedefinition.apiextensions.k8s.io/clusterattaches.kwok.x-k8s.io created
+Warning: unrecognized format "int64"
+customresourcedefinition.apiextensions.k8s.io/clusterexecs.kwok.x-k8s.io created
+customresourcedefinition.apiextensions.k8s.io/clusterlogs.kwok.x-k8s.io created
+Warning: unrecognized format "int32"
+customresourcedefinition.apiextensions.k8s.io/clusterportforwards.kwok.x-k8s.io created
+customresourcedefinition.apiextensions.k8s.io/clusterresourceusages.kwok.x-k8s.io created
+customresourcedefinition.apiextensions.k8s.io/execs.kwok.x-k8s.io created
+customresourcedefinition.apiextensions.k8s.io/logs.kwok.x-k8s.io created
+customresourcedefinition.apiextensions.k8s.io/metrics.kwok.x-k8s.io created
+customresourcedefinition.apiextensions.k8s.io/portforwards.kwok.x-k8s.io created
+customresourcedefinition.apiextensions.k8s.io/resourceusages.kwok.x-k8s.io created
+customresourcedefinition.apiextensions.k8s.io/stages.kwok.x-k8s.io created
+serviceaccount/kwok-controller created
+clusterrole.rbac.authorization.k8s.io/kwok-controller created
+clusterrolebinding.rbac.authorization.k8s.io/kwok-controller created
+service/kwok-controller created
+deployment.apps/kwok-controller created
+2026-08-05T10:54:10Z [INFO]  applying KWOK upstream default stages (node heartbeat, pod lifecycle)
+stage.kwok.x-k8s.io/node-heartbeat-with-lease created
+stage.kwok.x-k8s.io/node-initialize created
+stage.kwok.x-k8s.io/pod-complete created
+stage.kwok.x-k8s.io/pod-delete created
+stage.kwok.x-k8s.io/pod-ready created
+2026-08-05T10:54:19Z [INFO]  scale-tuning kwok-controller (lease/stage parallelism + CPU) for large fleets
+deployment.apps/kwok-controller patched
+2026-08-05T10:54:19Z [INFO]  waiting for KWOK controller rollout
+2026-08-05T10:54:19Z [INFO]  waiting (<=300s) for: kwok-controller rollout
+Waiting for deployment spec update to be observed...
+Waiting for deployment "kwok-controller" rollout to finish: 0 out of 1 new replicas have been updated...
+Waiting for deployment "kwok-controller" rollout to finish: 1 old replicas are pending termination...
+error: timed out waiting for the condition
+deployment "kwok-controller" successfully rolled out
+2026-08-05T10:54:39Z [INFO]  ready: kwok-controller rollout
+2026-08-05T10:54:39Z [INFO]  applying harness custom stages (graceful delete + janitor job completion)
+stage.kwok.x-k8s.io/pod-delete-graceful created
+stage.kwok.x-k8s.io/janitor-job-pod-complete created
+2026-08-05T10:54:39Z [INFO]  ensuring 'nvidia' RuntimeClass exists (GPUReset reset Job requires it)
+runtimeclass.node.k8s.io/nvidia created
+2026-08-05T10:54:39Z [INFO]  KWOK ready (controller scale-tuned: nodeLeaseParallelism=128, playStage=64/32, CPU req=4, mem lim=16Gi).
+2026-08-05T10:54:39Z [INFO]  running install script: phase0/25-install-cert-manager.sh
+
+2026-08-05T10:54:39Z ===== P0.1 cert-manager: helm install v1.16.2 =====
+2026-08-05T10:54:39Z [INFO]  creating namespace cert-manager
+namespace/cert-manager created
+2026-08-05T10:54:39Z [INFO]  adding jetstack helm repo (idempotent)
+2026-08-05T10:54:40Z [INFO]  installing/upgrading cert-manager v1.16.2 (with CRDs)
+Release "cert-manager" does not exist. Installing it now.
+W0805 16:24:41.147484 4024764 warnings.go:70] unrecognized format "int32"
+W0805 16:24:41.147531 4024764 warnings.go:70] unrecognized format "int64"
+W0805 16:24:41.147493 4024764 warnings.go:70] unrecognized format "int64"
+W0805 16:24:41.147644 4024764 warnings.go:70] unrecognized format "int32"
+W0805 16:24:41.147484 4024764 warnings.go:70] unrecognized format "int64"
+W0805 16:24:41.147734 4024764 warnings.go:70] unrecognized format "int32"
+W0805 16:24:41.147484 4024764 warnings.go:70] unrecognized format "int64"
+W0805 16:24:41.147819 4024764 warnings.go:70] unrecognized format "int32"
+NAME: cert-manager
+LAST DEPLOYED: Wed Aug  5 16:24:40 2026
+NAMESPACE: cert-manager
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+cert-manager v1.16.2 has been deployed successfully!
+
+In order to begin issuing certificates, you will need to set up a ClusterIssuer
+or Issuer resource (for example, by creating a 'letsencrypt-staging' issuer).
+
+More information on the different types of issuers and how to configure them
+can be found in our documentation:
+
+https://cert-manager.io/docs/configuration/
+
+For information on how to configure cert-manager to automatically provision
+Certificates for Ingress resources, take a look at the `ingress-shim`
+documentation:
+
+https://cert-manager.io/docs/usage/ingress/
+2026-08-05T10:55:34Z [INFO]  waiting for cert-manager control plane to be ready
+2026-08-05T10:55:34Z [INFO]  waiting (<=300s) for: cert-manager rollout
+deployment "cert-manager" successfully rolled out
+2026-08-05T10:55:34Z [INFO]  ready: cert-manager rollout
+2026-08-05T10:55:34Z [INFO]  waiting (<=300s) for: cert-manager-webhook rollout
+deployment "cert-manager-webhook" successfully rolled out
+2026-08-05T10:55:34Z [INFO]  ready: cert-manager-webhook rollout
+2026-08-05T10:55:34Z [INFO]  waiting (<=300s) for: cert-manager-cainjector rollout
+deployment "cert-manager-cainjector" successfully rolled out
+2026-08-05T10:55:34Z [INFO]  ready: cert-manager-cainjector rollout
+2026-08-05T10:55:34Z [INFO]  verifying the cert-manager webhook is admitting requests
+2026-08-05T10:55:34Z [INFO]  waiting (<=120s) for: cert-manager webhook admitting Issuers
+issuer.cert-manager.io/nvs-harness-cert-manager-probe created (server dry run)
+2026-08-05T10:55:34Z [INFO]  ready: cert-manager webhook admitting Issuers
+2026-08-05T10:55:34Z [INFO]  cert-manager ready in namespace cert-manager
+2026-08-05T10:55:34Z [INFO]  running install script: phase0/30-install-nvsentinel.sh
+
+2026-08-05T10:55:34Z ===== P0.1 NVSentinel: helm install =====
+2026-08-05T10:55:34Z [INFO]  creating namespace nvsentinel
+namespace/nvsentinel created
+2026-08-05T10:55:34Z [INFO]  cert-manager webhook healthy
+2026-08-05T10:55:34Z [INFO]  installing/upgrading NVSentinel to v1.16.0 from oci://ghcr.io/nvidia/nvsentinel
+2026-08-05T10:55:35Z [INFO]  helm upgrade --install (attempt 1, --take-ownership)
+Release "nvsentinel" does not exist. Installing it now.
+Pulled: ghcr.io/nvidia/nvsentinel:v1.16.0
+Digest: sha256:3a819e43a91aea7480a8eb73dc9be12cc11cc63fa0ffb8473c8e13bdb5d441c1
+W0805 16:25:37.742876 4028430 warnings.go:70] unrecognized format "RFC3339"
+W0805 16:25:37.742902 4028430 warnings.go:70] unrecognized format "uint32"
+W0805 16:25:37.742904 4028430 warnings.go:70] unrecognized format "enum"
+W0805 16:25:37.742905 4028430 warnings.go:70] unrecognized format "int64"
+W0805 16:25:37.790638 4028430 warnings.go:70] unrecognized format "int64"
+W0805 16:25:37.828643 4028430 warnings.go:70] unrecognized format "int64"
+W0805 16:25:37.862084 4028430 warnings.go:70] unrecognized format "int64"
+W0805 16:25:37.905925 4028430 warnings.go:70] unrecognized format "int64"
+W0805 16:25:39.769753 4028430 warnings.go:70] spec.SessionAffinity is ignored for headless services
+NAME: nvsentinel
+LAST DEPLOYED: Wed Aug  5 16:25:37 2026
+NAMESPACE: nvsentinel
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+NVSentinel has been successfully deployed
+2026-08-05T11:11:14Z [INFO]  waiting for core singletons to be ready
+2026-08-05T11:11:14Z [INFO]  waiting (<=300s) for: fault-quarantine rollout
+deployment "fault-quarantine" successfully rolled out
+2026-08-05T11:11:14Z [INFO]  ready: fault-quarantine rollout
+2026-08-05T11:11:14Z [INFO]  waiting (<=300s) for: node-drainer rollout
+deployment "node-drainer" successfully rolled out
+2026-08-05T11:11:14Z [INFO]  ready: node-drainer rollout
+2026-08-05T11:11:14Z [INFO]  waiting (<=300s) for: fault-remediation rollout
+deployment "fault-remediation" successfully rolled out
+2026-08-05T11:11:14Z [INFO]  ready: fault-remediation rollout
+2026-08-05T11:11:14Z [INFO]  NVSentinel installed. Verify the platform-connector DaemonSet scheduled
+2026-08-05T11:11:14Z [INFO]  ONLY on real nodes: kubectl -n nvsentinel get pods -o wide -l app.kubernetes.io/name=nvsentinel
+
+2026-08-05T11:11:14Z ===== P0.1 bring-up: verifying nodes =====
+2026-08-05T11:11:14Z [INFO]  nodes: 1 real, 0 kwok
+2026-08-05T11:11:14Z [INFO]  bring-up complete

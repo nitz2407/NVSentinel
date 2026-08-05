@@ -1,0 +1,16 @@
+[19:10:26] ######## Phase 0 E2E for 5000 nodes -> results-5000/ ########
+[19:10:26] ===== cleanup =====
+[19:11:18] cleanup OK
+[19:11:18] ===== P0.2 scale-nodes -count 5000 =====
+[19:14:27] P0.2 scale-nodes -count 5000 OK
+[19:14:27] ===== P0.5 connector-pool (per-node-pod-limit=10) =====
+[19:16:48] P0.5 connector-pool (per-node-pod-limit=10) OK
+[19:16:48] ===== P0.3 inject =====
+[19:19:37] P0.3 inject run-id=run-1785419208-168cb97b
+[19:19:37] ===== P0.3 reconcile -run-id run-1785419208-168cb97b =====
+[19:20:40] P0.3 reconcile -run-id run-1785419208-168cb97b OK
+[19:20:40] ===== P0.4 janitor-check =====
+[19:22:08] P0.4 janitor-check OK
+[19:22:08] ===== report =====
+[19:22:19] report OK
+[19:22:19] ######## DONE 5000 -> /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results-5000/report.md (run-id=run-1785419208-168cb97b) ########

@@ -1,0 +1,46 @@
+
+2026-08-05T08:04:19Z ===== P0.1 bring-up: verifying cluster reachability =====
+2026-08-05T08:04:20Z [INFO]  cluster reachable: kubernetes v1.32.5
+
+2026-08-05T08:04:20Z ===== P0.1 bring-up: detecting components =====
+2026-08-05T08:04:21Z [INFO]    kube-prometheus-stack  PRESENT  (deploy/prometheus-operator in prometheus)
+2026-08-05T08:04:21Z [INFO]    metrics-server         PRESENT  (deploy/metrics-server in kube-system)
+2026-08-05T08:04:21Z [INFO]    kwok                   PRESENT  (deploy/kwok-controller in kube-system)
+2026-08-05T08:04:21Z [INFO]    cert-manager           PRESENT  (deploy/cert-manager-webhook in cert-manager)
+2026-08-05T08:04:22Z [WARN]    nvsentinel present at v1.16.0 but target is v1.12.0 -> will upgrade
+2026-08-05T08:04:22Z [INFO]    nvsentinel             MISSING
+2026-08-05T08:04:22Z [INFO]    janitor                PRESENT  (deploy/janitor in nvsentinel)
+
+2026-08-05T08:04:22Z ===== P0.1 bring-up: installing 1 script(s) from phase0 =====
+2026-08-05T08:04:22Z [INFO]  running install script: phase0/30-install-nvsentinel.sh
+
+2026-08-05T08:04:22Z ===== P0.1 NVSentinel: helm install =====
+2026-08-05T08:04:23Z [INFO]  installing/upgrading NVSentinel to v1.12.0 from oci://ghcr.io/nvidia/nvsentinel
+2026-08-05T08:04:27Z [INFO]  helm upgrade --install (attempt 1, --take-ownership)
+Pulled: ghcr.io/nvidia/nvsentinel:v1.12.0
+Digest: sha256:12f331ec37aec726bb9e00540978a17ad1c60d065c9938431b9ff661fc2ddc2e
+Release "nvsentinel" has been upgraded. Happy Helming!
+NAME: nvsentinel
+LAST DEPLOYED: Wed Aug  5 13:34:36 2026
+NAMESPACE: nvsentinel
+STATUS: deployed
+REVISION: 9
+TEST SUITE: None
+NOTES:
+NVSentinel has been successfully deployed
+2026-08-05T08:11:29Z [INFO]  waiting for core singletons to be ready
+2026-08-05T08:11:29Z [INFO]  waiting (<=300s) for: fault-quarantine rollout
+deployment "fault-quarantine" successfully rolled out
+2026-08-05T08:11:31Z [INFO]  ready: fault-quarantine rollout
+2026-08-05T08:11:31Z [INFO]  waiting (<=300s) for: node-drainer rollout
+deployment "node-drainer" successfully rolled out
+2026-08-05T08:11:33Z [INFO]  ready: node-drainer rollout
+2026-08-05T08:11:33Z [INFO]  waiting (<=300s) for: fault-remediation rollout
+deployment "fault-remediation" successfully rolled out
+2026-08-05T08:11:35Z [INFO]  ready: fault-remediation rollout
+2026-08-05T08:11:35Z [INFO]  NVSentinel installed. Verify the platform-connector DaemonSet scheduled
+2026-08-05T08:11:35Z [INFO]  ONLY on real nodes: kubectl -n nvsentinel get pods -o wide -l app.kubernetes.io/name=nvsentinel
+
+2026-08-05T08:11:35Z ===== P0.1 bring-up: verifying nodes =====
+2026-08-05T08:11:37Z [INFO]  nodes: 32 real, 0 kwok
+2026-08-05T08:11:37Z [INFO]  bring-up complete

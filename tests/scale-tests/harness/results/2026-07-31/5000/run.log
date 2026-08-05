@@ -1,0 +1,216 @@
+[00:10:50] ######## Phase 0 E2E for 5000 nodes -> results/2026-07-31/5000/ ########
+[00:10:50] ===== cleanup =====
+
+2026-07-30T18:40:50Z ===== cleanup: connector pool =====
+2026-07-30T18:41:02Z [INFO]  connector pool torn down (statefulset + service + injector DaemonSet nvs-harness-connector-pool)
+
+2026-07-30T18:41:02Z ===== cleanup: KWOK nodes =====
+2026-07-30T18:41:03Z [INFO]  deleting 5000 kwok nodes (delete-collection; cascades fake pods)
+2026-07-30T18:41:15Z [INFO]  all kwok nodes deleted
+
+2026-07-30T18:41:15Z ===== cleanup: restart kwok-controller (clear stale lease cache) =====
+2026-07-30T18:41:35Z [INFO]  kwok-controller restarted (clean cache)
+
+2026-07-30T18:41:35Z ===== cleanup: orphaned janitor CRs =====
+2026-07-30T18:41:37Z [INFO]  gpuresets: 427 orphaned CR(s) to remove
+2026-07-30T18:41:37Z [INFO]  rebootnodes: 1 orphaned CR(s) to remove
+2026-07-30T18:41:43Z [INFO]  created 427 placeholder node(s) to unwedge finalizers
+2026-07-30T18:41:47Z [INFO]  gpuresets: cleared finalizers + deleted 427 CR(s)
+2026-07-30T18:41:48Z [INFO]  rebootnodes: cleared finalizers + deleted 1 CR(s)
+2026-07-30T18:41:50Z [INFO]  removed 427 placeholder node(s)
+2026-07-30T18:41:50Z [INFO]  garbage-collected 428 orphaned janitor CR(s)
+2026-07-30T18:41:50Z [INFO]  cleanup complete
+[00:11:50] cleanup OK
+[00:11:50] ===== P0.2 scale-nodes -count 5000 =====
+
+2026-07-30T18:41:50Z ===== P0.2: scale simulated nodes to 5000 =====
+2026-07-30T18:41:51Z [INFO]  existing kwok nodes: 0; target: 5000
+I0731 00:11:54.246630 3272829 request.go:752] "Waited before sending request" delay="1.003991488s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-367"
+I0731 00:12:04.247017 3272829 request.go:752] "Waited before sending request" delay="2.245488837s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0731 00:12:14.247180 3272829 request.go:752] "Waited before sending request" delay="2.250796117s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0731 00:12:24.252135 3272829 request.go:752] "Waited before sending request" delay="2.215242527s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-07-30T18:42:26Z [INFO]    created 2000/5000 nodes this pass
+I0731 00:12:34.256540 3272829 request.go:752] "Waited before sending request" delay="2.249774008s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-2610/status"
+I0731 00:12:44.257113 3272829 request.go:752] "Waited before sending request" delay="2.249978764s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0731 00:12:54.261397 3272829 request.go:752] "Waited before sending request" delay="2.19487439s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-4066"
+2026-07-30T18:42:56Z [INFO]    created 4000/5000 nodes this pass
+I0731 00:13:04.261396 3272829 request.go:752] "Waited before sending request" delay="2.247364107s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-4612/status"
+2026-07-30T18:43:08Z [INFO]  scale: created=5000 skipped=0 failed=0
+2026-07-30T18:43:11Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:43:21Z [INFO]  kwok nodes Ready: 4996/5000
+2026-07-30T18:43:26Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:43:31Z [INFO]  kwok nodes Ready: 4996/5000
+2026-07-30T18:43:36Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:43:41Z [INFO]  kwok nodes Ready: 4998/5000
+2026-07-30T18:43:46Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:43:51Z [INFO]  kwok nodes Ready: 4998/5000
+2026-07-30T18:43:56Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:44:11Z [INFO]  kwok nodes Ready: 4957/5000
+2026-07-30T18:44:16Z [INFO]  kwok nodes Ready: 4997/5000
+2026-07-30T18:44:21Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:44:41Z [INFO]  kwok nodes Ready: 4844/5000
+2026-07-30T18:44:46Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:45:16Z [INFO]  kwok nodes Ready: 4910/5000
+2026-07-30T18:45:21Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:45:41Z [INFO]  kwok nodes Ready: 4924/5000
+2026-07-30T18:45:46Z [INFO]  kwok nodes Ready: 4762/5000
+2026-07-30T18:45:51Z [INFO]  kwok nodes Ready: 4992/5000
+2026-07-30T18:45:56Z [INFO]  kwok nodes Ready: 4796/5000
+2026-07-30T18:46:01Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:46:16Z [INFO]  kwok nodes Ready: 4929/5000
+2026-07-30T18:46:21Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:46:46Z [INFO]  kwok nodes Ready: 4993/5000
+2026-07-30T18:46:51Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:47:06Z [INFO]  kwok nodes Ready: 4826/5000
+2026-07-30T18:47:11Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:47:16Z [INFO]  kwok nodes Ready: 4998/5000
+2026-07-30T18:47:21Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:47:36Z [INFO]  kwok nodes Ready: 4939/5000
+2026-07-30T18:47:41Z [INFO]  kwok nodes Ready: 4963/5000
+2026-07-30T18:47:46Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:48:16Z [INFO]  kwok nodes Ready: 4996/5000
+2026-07-30T18:48:21Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:48:31Z [INFO]  kwok nodes Ready: 4998/5000
+2026-07-30T18:48:36Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:48:51Z [INFO]  kwok nodes Ready: 4998/5000
+2026-07-30T18:48:56Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:49:36Z [INFO]  kwok nodes Ready: 4902/5000
+2026-07-30T18:49:41Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:49:56Z [INFO]  kwok nodes Ready: 4995/5000
+2026-07-30T18:50:01Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:50:06Z [INFO]  kwok nodes Ready: 4998/5000
+2026-07-30T18:50:11Z [INFO]  kwok nodes Ready: 4996/5000
+2026-07-30T18:50:16Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:50:31Z [INFO]  kwok nodes Ready: 4971/5000
+2026-07-30T18:50:36Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:51:21Z [INFO]  kwok nodes Ready: 4966/5000
+2026-07-30T18:51:26Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:51:31Z [INFO]  kwok nodes Ready: 4929/5000
+2026-07-30T18:51:36Z [INFO]  kwok nodes Ready: 4998/5000
+2026-07-30T18:51:41Z [INFO]  kwok nodes Ready: 4997/5000
+2026-07-30T18:51:46Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:52:21Z [INFO]  kwok nodes Ready: 4991/5000
+2026-07-30T18:52:26Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:52:56Z [INFO]  kwok nodes Ready: 4997/5000
+2026-07-30T18:53:01Z [INFO]  kwok nodes Ready: 4996/5000
+2026-07-30T18:53:06Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:53:11Z [INFO]  kwok nodes Ready: 4996/5000
+2026-07-30T18:53:16Z [INFO]  kwok nodes Ready: 4997/5000
+2026-07-30T18:53:21Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:54:26Z [INFO]  kwok nodes Ready: 4838/5000
+2026-07-30T18:54:31Z [INFO]  kwok nodes Ready: 4997/5000
+2026-07-30T18:54:41Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:54:46Z [INFO]  kwok nodes Ready: 4793/5000
+2026-07-30T18:54:51Z [INFO]  kwok nodes Ready: 4994/5000
+2026-07-30T18:54:56Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:56:06Z [INFO]  kwok nodes Ready: 4941/5000
+2026-07-30T18:56:11Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:56:16Z [INFO]  kwok nodes Ready: 4997/5000
+2026-07-30T18:56:21Z [INFO]  kwok nodes Ready: 4996/5000
+2026-07-30T18:56:26Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:56:31Z [INFO]  kwok nodes Ready: 4769/5000
+2026-07-30T18:56:36Z [INFO]  kwok nodes Ready: 4999/5000
+2026-07-30T18:57:01Z [INFO]  kwok nodes Ready: 5000/5000
+2026-07-30T18:57:02Z [INFO]  cluster resources: cluster cpu=1.8% (46.4/2574.8 cores) mem=2.0% (942333/47443157 Mi) over 32 real nodes vs guardrails cpu=85% mem=85%
+2026-07-30T18:57:02Z [INFO]  [P0.2] PASS - ready=5000/5000 in 911s, apiserver p99=0.042 s, cluster cpu=1.8% (46.4/2574.8 cores) mem=2.0% (942333/47443157 Mi) over 32 real nodes vs guardrails cpu=85% mem=85%
+2026-07-30T18:57:02Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-07-31/5000/phase0-results.json (+ phase0-results.xml)
+[00:27:02] P0.2 scale-nodes -count 5000 OK
+[00:27:02] ===== P0.5 connector-pool (per-node-pod-limit=10) =====
+
+2026-07-30T18:57:05Z ===== P0.5: connector pool on real/GPU nodes (emulated fleet=5000) =====
+2026-07-30T18:57:05Z [INFO]  pool sizing: real_nodes=32 ceiling=320 replicas=320 density=10.0/node nodes/connector=16
+2026-07-30T18:57:07Z [INFO]  connector pool torn down (statefulset + service + injector DaemonSet nvs-harness-connector-pool)
+2026-07-30T18:57:08Z [INFO]  connector pool applied: nvs-harness-connector-pool (replicas=320)
+2026-07-30T18:57:08Z [INFO]  connector pool: 0/320 ready
+2026-07-30T18:57:38Z [INFO]  connector pool: 210/320 ready
+2026-07-30T18:57:43Z [INFO]  connector pool: 286/320 ready
+2026-07-30T18:57:48Z [INFO]  connector pool: 320/320 ready
+2026-07-30T18:57:58Z [INFO]  injector DaemonSet applied: nvs-harness-pool-injector pinned to 26 connector node(s) via nvs-harness/pool-node
+2026-07-30T18:57:58Z [INFO]  injector DaemonSet: 0/0 ready
+2026-07-30T18:58:03Z [INFO]  injector DaemonSet: 26/26 ready
+2026-07-30T18:58:03Z [INFO]  [P0.5] PASS - staged 320 connectors (10.0/node) + 26 persistent node injectors; sockets under /var/run/nvs-harness-pool/<pod>; fire events with the P0.3 inject/reconcile flow (drives these resident injectors)
+2026-07-30T18:58:03Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-07-31/5000/phase0-results.json (+ phase0-results.xml)
+[00:28:03] P0.5 connector-pool (per-node-pod-limit=10) OK
+[00:28:03] ===== P0.3 inject =====
+
+2026-07-30T18:58:03Z ===== P0.3 distributed inject across the connector pool (image-free) =====
+2026-07-30T18:59:38Z [INFO]  distributed inject: nodes=26 connectors=320 nodes/conn=16 expect=5120 run-id=run-1785437883-2b8048b2
+
+2026-07-30T18:59:38Z ===== distributed inject: 320 connectors across 26 nodes (resident injector per node, parallel) =====
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00001c: acked=176
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss000011: acked=192
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00000x: acked=192
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss000014: acked=192
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00000v: acked=192
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss000013: acked=192
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00001j: acked=208
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss000010: acked=208
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00001d: acked=208
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00001a: acked=208
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00000w: acked=192
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00000r: acked=176
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00000z: acked=192
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss000026: acked=192
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00001f: acked=192
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00000s: acked=192
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00000t: acked=192
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00001b: acked=192
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00000q: acked=208
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00001h: acked=208
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss000016: acked=208
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss000015: acked=208
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss000019: acked=208
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss00001e: acked=192
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss000012: acked=192
+2026-07-30T19:00:46Z [INFO]  node aks-gpu-12493808-vmss000017: acked=208
+2026-07-30T19:00:46Z [INFO]  [P0.3 inject] run-id=run-1785437883-2b8048b2 connectors=320 expect=5120 acked=5120
+[00:30:46] P0.3 inject run-id=run-1785437883-2b8048b2
+[00:30:46] ===== P0.3 reconcile -run-id run-1785437883-2b8048b2 =====
+
+2026-07-30T19:00:56Z ===== health monitor started (interval 15s) — watching cordoning, CR creation, restarts, MongoDB quorum, resource saturation =====
+
+2026-07-30T19:00:56Z ===== drain: polling stored count for run run-1785437883-2b8048b2 (expect=5120, stable after 2 equal polls, timeout 5m0s) =====
+2026-07-30T19:00:59Z [INFO]  drain: stored=5120/5120 for run run-1785437883-2b8048b2
+2026-07-30T19:00:59Z [INFO]  drain: reached expected total
+
+2026-07-30T19:00:59Z ===== distributed reconcile: per-ID + NodeName across 320 connectors on 26 nodes (resident injector per node, parallel) =====
+2026-07-30T19:01:01Z [INFO]  [monitor] cordoned=194 kwok-ready=5000 gpureset-crs=39 rebootnode-crs=8 mongodb-ready=3/3
+2026-07-30T19:01:23Z [INFO]  [monitor] cordoned=245 kwok-ready=5000 gpureset-crs=49 rebootnode-crs=8 mongodb-ready=3/3
+2026-07-30T19:01:37Z [INFO]  [monitor] cordoned=283 kwok-ready=5000 gpureset-crs=54 rebootnode-crs=8 mongodb-ready=3/3
+{
+  "run_id": "run-1785437883-2b8048b2",
+  "injected": 5120,
+  "acked": 5120,
+  "stored_for_run": 5120,
+  "accounted": 5120,
+  "missing": 0,
+  "unexpected": 0,
+  "loss_fraction": 0,
+  "max_loss_fraction": 0,
+  "verdict": "PASS",
+  "node_checked": 5040,
+  "node_matched": 5040,
+  "node_mismatched": 0,
+  "node_attr_note": "node attribution OK: 5040/5040 sampled events attributed to the correct node",
+  "generated_at_utc": "2026-07-30T19:01:47Z"
+}
+2026-07-30T19:01:47Z [INFO]  [P0.3 reconcile] run-id=run-1785437883-2b8048b2 injected=5120 accounted=5120 missing=0 loss=0.0000 node=5040/5040 verdict=PASS
+2026-07-30T19:01:47Z [INFO]  node attribution OK: 5040/5040 sampled events attributed to the correct node
+
+2026-07-30T19:01:47Z ===== health monitor: verdict=HEALTHY samples=3 cordoned 194→283 gpureset-crs 39→54 restarts=map[] mongo-quorum-lost=false findings=0 =====
+[00:31:47] P0.3 reconcile -run-id run-1785437883-2b8048b2 OK
+[00:31:47] ===== P0.4 janitor-check =====
+
+2026-07-30T19:01:47Z ===== P0.4: janitor reboot + GPU reset on a KWOK node =====
+2026-07-30T19:01:48Z [INFO]  target kwok node: kwok-gpu-0
+2026-07-30T19:03:09Z [INFO]  RebootNode result: PASS
+2026-07-30T19:03:45Z [INFO]  GPUReset result: PASS
+2026-07-30T19:03:45Z [INFO]  [P0.4] PASS - reboot=PASS gpureset=PASS on kwok-gpu-0
+2026-07-30T19:03:45Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-07-31/5000/phase0-results.json (+ phase0-results.xml)
+[00:33:45] P0.4 janitor-check OK
+[00:33:45] ===== report =====
+
+2026-07-30T19:03:45Z ===== report: collecting metrics (window=1h) =====
+2026-07-30T19:03:56Z [INFO]  report written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-07-31/5000/report.md (+ /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-07-31/5000/report.json)
+[00:33:56] report OK
+[00:33:56] ######## DONE 5000 -> /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-07-31/5000/report.md (run-id=run-1785437883-2b8048b2) ########

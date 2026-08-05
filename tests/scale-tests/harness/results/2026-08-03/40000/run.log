@@ -1,0 +1,642 @@
+[17:18:00] ######## Phase 0 E2E for 40000 nodes -> results/2026-08-03/40000/ ########
+[17:18:00] ===== cleanup =====
+
+2026-08-03T11:48:00Z ===== cleanup: connector pool =====
+2026-08-03T11:48:02Z [INFO]  connector pool torn down (statefulset + service + injector DaemonSet nvs-harness-connector-pool)
+
+2026-08-03T11:48:02Z ===== cleanup: KWOK nodes =====
+2026-08-03T11:48:02Z [INFO]  all kwok nodes deleted
+
+2026-08-03T11:48:02Z ===== cleanup: restart kwok-controller (clear stale lease cache) =====
+2026-08-03T11:48:16Z [INFO]  kwok-controller restarted (clean cache)
+
+2026-08-03T11:48:16Z ===== cleanup: orphaned janitor CRs =====
+2026-08-03T11:48:18Z [INFO]  garbage-collected 0 orphaned janitor CR(s)
+2026-08-03T11:48:18Z [INFO]  cleanup complete
+[17:18:18] cleanup OK
+[17:18:18] ===== P0.2 scale-nodes -count 40000 =====
+
+2026-08-03T11:48:18Z ===== P0.2: scale simulated nodes to 40000 =====
+2026-08-03T11:48:20Z [INFO]  existing kwok nodes: 0; target: 40000
+I0803 17:18:22.647015 2022941 request.go:752] "Waited before sending request" delay="1.002117797s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-117"
+I0803 17:18:32.651790 2022941 request.go:752] "Waited before sending request" delay="2.22171568s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-537/status"
+I0803 17:18:42.652614 2022941 request.go:752] "Waited before sending request" delay="2.161217595s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-1080/status"
+I0803 17:18:52.657067 2022941 request.go:752] "Waited before sending request" delay="2.239176336s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-08-03T11:48:57Z [INFO]    created 2000/40000 nodes this pass
+I0803 17:19:02.657660 2022941 request.go:752] "Waited before sending request" delay="2.154012154s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0803 17:19:12.661797 2022941 request.go:752] "Waited before sending request" delay="2.225082699s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-3023/status"
+I0803 17:19:22.662042 2022941 request.go:752] "Waited before sending request" delay="2.231814593s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-3794"
+2026-08-03T11:49:27Z [INFO]    created 4000/40000 nodes this pass
+I0803 17:19:32.667152 2022941 request.go:752] "Waited before sending request" delay="2.224785809s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-4514"
+I0803 17:19:42.667807 2022941 request.go:752] "Waited before sending request" delay="2.224868473s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-5008/status"
+I0803 17:19:52.672186 2022941 request.go:752] "Waited before sending request" delay="2.219983021s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-5674/status"
+2026-08-03T11:49:57Z [INFO]    created 6000/40000 nodes this pass
+I0803 17:20:02.672568 2022941 request.go:752] "Waited before sending request" delay="2.198388066s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-6503"
+I0803 17:20:12.672736 2022941 request.go:752] "Waited before sending request" delay="2.224114031s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-6999/status"
+I0803 17:20:22.677598 2022941 request.go:752] "Waited before sending request" delay="2.230803127s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-08-03T11:50:27Z [INFO]    created 8000/40000 nodes this pass
+I0803 17:20:32.682619 2022941 request.go:752] "Waited before sending request" delay="2.217632095s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-8494"
+I0803 17:20:42.686987 2022941 request.go:752] "Waited before sending request" delay="2.227762002s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-8994/status"
+I0803 17:20:52.687722 2022941 request.go:752] "Waited before sending request" delay="2.235942129s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-9660/status"
+2026-08-03T11:50:58Z [INFO]    created 10000/40000 nodes this pass
+I0803 17:21:02.691791 2022941 request.go:752] "Waited before sending request" delay="2.211718732s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-10494"
+I0803 17:21:12.692469 2022941 request.go:752] "Waited before sending request" delay="2.219763278s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-11158"
+I0803 17:21:22.696911 2022941 request.go:752] "Waited before sending request" delay="2.228648527s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-08-03T11:51:28Z [INFO]    created 12000/40000 nodes this pass
+I0803 17:21:32.701747 2022941 request.go:752] "Waited before sending request" delay="2.163601134s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-12497"
+I0803 17:21:42.701884 2022941 request.go:752] "Waited before sending request" delay="2.216027133s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-13158"
+I0803 17:21:52.702495 2022941 request.go:752] "Waited before sending request" delay="2.229878707s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-13653/status"
+2026-08-03T11:51:58Z [INFO]    created 14000/40000 nodes this pass
+I0803 17:22:02.707082 2022941 request.go:752] "Waited before sending request" delay="2.232450424s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0803 17:22:12.707661 2022941 request.go:752] "Waited before sending request" delay="2.213358621s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0803 17:22:22.712018 2022941 request.go:752] "Waited before sending request" delay="2.162762055s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-15769"
+2026-08-03T11:52:28Z [INFO]    created 16000/40000 nodes this pass
+I0803 17:22:32.712655 2022941 request.go:752] "Waited before sending request" delay="2.234272466s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0803 17:22:42.712658 2022941 request.go:752] "Waited before sending request" delay="2.219001909s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-17151"
+I0803 17:22:52.717022 2022941 request.go:752] "Waited before sending request" delay="2.232979103s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-08-03T11:52:58Z [INFO]    created 18000/40000 nodes this pass
+I0803 17:23:02.717213 2022941 request.go:752] "Waited before sending request" delay="2.208914819s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0803 17:23:12.722135 2022941 request.go:752] "Waited before sending request" delay="2.211890912s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-19151"
+I0803 17:23:22.722340 2022941 request.go:752] "Waited before sending request" delay="2.177404992s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-19656/status"
+2026-08-03T11:53:28Z [INFO]    created 20000/40000 nodes this pass
+I0803 17:23:32.727350 2022941 request.go:752] "Waited before sending request" delay="2.175836483s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0803 17:23:42.727664 2022941 request.go:752] "Waited before sending request" delay="2.223429137s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0803 17:23:52.731807 2022941 request.go:752] "Waited before sending request" delay="2.206467199s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-21654/status"
+2026-08-03T11:53:58Z [INFO]    created 22000/40000 nodes this pass
+I0803 17:24:02.732360 2022941 request.go:752] "Waited before sending request" delay="2.218989341s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-22271/status"
+I0803 17:24:12.737058 2022941 request.go:752] "Waited before sending request" delay="2.234979962s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0803 17:24:22.742522 2022941 request.go:752] "Waited before sending request" delay="2.142285542s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-23569"
+2026-08-03T11:54:32Z [INFO]    created 24000/40000 nodes this pass
+I0803 17:24:32.747185 2022941 request.go:752] "Waited before sending request" delay="2.234016238s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-24062/status"
+I0803 17:24:42.747762 2022941 request.go:752] "Waited before sending request" delay="2.235067156s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-24902"
+I0803 17:24:52.752535 2022941 request.go:752] "Waited before sending request" delay="2.052755083s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-25563"
+I0803 17:25:02.757588 2022941 request.go:752] "Waited before sending request" delay="2.191199628s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-26044/status"
+2026-08-03T11:55:03Z [INFO]    created 26000/40000 nodes this pass
+I0803 17:25:12.761755 2022941 request.go:752] "Waited before sending request" delay="2.227423508s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0803 17:25:22.762645 2022941 request.go:752] "Waited before sending request" delay="2.210302935s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-27505"
+I0803 17:25:32.767678 2022941 request.go:752] "Waited before sending request" delay="2.23569856s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-08-03T11:55:33Z [INFO]    created 28000/40000 nodes this pass
+I0803 17:25:42.772661 2022941 request.go:752] "Waited before sending request" delay="2.20781939s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-28732"
+I0803 17:25:52.777334 2022941 request.go:752] "Waited before sending request" delay="2.22628706s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-29230/status"
+I0803 17:26:02.777665 2022941 request.go:752] "Waited before sending request" delay="2.232868094s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-08-03T11:56:03Z [INFO]    created 30000/40000 nodes this pass
+I0803 17:26:12.782121 2022941 request.go:752] "Waited before sending request" delay="2.142260266s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-30718"
+I0803 17:26:22.782441 2022941 request.go:752] "Waited before sending request" delay="2.202760549s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0803 17:26:32.787312 2022941 request.go:752] "Waited before sending request" delay="2.232412841s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-08-03T11:56:33Z [INFO]    created 32000/40000 nodes this pass
+I0803 17:26:42.787481 2022941 request.go:752] "Waited before sending request" delay="2.145963112s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0803 17:26:52.791993 2022941 request.go:752] "Waited before sending request" delay="2.22292533s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0803 17:27:02.792511 2022941 request.go:752] "Waited before sending request" delay="2.199966665s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-08-03T11:57:03Z [INFO]    created 34000/40000 nodes this pass
+I0803 17:27:12.797133 2022941 request.go:752] "Waited before sending request" delay="2.225882853s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-34612/status"
+I0803 17:27:22.797240 2022941 request.go:752] "Waited before sending request" delay="2.230603594s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-35420"
+I0803 17:27:32.802224 2022941 request.go:752] "Waited before sending request" delay="2.228675187s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-36109"
+2026-08-03T11:57:34Z [INFO]    created 36000/40000 nodes this pass
+I0803 17:27:42.802561 2022941 request.go:752] "Waited before sending request" delay="2.222336124s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0803 17:27:52.807337 2022941 request.go:752] "Waited before sending request" delay="2.163259963s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-37367"
+I0803 17:28:02.812421 2022941 request.go:752] "Waited before sending request" delay="2.224521052s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-08-03T11:58:04Z [INFO]    created 38000/40000 nodes this pass
+I0803 17:28:12.817005 2022941 request.go:752] "Waited before sending request" delay="2.22886002s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-38589/status"
+I0803 17:28:22.817185 2022941 request.go:752] "Waited before sending request" delay="2.201017483s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-39195/status"
+2026-08-03T11:58:32Z [INFO]    created 40000/40000 nodes this pass
+2026-08-03T11:58:35Z [INFO]  scale: created=40000 skipped=0 failed=0
+2026-08-03T11:59:15Z [INFO]  kwok nodes Ready: 27108/40000
+2026-08-03T11:59:20Z [INFO]  kwok nodes Ready: 27703/40000
+2026-08-03T11:59:25Z [INFO]  kwok nodes Ready: 28139/40000
+2026-08-03T11:59:30Z [INFO]  kwok nodes Ready: 27827/40000
+2026-08-03T11:59:35Z [INFO]  kwok nodes Ready: 27700/40000
+2026-08-03T11:59:40Z [INFO]  kwok nodes Ready: 28363/40000
+2026-08-03T11:59:45Z [INFO]  kwok nodes Ready: 28581/40000
+2026-08-03T11:59:50Z [INFO]  kwok nodes Ready: 28618/40000
+2026-08-03T11:59:55Z [INFO]  kwok nodes Ready: 28789/40000
+2026-08-03T12:00:00Z [INFO]  kwok nodes Ready: 28935/40000
+2026-08-03T12:00:05Z [INFO]  kwok nodes Ready: 29138/40000
+2026-08-03T12:00:10Z [INFO]  kwok nodes Ready: 28596/40000
+2026-08-03T12:00:15Z [INFO]  kwok nodes Ready: 29011/40000
+2026-08-03T12:00:20Z [INFO]  kwok nodes Ready: 29396/40000
+2026-08-03T12:00:25Z [INFO]  kwok nodes Ready: 29880/40000
+2026-08-03T12:00:30Z [INFO]  kwok nodes Ready: 29672/40000
+2026-08-03T12:00:35Z [INFO]  kwok nodes Ready: 29877/40000
+2026-08-03T12:00:40Z [INFO]  kwok nodes Ready: 30135/40000
+2026-08-03T12:00:45Z [INFO]  kwok nodes Ready: 29629/40000
+2026-08-03T12:00:50Z [INFO]  kwok nodes Ready: 29631/40000
+2026-08-03T12:00:55Z [INFO]  kwok nodes Ready: 29884/40000
+2026-08-03T12:01:00Z [INFO]  kwok nodes Ready: 29486/40000
+2026-08-03T12:01:05Z [INFO]  kwok nodes Ready: 29487/40000
+2026-08-03T12:01:10Z [INFO]  kwok nodes Ready: 28956/40000
+2026-08-03T12:01:15Z [INFO]  kwok nodes Ready: 28959/40000
+2026-08-03T12:01:20Z [INFO]  kwok nodes Ready: 28973/40000
+2026-08-03T12:01:25Z [INFO]  kwok nodes Ready: 28741/40000
+2026-08-03T12:01:30Z [INFO]  kwok nodes Ready: 28814/40000
+2026-08-03T12:01:35Z [INFO]  kwok nodes Ready: 29379/40000
+2026-08-03T12:01:40Z [INFO]  kwok nodes Ready: 29044/40000
+2026-08-03T12:01:45Z [INFO]  kwok nodes Ready: 29087/40000
+2026-08-03T12:01:50Z [INFO]  kwok nodes Ready: 28768/40000
+2026-08-03T12:01:55Z [INFO]  kwok nodes Ready: 28323/40000
+2026-08-03T12:02:00Z [INFO]  kwok nodes Ready: 28434/40000
+2026-08-03T12:02:05Z [INFO]  kwok nodes Ready: 28670/40000
+2026-08-03T12:02:10Z [INFO]  kwok nodes Ready: 28887/40000
+2026-08-03T12:02:10Z [WARN]  node readiness stalled at 28887/40000 for 1m30s — restarting kwok-controller to force a full re-list (heal 1/3)
+2026-08-03T12:02:24Z [INFO]  kwok-controller restarted (clean cache)
+2026-08-03T12:02:24Z [INFO]  kwok nodes Ready: 29717/40000
+2026-08-03T12:02:25Z [INFO]  kwok nodes Ready: 29558/40000
+2026-08-03T12:02:30Z [INFO]  kwok nodes Ready: 29317/40000
+2026-08-03T12:02:35Z [INFO]  kwok nodes Ready: 29316/40000
+2026-08-03T12:02:40Z [INFO]  kwok nodes Ready: 29338/40000
+2026-08-03T12:02:45Z [INFO]  kwok nodes Ready: 29458/40000
+2026-08-03T12:02:50Z [INFO]  kwok nodes Ready: 29555/40000
+2026-08-03T12:02:55Z [INFO]  kwok nodes Ready: 29367/40000
+2026-08-03T12:03:00Z [INFO]  kwok nodes Ready: 29108/40000
+2026-08-03T12:03:05Z [INFO]  kwok nodes Ready: 29102/40000
+2026-08-03T12:03:10Z [INFO]  kwok nodes Ready: 29476/40000
+2026-08-03T12:03:15Z [INFO]  kwok nodes Ready: 30379/40000
+2026-08-03T12:03:20Z [INFO]  kwok nodes Ready: 31302/40000
+2026-08-03T12:03:25Z [INFO]  kwok nodes Ready: 32610/40000
+2026-08-03T12:03:30Z [INFO]  kwok nodes Ready: 32912/40000
+2026-08-03T12:03:35Z [INFO]  kwok nodes Ready: 32396/40000
+2026-08-03T12:03:40Z [INFO]  kwok nodes Ready: 32900/40000
+2026-08-03T12:03:45Z [INFO]  kwok nodes Ready: 33202/40000
+2026-08-03T12:03:50Z [INFO]  kwok nodes Ready: 33156/40000
+2026-08-03T12:03:55Z [INFO]  kwok nodes Ready: 33151/40000
+2026-08-03T12:04:00Z [INFO]  kwok nodes Ready: 33348/40000
+2026-08-03T12:04:05Z [INFO]  kwok nodes Ready: 34428/40000
+2026-08-03T12:04:10Z [INFO]  kwok nodes Ready: 35834/40000
+2026-08-03T12:04:15Z [INFO]  kwok nodes Ready: 37019/40000
+2026-08-03T12:04:20Z [INFO]  kwok nodes Ready: 37027/40000
+2026-08-03T12:04:25Z [INFO]  kwok nodes Ready: 37526/40000
+2026-08-03T12:04:30Z [INFO]  kwok nodes Ready: 37242/40000
+2026-08-03T12:04:35Z [INFO]  kwok nodes Ready: 36564/40000
+2026-08-03T12:04:40Z [INFO]  kwok nodes Ready: 37019/40000
+2026-08-03T12:04:45Z [INFO]  kwok nodes Ready: 37467/40000
+2026-08-03T12:04:50Z [INFO]  kwok nodes Ready: 37401/40000
+2026-08-03T12:04:55Z [INFO]  kwok nodes Ready: 37032/40000
+2026-08-03T12:05:00Z [INFO]  kwok nodes Ready: 37626/40000
+2026-08-03T12:05:05Z [INFO]  kwok nodes Ready: 38174/40000
+2026-08-03T12:05:10Z [INFO]  kwok nodes Ready: 38159/40000
+2026-08-03T12:05:15Z [INFO]  kwok nodes Ready: 38282/40000
+2026-08-03T12:05:20Z [INFO]  kwok nodes Ready: 38693/40000
+2026-08-03T12:05:25Z [INFO]  kwok nodes Ready: 39020/40000
+2026-08-03T12:05:30Z [INFO]  kwok nodes Ready: 39157/40000
+2026-08-03T12:05:35Z [INFO]  kwok nodes Ready: 38837/40000
+2026-08-03T12:05:40Z [INFO]  kwok nodes Ready: 38637/40000
+2026-08-03T12:05:45Z [INFO]  kwok nodes Ready: 39216/40000
+2026-08-03T12:05:50Z [INFO]  kwok nodes Ready: 39826/40000
+2026-08-03T12:05:55Z [INFO]  kwok nodes Ready: 39311/40000
+2026-08-03T12:06:00Z [INFO]  kwok nodes Ready: 38964/40000
+2026-08-03T12:06:05Z [INFO]  kwok nodes Ready: 39123/40000
+2026-08-03T12:06:10Z [INFO]  kwok nodes Ready: 39027/40000
+2026-08-03T12:06:15Z [INFO]  kwok nodes Ready: 39300/40000
+2026-08-03T12:06:20Z [INFO]  kwok nodes Ready: 38874/40000
+2026-08-03T12:06:25Z [INFO]  kwok nodes Ready: 38850/40000
+2026-08-03T12:06:30Z [INFO]  kwok nodes Ready: 38105/40000
+2026-08-03T12:06:35Z [INFO]  kwok nodes Ready: 37959/40000
+2026-08-03T12:06:40Z [INFO]  kwok nodes Ready: 38060/40000
+2026-08-03T12:06:45Z [INFO]  kwok nodes Ready: 38124/40000
+2026-08-03T12:06:50Z [INFO]  kwok nodes Ready: 38364/40000
+2026-08-03T12:06:55Z [INFO]  kwok nodes Ready: 38539/40000
+2026-08-03T12:07:00Z [INFO]  kwok nodes Ready: 39148/40000
+2026-08-03T12:07:05Z [INFO]  kwok nodes Ready: 38931/40000
+2026-08-03T12:07:10Z [INFO]  kwok nodes Ready: 38352/40000
+2026-08-03T12:07:15Z [INFO]  kwok nodes Ready: 38206/40000
+2026-08-03T12:07:20Z [INFO]  kwok nodes Ready: 38754/40000
+2026-08-03T12:07:25Z [INFO]  kwok nodes Ready: 39081/40000
+2026-08-03T12:07:25Z [WARN]  node readiness stalled at 39081/40000 for 1m30s — restarting kwok-controller to force a full re-list (heal 2/3)
+2026-08-03T12:07:39Z [INFO]  kwok-controller restarted (clean cache)
+2026-08-03T12:07:39Z [INFO]  kwok nodes Ready: 38581/40000
+2026-08-03T12:07:40Z [INFO]  kwok nodes Ready: 38439/40000
+2026-08-03T12:07:45Z [INFO]  kwok nodes Ready: 37882/40000
+2026-08-03T12:07:50Z [INFO]  kwok nodes Ready: 37417/40000
+2026-08-03T12:07:55Z [INFO]  kwok nodes Ready: 37542/40000
+2026-08-03T12:08:00Z [INFO]  kwok nodes Ready: 37631/40000
+2026-08-03T12:08:05Z [INFO]  kwok nodes Ready: 38058/40000
+2026-08-03T12:08:10Z [INFO]  kwok nodes Ready: 37649/40000
+2026-08-03T12:08:15Z [INFO]  kwok nodes Ready: 37529/40000
+2026-08-03T12:08:20Z [INFO]  kwok nodes Ready: 37253/40000
+2026-08-03T12:08:25Z [INFO]  kwok nodes Ready: 37182/40000
+2026-08-03T12:08:30Z [INFO]  kwok nodes Ready: 37071/40000
+2026-08-03T12:08:35Z [INFO]  kwok nodes Ready: 36748/40000
+2026-08-03T12:08:40Z [INFO]  kwok nodes Ready: 36707/40000
+2026-08-03T12:08:45Z [INFO]  kwok nodes Ready: 36975/40000
+2026-08-03T12:08:50Z [INFO]  kwok nodes Ready: 36811/40000
+2026-08-03T12:08:55Z [INFO]  kwok nodes Ready: 36343/40000
+2026-08-03T12:09:00Z [INFO]  kwok nodes Ready: 35953/40000
+2026-08-03T12:09:05Z [INFO]  kwok nodes Ready: 35801/40000
+2026-08-03T12:09:10Z [INFO]  kwok nodes Ready: 36780/40000
+2026-08-03T12:09:10Z [WARN]  node readiness stalled at 36780/40000 for 1m30s — restarting kwok-controller to force a full re-list (heal 3/3)
+2026-08-03T12:09:27Z [INFO]  kwok-controller restarted (clean cache)
+2026-08-03T12:09:27Z [INFO]  kwok nodes Ready: 37141/40000
+2026-08-03T12:09:30Z [INFO]  kwok nodes Ready: 36870/40000
+2026-08-03T12:09:35Z [INFO]  kwok nodes Ready: 37053/40000
+2026-08-03T12:09:40Z [INFO]  kwok nodes Ready: 37603/40000
+2026-08-03T12:09:45Z [INFO]  kwok nodes Ready: 37486/40000
+2026-08-03T12:09:50Z [INFO]  kwok nodes Ready: 37311/40000
+2026-08-03T12:09:55Z [INFO]  kwok nodes Ready: 36946/40000
+2026-08-03T12:10:00Z [INFO]  kwok nodes Ready: 37065/40000
+2026-08-03T12:10:05Z [INFO]  kwok nodes Ready: 36884/40000
+2026-08-03T12:10:10Z [INFO]  kwok nodes Ready: 36925/40000
+2026-08-03T12:10:15Z [INFO]  kwok nodes Ready: 36988/40000
+2026-08-03T12:10:20Z [INFO]  kwok nodes Ready: 36731/40000
+2026-08-03T12:10:25Z [INFO]  kwok nodes Ready: 36672/40000
+2026-08-03T12:10:30Z [INFO]  kwok nodes Ready: 36441/40000
+2026-08-03T12:10:35Z [INFO]  kwok nodes Ready: 36648/40000
+2026-08-03T12:10:40Z [INFO]  kwok nodes Ready: 37274/40000
+2026-08-03T12:10:45Z [INFO]  kwok nodes Ready: 36961/40000
+2026-08-03T12:10:50Z [INFO]  kwok nodes Ready: 36990/40000
+2026-08-03T12:10:55Z [INFO]  kwok nodes Ready: 36686/40000
+2026-08-03T12:11:00Z [INFO]  kwok nodes Ready: 36766/40000
+2026-08-03T12:11:05Z [INFO]  kwok nodes Ready: 37078/40000
+2026-08-03T12:11:10Z [INFO]  kwok nodes Ready: 37053/40000
+2026-08-03T12:11:15Z [INFO]  kwok nodes Ready: 37508/40000
+2026-08-03T12:11:20Z [INFO]  kwok nodes Ready: 37592/40000
+2026-08-03T12:11:25Z [INFO]  kwok nodes Ready: 37912/40000
+2026-08-03T12:11:30Z [INFO]  kwok nodes Ready: 37952/40000
+2026-08-03T12:11:35Z [INFO]  kwok nodes Ready: 38333/40000
+2026-08-03T12:11:40Z [INFO]  kwok nodes Ready: 37634/40000
+2026-08-03T12:11:45Z [INFO]  kwok nodes Ready: 37475/40000
+2026-08-03T12:11:50Z [INFO]  kwok nodes Ready: 38123/40000
+2026-08-03T12:11:55Z [INFO]  kwok nodes Ready: 39052/40000
+2026-08-03T12:12:00Z [INFO]  kwok nodes Ready: 39190/40000
+2026-08-03T12:12:05Z [INFO]  kwok nodes Ready: 38540/40000
+2026-08-03T12:12:10Z [INFO]  kwok nodes Ready: 38988/40000
+2026-08-03T12:12:15Z [INFO]  kwok nodes Ready: 38359/40000
+2026-08-03T12:12:20Z [INFO]  kwok nodes Ready: 38448/40000
+2026-08-03T12:12:25Z [INFO]  kwok nodes Ready: 38238/40000
+2026-08-03T12:12:30Z [INFO]  kwok nodes Ready: 38660/40000
+2026-08-03T12:12:35Z [INFO]  kwok nodes Ready: 38896/40000
+2026-08-03T12:12:40Z [INFO]  kwok nodes Ready: 39004/40000
+2026-08-03T12:12:45Z [INFO]  kwok nodes Ready: 38545/40000
+2026-08-03T12:12:50Z [INFO]  kwok nodes Ready: 38272/40000
+2026-08-03T12:12:55Z [INFO]  kwok nodes Ready: 38524/40000
+2026-08-03T12:13:00Z [INFO]  kwok nodes Ready: 38884/40000
+2026-08-03T12:13:05Z [INFO]  kwok nodes Ready: 39352/40000
+2026-08-03T12:13:10Z [INFO]  kwok nodes Ready: 38592/40000
+2026-08-03T12:13:15Z [INFO]  kwok nodes Ready: 39018/40000
+2026-08-03T12:13:20Z [INFO]  kwok nodes Ready: 38814/40000
+2026-08-03T12:13:25Z [INFO]  kwok nodes Ready: 38696/40000
+2026-08-03T12:13:30Z [INFO]  kwok nodes Ready: 39047/40000
+2026-08-03T12:13:35Z [INFO]  kwok nodes Ready: 38407/40000
+2026-08-03T12:13:40Z [INFO]  kwok nodes Ready: 38009/40000
+2026-08-03T12:13:45Z [INFO]  kwok nodes Ready: 38604/40000
+2026-08-03T12:13:50Z [INFO]  kwok nodes Ready: 38160/40000
+2026-08-03T12:13:55Z [INFO]  kwok nodes Ready: 37464/40000
+2026-08-03T12:14:00Z [INFO]  kwok nodes Ready: 36739/40000
+2026-08-03T12:14:05Z [INFO]  kwok nodes Ready: 36233/40000
+2026-08-03T12:14:10Z [INFO]  kwok nodes Ready: 36623/40000
+2026-08-03T12:14:15Z [INFO]  kwok nodes Ready: 37059/40000
+2026-08-03T12:14:20Z [INFO]  kwok nodes Ready: 37722/40000
+2026-08-03T12:14:25Z [INFO]  kwok nodes Ready: 37772/40000
+2026-08-03T12:14:30Z [INFO]  kwok nodes Ready: 37626/40000
+2026-08-03T12:14:35Z [INFO]  kwok nodes Ready: 37717/40000
+2026-08-03T12:14:40Z [INFO]  kwok nodes Ready: 37821/40000
+2026-08-03T12:14:45Z [INFO]  kwok nodes Ready: 37417/40000
+2026-08-03T12:14:50Z [INFO]  kwok nodes Ready: 38235/40000
+2026-08-03T12:14:55Z [INFO]  kwok nodes Ready: 38364/40000
+2026-08-03T12:15:00Z [INFO]  kwok nodes Ready: 38245/40000
+2026-08-03T12:15:05Z [INFO]  kwok nodes Ready: 37910/40000
+2026-08-03T12:15:10Z [INFO]  kwok nodes Ready: 38259/40000
+2026-08-03T12:15:15Z [INFO]  kwok nodes Ready: 38540/40000
+2026-08-03T12:15:20Z [INFO]  kwok nodes Ready: 38352/40000
+2026-08-03T12:15:25Z [INFO]  kwok nodes Ready: 38339/40000
+2026-08-03T12:15:30Z [INFO]  kwok nodes Ready: 38662/40000
+2026-08-03T12:15:35Z [INFO]  kwok nodes Ready: 38742/40000
+2026-08-03T12:15:40Z [INFO]  kwok nodes Ready: 38688/40000
+2026-08-03T12:15:45Z [INFO]  kwok nodes Ready: 37931/40000
+2026-08-03T12:15:50Z [INFO]  kwok nodes Ready: 38163/40000
+2026-08-03T12:15:55Z [INFO]  kwok nodes Ready: 38557/40000
+2026-08-03T12:16:00Z [INFO]  kwok nodes Ready: 38303/40000
+2026-08-03T12:16:05Z [INFO]  kwok nodes Ready: 38486/40000
+2026-08-03T12:16:10Z [INFO]  kwok nodes Ready: 38596/40000
+2026-08-03T12:16:15Z [INFO]  kwok nodes Ready: 38959/40000
+2026-08-03T12:16:20Z [INFO]  kwok nodes Ready: 39545/40000
+2026-08-03T12:16:25Z [INFO]  kwok nodes Ready: 39447/40000
+2026-08-03T12:16:30Z [INFO]  kwok nodes Ready: 38968/40000
+2026-08-03T12:16:35Z [INFO]  kwok nodes Ready: 39084/40000
+2026-08-03T12:16:40Z [INFO]  kwok nodes Ready: 39032/40000
+2026-08-03T12:16:45Z [INFO]  kwok nodes Ready: 38367/40000
+2026-08-03T12:16:50Z [INFO]  kwok nodes Ready: 38186/40000
+2026-08-03T12:16:55Z [INFO]  kwok nodes Ready: 38302/40000
+2026-08-03T12:17:00Z [INFO]  kwok nodes Ready: 38715/40000
+2026-08-03T12:17:05Z [INFO]  kwok nodes Ready: 38970/40000
+2026-08-03T12:17:10Z [INFO]  kwok nodes Ready: 39580/40000
+2026-08-03T12:17:15Z [INFO]  kwok nodes Ready: 39288/40000
+2026-08-03T12:17:20Z [INFO]  kwok nodes Ready: 38566/40000
+2026-08-03T12:17:25Z [INFO]  kwok nodes Ready: 38723/40000
+2026-08-03T12:17:30Z [INFO]  kwok nodes Ready: 38018/40000
+2026-08-03T12:17:35Z [INFO]  kwok nodes Ready: 38183/40000
+2026-08-03T12:17:40Z [INFO]  kwok nodes Ready: 38474/40000
+2026-08-03T12:17:45Z [INFO]  kwok nodes Ready: 38031/40000
+2026-08-03T12:17:50Z [INFO]  kwok nodes Ready: 37957/40000
+2026-08-03T12:17:55Z [INFO]  kwok nodes Ready: 37750/40000
+2026-08-03T12:18:00Z [INFO]  kwok nodes Ready: 37422/40000
+2026-08-03T12:18:05Z [INFO]  kwok nodes Ready: 36960/40000
+2026-08-03T12:18:10Z [INFO]  kwok nodes Ready: 36930/40000
+2026-08-03T12:18:15Z [INFO]  kwok nodes Ready: 37048/40000
+2026-08-03T12:18:20Z [INFO]  kwok nodes Ready: 38112/40000
+2026-08-03T12:18:25Z [INFO]  kwok nodes Ready: 38490/40000
+2026-08-03T12:18:30Z [INFO]  kwok nodes Ready: 38867/40000
+2026-08-03T12:18:35Z [INFO]  kwok nodes Ready: 38276/40000
+2026-08-03T12:18:40Z [INFO]  kwok nodes Ready: 38586/40000
+2026-08-03T12:18:45Z [INFO]  kwok nodes Ready: 38174/40000
+2026-08-03T12:18:50Z [INFO]  kwok nodes Ready: 37748/40000
+2026-08-03T12:18:55Z [INFO]  kwok nodes Ready: 38144/40000
+2026-08-03T12:19:00Z [INFO]  kwok nodes Ready: 38535/40000
+2026-08-03T12:19:05Z [INFO]  kwok nodes Ready: 38450/40000
+2026-08-03T12:19:10Z [INFO]  kwok nodes Ready: 39186/40000
+2026-08-03T12:19:15Z [INFO]  kwok nodes Ready: 38968/40000
+2026-08-03T12:19:20Z [INFO]  kwok nodes Ready: 38553/40000
+2026-08-03T12:19:25Z [INFO]  kwok nodes Ready: 38616/40000
+2026-08-03T12:19:30Z [INFO]  kwok nodes Ready: 38652/40000
+2026-08-03T12:19:35Z [INFO]  kwok nodes Ready: 38577/40000
+2026-08-03T12:19:40Z [INFO]  kwok nodes Ready: 38680/40000
+2026-08-03T12:19:45Z [INFO]  kwok nodes Ready: 38571/40000
+2026-08-03T12:19:50Z [INFO]  kwok nodes Ready: 38806/40000
+2026-08-03T12:19:55Z [INFO]  kwok nodes Ready: 38989/40000
+2026-08-03T12:20:00Z [INFO]  kwok nodes Ready: 39027/40000
+2026-08-03T12:20:05Z [INFO]  kwok nodes Ready: 38188/40000
+2026-08-03T12:20:10Z [INFO]  kwok nodes Ready: 38502/40000
+2026-08-03T12:20:15Z [INFO]  kwok nodes Ready: 38693/40000
+2026-08-03T12:20:20Z [INFO]  kwok nodes Ready: 38087/40000
+2026-08-03T12:20:25Z [INFO]  kwok nodes Ready: 37252/40000
+2026-08-03T12:20:30Z [INFO]  kwok nodes Ready: 37349/40000
+2026-08-03T12:20:35Z [INFO]  kwok nodes Ready: 37768/40000
+2026-08-03T12:20:40Z [INFO]  kwok nodes Ready: 38207/40000
+2026-08-03T12:20:45Z [INFO]  kwok nodes Ready: 37975/40000
+2026-08-03T12:20:50Z [INFO]  kwok nodes Ready: 38362/40000
+2026-08-03T12:20:55Z [INFO]  kwok nodes Ready: 38406/40000
+2026-08-03T12:21:00Z [INFO]  kwok nodes Ready: 38396/40000
+2026-08-03T12:21:05Z [INFO]  kwok nodes Ready: 37663/40000
+2026-08-03T12:21:10Z [INFO]  kwok nodes Ready: 38967/40000
+2026-08-03T12:21:15Z [INFO]  kwok nodes Ready: 38714/40000
+2026-08-03T12:21:20Z [INFO]  kwok nodes Ready: 38134/40000
+2026-08-03T12:21:25Z [INFO]  kwok nodes Ready: 38432/40000
+2026-08-03T12:21:30Z [INFO]  kwok nodes Ready: 38223/40000
+2026-08-03T12:21:35Z [INFO]  kwok nodes Ready: 38647/40000
+2026-08-03T12:21:40Z [INFO]  kwok nodes Ready: 38460/40000
+2026-08-03T12:21:45Z [INFO]  kwok nodes Ready: 38456/40000
+2026-08-03T12:21:50Z [INFO]  kwok nodes Ready: 38558/40000
+2026-08-03T12:21:55Z [INFO]  kwok nodes Ready: 38189/40000
+2026-08-03T12:22:00Z [INFO]  kwok nodes Ready: 38770/40000
+2026-08-03T12:22:05Z [INFO]  kwok nodes Ready: 38463/40000
+2026-08-03T12:22:10Z [INFO]  kwok nodes Ready: 39014/40000
+2026-08-03T12:22:15Z [INFO]  kwok nodes Ready: 38793/40000
+2026-08-03T12:22:20Z [INFO]  kwok nodes Ready: 38647/40000
+2026-08-03T12:22:25Z [INFO]  kwok nodes Ready: 38100/40000
+2026-08-03T12:22:30Z [INFO]  kwok nodes Ready: 39085/40000
+2026-08-03T12:22:35Z [INFO]  kwok nodes Ready: 39315/40000
+2026-08-03T12:22:40Z [INFO]  kwok nodes Ready: 38772/40000
+2026-08-03T12:22:45Z [INFO]  kwok nodes Ready: 38665/40000
+2026-08-03T12:22:50Z [INFO]  kwok nodes Ready: 38354/40000
+2026-08-03T12:22:55Z [INFO]  kwok nodes Ready: 38407/40000
+2026-08-03T12:23:00Z [INFO]  kwok nodes Ready: 38296/40000
+2026-08-03T12:23:05Z [INFO]  kwok nodes Ready: 38174/40000
+2026-08-03T12:23:10Z [INFO]  kwok nodes Ready: 38012/40000
+2026-08-03T12:23:15Z [INFO]  kwok nodes Ready: 38897/40000
+2026-08-03T12:23:20Z [INFO]  kwok nodes Ready: 38867/40000
+2026-08-03T12:23:25Z [INFO]  kwok nodes Ready: 38417/40000
+2026-08-03T12:23:30Z [INFO]  kwok nodes Ready: 38191/40000
+2026-08-03T12:23:35Z [INFO]  kwok nodes Ready: 38060/40000
+2026-08-03T12:23:40Z [INFO]  kwok nodes Ready: 38446/40000
+2026-08-03T12:23:45Z [INFO]  kwok nodes Ready: 38455/40000
+2026-08-03T12:23:50Z [INFO]  kwok nodes Ready: 38121/40000
+2026-08-03T12:23:55Z [INFO]  kwok nodes Ready: 38284/40000
+2026-08-03T12:24:00Z [INFO]  kwok nodes Ready: 37702/40000
+2026-08-03T12:24:05Z [INFO]  kwok nodes Ready: 38307/40000
+2026-08-03T12:24:10Z [INFO]  kwok nodes Ready: 38609/40000
+2026-08-03T12:24:15Z [INFO]  kwok nodes Ready: 38853/40000
+2026-08-03T12:24:20Z [INFO]  kwok nodes Ready: 38446/40000
+2026-08-03T12:24:25Z [INFO]  kwok nodes Ready: 37817/40000
+2026-08-03T12:24:30Z [INFO]  kwok nodes Ready: 38222/40000
+2026-08-03T12:24:35Z [INFO]  kwok nodes Ready: 38159/40000
+2026-08-03T12:24:40Z [INFO]  kwok nodes Ready: 37987/40000
+2026-08-03T12:24:45Z [INFO]  kwok nodes Ready: 37339/40000
+2026-08-03T12:24:50Z [INFO]  kwok nodes Ready: 36939/40000
+2026-08-03T12:24:55Z [INFO]  kwok nodes Ready: 37365/40000
+2026-08-03T12:25:00Z [INFO]  kwok nodes Ready: 37676/40000
+2026-08-03T12:25:05Z [INFO]  kwok nodes Ready: 37483/40000
+2026-08-03T12:25:10Z [INFO]  kwok nodes Ready: 37177/40000
+2026-08-03T12:25:15Z [INFO]  kwok nodes Ready: 36555/40000
+2026-08-03T12:25:20Z [INFO]  kwok nodes Ready: 35835/40000
+2026-08-03T12:25:25Z [INFO]  kwok nodes Ready: 36880/40000
+2026-08-03T12:25:30Z [INFO]  kwok nodes Ready: 37030/40000
+2026-08-03T12:25:35Z [INFO]  kwok nodes Ready: 37179/40000
+2026-08-03T12:25:40Z [INFO]  kwok nodes Ready: 36927/40000
+2026-08-03T12:25:45Z [INFO]  kwok nodes Ready: 36081/40000
+2026-08-03T12:25:50Z [INFO]  kwok nodes Ready: 35545/40000
+2026-08-03T12:25:55Z [INFO]  kwok nodes Ready: 35731/40000
+2026-08-03T12:26:00Z [INFO]  kwok nodes Ready: 36003/40000
+2026-08-03T12:26:05Z [INFO]  kwok nodes Ready: 36050/40000
+2026-08-03T12:26:10Z [INFO]  kwok nodes Ready: 36645/40000
+2026-08-03T12:26:15Z [INFO]  kwok nodes Ready: 36510/40000
+2026-08-03T12:26:20Z [INFO]  kwok nodes Ready: 36959/40000
+2026-08-03T12:26:25Z [INFO]  kwok nodes Ready: 36612/40000
+2026-08-03T12:26:30Z [INFO]  kwok nodes Ready: 36714/40000
+2026-08-03T12:26:35Z [INFO]  kwok nodes Ready: 36854/40000
+2026-08-03T12:26:40Z [INFO]  kwok nodes Ready: 36679/40000
+2026-08-03T12:26:45Z [INFO]  kwok nodes Ready: 36593/40000
+2026-08-03T12:26:50Z [INFO]  kwok nodes Ready: 36904/40000
+2026-08-03T12:26:55Z [INFO]  kwok nodes Ready: 37406/40000
+2026-08-03T12:27:00Z [INFO]  kwok nodes Ready: 38554/40000
+2026-08-03T12:27:05Z [INFO]  kwok nodes Ready: 38192/40000
+2026-08-03T12:27:10Z [INFO]  kwok nodes Ready: 37847/40000
+2026-08-03T12:27:15Z [INFO]  kwok nodes Ready: 37710/40000
+2026-08-03T12:27:20Z [INFO]  kwok nodes Ready: 37826/40000
+2026-08-03T12:27:25Z [INFO]  kwok nodes Ready: 37147/40000
+2026-08-03T12:27:30Z [INFO]  kwok nodes Ready: 36465/40000
+2026-08-03T12:27:35Z [INFO]  kwok nodes Ready: 35783/40000
+2026-08-03T12:27:40Z [INFO]  kwok nodes Ready: 35021/40000
+2026-08-03T12:27:45Z [INFO]  kwok nodes Ready: 34240/40000
+2026-08-03T12:27:50Z [INFO]  kwok nodes Ready: 33458/40000
+2026-08-03T12:27:55Z [INFO]  kwok nodes Ready: 32674/40000
+2026-08-03T12:28:00Z [INFO]  kwok nodes Ready: 31844/40000
+2026-08-03T12:28:05Z [INFO]  kwok nodes Ready: 31093/40000
+2026-08-03T12:28:10Z [INFO]  kwok nodes Ready: 30461/40000
+2026-08-03T12:28:15Z [INFO]  kwok nodes Ready: 30475/40000
+2026-08-03T12:28:20Z [INFO]  kwok nodes Ready: 29862/40000
+2026-08-03T12:28:25Z [INFO]  kwok nodes Ready: 29136/40000
+2026-08-03T12:28:30Z [INFO]  kwok nodes Ready: 28253/40000
+2026-08-03T12:28:35Z [INFO]  kwok nodes Ready: 27559/40000
+2026-08-03T12:28:40Z [INFO]  kwok nodes Ready: 27097/40000
+2026-08-03T12:28:45Z [INFO]  kwok nodes Ready: 26426/40000
+2026-08-03T12:28:50Z [INFO]  kwok nodes Ready: 25792/40000
+2026-08-03T12:28:55Z [INFO]  kwok nodes Ready: 25329/40000
+2026-08-03T12:29:00Z [INFO]  kwok nodes Ready: 25374/40000
+2026-08-03T12:29:05Z [INFO]  kwok nodes Ready: 25895/40000
+2026-08-03T12:29:10Z [INFO]  kwok nodes Ready: 26627/40000
+2026-08-03T12:29:15Z [INFO]  kwok nodes Ready: 26733/40000
+2026-08-03T12:29:19Z [INFO]  cluster resources: cluster cpu/mem: unavailable (metrics-server absent)
+2026-08-03T12:29:19Z [ERROR] [P0.2] FAIL - only 26733/40000 nodes Ready within 1800s — attribute what saturated first (kwok controller vs api server/etcd)
+2026-08-03T12:29:19Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-08-03/40000/phase0-results.json (+ phase0-results.xml)
+2026-08-03T12:29:19Z [ERROR] scale-nodes: only 26733/40000 nodes Ready within 1800s — attribute what saturated first (kwok controller vs api server/etcd)
+[17:59:19] P0.2 scale-nodes -count 40000 FAILED (exit 1)
+[18:53:42] ######## Phase 0 E2E for 40000 nodes -> results/2026-08-03/40000/ ########
+[18:53:42] ===== cleanup SKIPPED (SKIP_CLEANUP=1) =====
+[18:53:42] ===== P0.2 scale-nodes -count 40000 =====
+
+2026-08-03T13:23:42Z ===== P0.2: scale simulated nodes to 40000 =====
+2026-08-03T13:23:46Z [INFO]  existing kwok nodes: 40000; target: 40000
+2026-08-03T13:23:46Z [INFO]  scale: created=0 skipped=40000 failed=0
+2026-08-03T13:23:59Z [INFO]  kwok nodes Ready: 40000/40000
+E0803 18:53:59.738808 2225239 reflector.go:227] "Failed to watch" err="Get \"https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes?allowWatchBookmarks=true&labelSelector=type%3Dkwok&resourceVersion=1175181707&timeout=5m13s&timeoutSeconds=313&watch=true\": context canceled" logger="UnhandledError" reflector="/tmp/cursor-sandbox-cache/ad05ef258e6f6f496194f6ddfd13d317/go-mod/k8s.io/client-go@v0.36.2/tools/cache/reflector.go:343" type="*v1.Node"
+2026-08-03T13:24:02Z [INFO]  cluster resources: cluster cpu/mem: unavailable (metrics-server absent)
+2026-08-03T13:24:02Z [INFO]  [P0.2] PASS - ready=40000/40000 in 17s, apiserver p99=0.080 s, cluster cpu/mem: unavailable (metrics-server absent)
+2026-08-03T13:24:02Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-08-03/40000/phase0-results.json (+ phase0-results.xml)
+[18:54:03] P0.2 scale-nodes -count 40000 OK
+[18:54:03] ===== P0.5 connector-pool (per-node-pod-limit=20) =====
+
+2026-08-03T13:24:08Z ===== P0.5: connector pool on real/GPU nodes (emulated fleet=40000) =====
+2026-08-03T13:24:10Z [INFO]  pool sizing: real_nodes=32 ceiling=640 replicas=640 density=20.0/node nodes/connector=63
+2026-08-03T13:24:12Z [INFO]  connector pool torn down (statefulset + service + injector DaemonSet nvs-harness-connector-pool)
+2026-08-03T13:24:13Z [INFO]  connector pool applied: nvs-harness-connector-pool (replicas=640)
+2026-08-03T13:24:13Z [INFO]  connector pool: 0/640 ready
+2026-08-03T13:37:48Z [INFO]  connector pool: 1/640 ready
+2026-08-03T13:37:53Z [INFO]  connector pool: 6/640 ready
+2026-08-03T13:37:58Z [INFO]  connector pool: 14/640 ready
+2026-08-03T13:38:03Z [INFO]  connector pool: 21/640 ready
+2026-08-03T13:38:08Z [INFO]  connector pool: 28/640 ready
+2026-08-03T13:38:13Z [INFO]  connector pool: 36/640 ready
+2026-08-03T13:38:18Z [INFO]  connector pool: 41/640 ready
+2026-08-03T13:38:23Z [INFO]  connector pool: 52/640 ready
+2026-08-03T13:38:28Z [INFO]  connector pool: 62/640 ready
+2026-08-03T13:38:33Z [INFO]  connector pool: 67/640 ready
+2026-08-03T13:38:38Z [INFO]  connector pool: 80/640 ready
+2026-08-03T13:38:43Z [INFO]  connector pool: 100/640 ready
+2026-08-03T13:38:48Z [INFO]  connector pool: 103/640 ready
+2026-08-03T13:38:53Z [INFO]  connector pool: 125/640 ready
+2026-08-03T13:38:58Z [INFO]  connector pool: 147/640 ready
+2026-08-03T13:39:03Z [INFO]  connector pool: 164/640 ready
+2026-08-03T13:39:08Z [INFO]  connector pool: 183/640 ready
+2026-08-03T13:39:13Z [INFO]  connector pool: 207/640 ready
+2026-08-03T13:39:18Z [INFO]  connector pool: 223/640 ready
+2026-08-03T13:39:23Z [INFO]  connector pool: 237/640 ready
+2026-08-03T13:39:28Z [INFO]  connector pool: 259/640 ready
+2026-08-03T13:39:33Z [INFO]  connector pool: 277/640 ready
+2026-08-03T13:39:38Z [INFO]  connector pool: 298/640 ready
+2026-08-03T13:39:43Z [INFO]  connector pool: 324/640 ready
+2026-08-03T13:39:48Z [INFO]  connector pool: 347/640 ready
+2026-08-03T13:39:53Z [INFO]  connector pool: 362/640 ready
+2026-08-03T13:39:58Z [INFO]  connector pool: 384/640 ready
+2026-08-03T13:40:03Z [INFO]  connector pool: 410/640 ready
+2026-08-03T13:40:08Z [INFO]  connector pool: 431/640 ready
+2026-08-03T13:40:13Z [INFO]  connector pool: 456/640 ready
+2026-08-03T13:40:18Z [INFO]  connector pool: 480/640 ready
+2026-08-03T13:40:23Z [INFO]  connector pool: 494/640 ready
+2026-08-03T13:40:28Z [INFO]  connector pool: 517/640 ready
+2026-08-03T13:40:33Z [INFO]  connector pool: 545/640 ready
+2026-08-03T13:40:38Z [INFO]  connector pool: 575/640 ready
+2026-08-03T13:40:43Z [INFO]  connector pool: 605/640 ready
+2026-08-03T13:40:48Z [INFO]  connector pool: 618/640 ready
+2026-08-03T13:40:53Z [INFO]  connector pool: 640/640 ready
+2026-08-03T13:41:05Z [INFO]  injector DaemonSet applied: nvs-harness-pool-injector pinned to 26 connector node(s) via nvs-harness/pool-node
+2026-08-03T13:41:06Z [INFO]  injector DaemonSet: 0/0 ready
+2026-08-03T13:43:06Z [ERROR] [P0.5] FAIL - connectors ready but only 0/26 node injectors Ready within 2m0s
+2026-08-03T13:43:06Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-08-03/40000/phase0-results.json (+ phase0-results.xml)
+2026-08-03T13:43:06Z [ERROR] connector-pool: connectors ready but only 0/26 node injectors Ready within 2m0s
+[19:13:06] P0.5 connector-pool (per-node-pod-limit=20) FAILED (exit 1)
+[19:26:23] ######## Phase 0 E2E for 40000 nodes -> results/2026-08-03/40000/ ########
+[19:26:23] ===== cleanup SKIPPED (SKIP_CLEANUP=1) =====
+[19:26:23] ===== P0.2 scale-nodes -count 40000 =====
+
+2026-08-03T13:56:24Z ===== P0.2: scale simulated nodes to 40000 =====
+2026-08-03T13:56:28Z [INFO]  existing kwok nodes: 40000; target: 40000
+2026-08-03T13:56:28Z [INFO]  scale: created=0 skipped=40000 failed=0
+2026-08-03T13:56:42Z [INFO]  kwok nodes Ready: 40000/40000
+2026-08-03T13:56:45Z [INFO]  cluster resources: cluster cpu/mem: unavailable (metrics-server absent)
+2026-08-03T13:56:45Z [INFO]  [P0.2] PASS - ready=40000/40000 in 18s, apiserver p99=0.060 s, cluster cpu/mem: unavailable (metrics-server absent)
+2026-08-03T13:56:45Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-08-03/40000/phase0-results.json (+ phase0-results.xml)
+[19:26:45] P0.2 scale-nodes -count 40000 OK
+[19:26:45] ===== P0.5 connector-pool SKIPPED (SKIP_POOL=1; reusing existing pool) =====
+[19:26:45] ===== P0.3 inject =====
+
+2026-08-03T13:56:45Z ===== P0.3 distributed inject across the connector pool (image-free) =====
+2026-08-03T13:58:34Z [INFO]  distributed inject: nodes=26 connectors=640 nodes/conn=63 expect=40320 fatal-event=gpu-reset run-id=run-1785765405-4e5b9471
+
+2026-08-03T13:58:34Z ===== distributed inject: 640 connectors across 26 nodes (resident injector per node, parallel) =====
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss000017: acked=945
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss00001h: acked=1575
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss00000r: acked=1638
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss00001f: acked=1638
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss00001d: acked=1701
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss000026: acked=1701
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss00001b: acked=1701
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss00001c: acked=1764
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss00000x: acked=1701
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss000010: acked=1764
+2026-08-03T13:58:53Z [INFO]  node aks-cpu-23669785-vmss000000: acked=63
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss00001a: acked=1512
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss000012: acked=882
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss000019: acked=1701
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss00000t: acked=1701
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss00000v: acked=1701
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss000016: acked=1701
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss00001e: acked=1638
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss000013: acked=1638
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss000014: acked=1764
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss00000z: acked=1701
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss000015: acked=1701
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss00001j: acked=1638
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss000011: acked=1638
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss00000w: acked=1575
+2026-08-03T13:58:53Z [INFO]  node aks-gpu-12493808-vmss00000s: acked=1638
+2026-08-03T13:58:53Z [INFO]  [P0.3 inject] run-id=run-1785765405-4e5b9471 connectors=640 expect=40320 acked=40320
+[19:28:53] P0.3 inject run-id=run-1785765405-4e5b9471
+[19:28:53] ===== P0.3 reconcile -run-id run-1785765405-4e5b9471 =====
+
+2026-08-03T13:59:03Z ===== health monitor started (interval 15s) — full-namespace watch of [nvsentinel dgxc-janitor-system]: cordoning, CRs, OOM/restarts/crashloops, image-pull & config errors, Pending/Failed/Evicted, NotReady, workload replicas, Warning events, MongoDB quorum, resource saturation =====
+
+2026-08-03T13:59:03Z ===== drain: polling stored count for run run-1785765405-4e5b9471 (expect=40320, stable after 2 equal polls, timeout 5m0s) =====
+2026-08-03T13:59:06Z [INFO]  drain: stored=40320/40320 for run run-1785765405-4e5b9471
+2026-08-03T13:59:06Z [INFO]  drain: reached expected total
+
+2026-08-03T13:59:06Z ===== distributed reconcile: per-ID + NodeName across 640 connectors on 26 nodes (resident injector per node, parallel) =====
+2026-08-03T13:59:17Z [WARN]  [monitor] event-exporter container event-exporter-77bdfc6878-dphnj/event-exporter entered monitoring with 5 prior restart(s) — pre-existing
+2026-08-03T13:59:17Z [WARN]  [monitor] gpu-health-monitor container gpu-health-monitor-dcgm-4.x-rbvm7/gpu-health-monitor entered monitoring with 1 prior restart(s) — pre-existing
+2026-08-03T13:59:17Z [WARN]  [monitor] kubernetes-object-monitor container kubernetes-object-monitor-7994cd4569-4tj5q/kubernetes-object-monitor entered monitoring with 8 prior restart(s) — pre-existing
+2026-08-03T13:59:17Z [WARN]  [monitor] kubernetes-object-monitor container kubernetes-object-monitor-7994cd4569-4tj5q/kubernetes-object-monitor has prior OOMKilled history (8 restart(s)) — pre-existing; memory limit marginal at this scale
+2026-08-03T13:59:17Z [WARN]  [monitor] kubernetes-object-monitor container kubernetes-object-monitor-7994cd4569-4tj5q/kubernetes-object-monitor entered monitoring already CrashLoopBackOff: back-off 5m0s restarting failed container=kubernetes-object-monitor pod=kubernetes-object-monitor-7994cd4569-4tj5q_nvsentinel(11be55fd-28e4-4c36-95d0-d82cc0216bea) — pre-existing
+2026-08-03T13:59:17Z [WARN]  [monitor] kubernetes-object-monitor pod kubernetes-object-monitor-7994cd4569-4tj5q is Running but NotReady (readiness probe failing)
+2026-08-03T13:59:17Z [WARN]  [monitor] labeler container labeler-7df65494bd-x7hts/labeler entered monitoring with 3 prior restart(s) — pre-existing
+2026-08-03T13:59:17Z [WARN]  [monitor] labeler container labeler-7df65494bd-x7hts/labeler has prior OOMKilled history (3 restart(s)) — pre-existing; memory limit marginal at this scale
+2026-08-03T13:59:17Z [WARN]  [monitor] labeler pod labeler-7df65494bd-x7hts is Running but NotReady (readiness probe failing)
+2026-08-03T13:59:17Z [WARN]  [monitor] labeler pod labeler-7df65494bd-x7hts CPU 500m is >=90% of its 500m limit (saturation)
+2026-08-03T13:59:17Z [WARN]  [monitor] mongodb container mongodb-0/metrics entered monitoring with 1 prior restart(s) — pre-existing
+2026-08-03T13:59:17Z [WARN]  [monitor] mongodb container mongodb-0/metrics has prior OOMKilled history (1 restart(s)) — pre-existing; memory limit marginal at this scale
+2026-08-03T13:59:17Z [WARN]  [monitor] mongodb container mongodb-1/metrics entered monitoring with 1 prior restart(s) — pre-existing
+2026-08-03T13:59:17Z [WARN]  [monitor] mongodb container mongodb-1/metrics has prior OOMKilled history (1 restart(s)) — pre-existing; memory limit marginal at this scale
+2026-08-03T13:59:17Z [WARN]  [monitor] mongodb container mongodb-2/metrics entered monitoring with 4 prior restart(s) — pre-existing
+2026-08-03T13:59:17Z [WARN]  [monitor] mongodb container mongodb-2/metrics has prior OOMKilled history (4 restart(s)) — pre-existing; memory limit marginal at this scale
+2026-08-03T13:59:18Z [WARN]  [monitor] kubectl top unavailable (metrics-server saturated?): kubectl top pod -n dgxc-janitor-system -l !nvs-harness/pool,!nvs-harness/pool-injector --no-headers: exit status 1: error: Metrics API not available — skipping resource-saturation checks
+{
+  "run_id": "run-1785765405-4e5b9471",
+  "injected": 40320,
+  "acked": 40320,
+  "stored_for_run": 40320,
+  "accounted": 40320,
+  "missing": 0,
+  "unexpected": 0,
+  "loss_fraction": 0,
+  "max_loss_fraction": 0,
+  "verdict": "PASS",
+  "node_checked": 5063,
+  "node_matched": 5063,
+  "node_mismatched": 0,
+  "node_attr_note": "node attribution OK: 5063/5063 sampled events attributed to the correct node",
+  "generated_at_utc": "2026-08-03T13:59:20Z"
+}
+2026-08-03T13:59:20Z [INFO]  [P0.3 reconcile] run-id=run-1785765405-4e5b9471 injected=40320 accounted=40320 missing=0 loss=0.0000 node=5063/5063 verdict=PASS
+2026-08-03T13:59:20Z [INFO]  node attribution OK: 5063/5063 sampled events attributed to the correct node
+E0803 19:29:20.951783 2307835 request.go:1196] "Unexpected error when reading response body" err="context canceled"
+2026-08-03T13:59:20Z [WARN]  [monitor] cannot list Warning events in nvsentinel: client rate limiter Wait returned an error: context canceled
+2026-08-03T13:59:20Z [INFO]  [monitor] cordoned=73 kwok-ready=40000 gpureset-crs=0 rebootnode-crs=4146 mongodb-ready=3/3
+
+2026-08-03T13:59:20Z ===== health monitor: verdict=HEALTHY (run-attributable) samples=1 cordoned 73→73 gpureset-crs 0→0 oomkilled-during-run=[] prior-oom=5 pre-existing=11 mongo-quorum-lost=false findings=16 by-category=map[notready:2 oom:5 resource:1 restart:7 waiting:1] =====
+[19:29:20] P0.3 reconcile -run-id run-1785765405-4e5b9471 OK
+[19:29:20] ===== P0.4 janitor-check =====
+
+2026-08-03T13:59:20Z ===== P0.4: janitor reboot + GPU reset on a KWOK node =====
+2026-08-03T13:59:22Z [INFO]  target kwok node: kwok-gpu-0
+2026-08-03T14:05:14Z [INFO]  RebootNode result: FAIL
+2026-08-03T14:05:50Z [INFO]  GPUReset result: PASS
+2026-08-03T14:05:50Z [ERROR] [P0.4] FAIL - reboot=FAIL gpureset=PASS; NodeReady!=True within 5m0s (check janitor reboot provider wiring)
+2026-08-03T14:05:50Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-08-03/40000/phase0-results.json (+ phase0-results.xml)
+2026-08-03T14:05:50Z [ERROR] janitor-check: reboot=FAIL gpureset=PASS; NodeReady!=True within 5m0s (check janitor reboot provider wiring)
+[19:35:50] P0.4 janitor-check FAILED (exit 1)

@@ -1,0 +1,7 @@
+
+2026-07-28T15:40:19Z ===== P0.4: janitor reboot + GPU reset on a KWOK node =====
+2026-07-28T15:40:21Z [INFO]  target kwok node: kwok-gpu-0
+2026-07-28T15:41:12Z [INFO]  RebootNode result: PASS
+2026-07-28T15:41:48Z [INFO]  GPUReset result: PASS
+2026-07-28T15:41:48Z [INFO]  [P0.4] PASS - reboot=PASS gpureset=PASS on kwok-gpu-0
+2026-07-28T15:41:48Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/phase0-results.json (+ phase0-results.xml)

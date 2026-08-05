@@ -1,0 +1,16 @@
+[
+  {
+    "id": "P0.2c",
+    "name": "node ceiling (sweep)",
+    "verdict": "PASS",
+    "message": "full ramp recorded to 50000 nodes; first rung over the advisory guardrail at 10000 — apiserver/etcd saturation (REAL ceiling — bounds Phase 2) (list_nodes_p99=3.661 overall_p99=0.045 client_list=2.73s vs guardrails list=1.00s overall=1.00s); healthy through 0. Decide the ceiling from the per-step numbers.",
+    "metrics": {
+      "ceiling_nodes_proven": 0,
+      "first_over_guardrail_nodes": 10000,
+      "first_over_guardrail_note": "apiserver/etcd saturation (REAL ceiling — bounds Phase 2)",
+      "steps": 5
+    },
+    "started": "2026-07-30T11:21:59.16631332+05:30",
+    "finished": "2026-07-30T12:38:56.874699583+05:30"
+  }
+]

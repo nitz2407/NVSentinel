@@ -1,0 +1,18 @@
+{
+  "run_id": "run-1785419208-168cb97b",
+  "started_utc": "2026-07-30T13:49:49Z",
+  "stopped_utc": "2026-07-30T13:50:40Z",
+  "samples": 4,
+  "cordoned_start": 167,
+  "cordoned_end": 0,
+  "kwok_ready_start": 5000,
+  "kwok_ready_end": 0,
+  "gpureset_crs_start": 24,
+  "gpureset_crs_end": 0,
+  "rebootnode_crs_start": 7,
+  "rebootnode_crs_end": 0,
+  "mongodb_quorum_lost": false,
+  "mongodb_cpu_pinned": false,
+  "findings": null,
+  "verdict": "HEALTHY"
+}

@@ -1,0 +1,223 @@
+{
+  "title": "Phase 0 Harness E2E — Azure (10000 nodes, fatal-fraction=1.0, converged)",
+  "cluster": "https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443",
+  "kube_version": "v1.32.5",
+  "generated_at_utc": "2026-07-31T10:48:03Z",
+  "window": "1h",
+  "footprint": {
+    "connector_pool": 320,
+    "gpureset_crs": 10341,
+    "kwok_nodes": 10000,
+    "node_lock_leases": 1154,
+    "reset_jobs": 7537,
+    "total_nodes": 10032
+  },
+  "nodes": {
+    "total": 10032,
+    "kwok": 10000,
+    "kwok_ready": 10000,
+    "cordoned": 10001,
+    "cordon_with_timestamp": 10000,
+    "cordon_first_ts": "2026-07-31T07:37:19Z",
+    "cordon_last_ts": "2026-07-31T08:43:59Z",
+    "cordon_span_seconds": 4000
+  },
+  "apiserver": {
+    "all_p99_s": {
+      "value": 0.22050087218879533,
+      "ok": true
+    },
+    "err5xx_rate": {
+      "value": 365.82661483333334,
+      "ok": true
+    },
+    "inflight": {
+      "value": 7,
+      "ok": true
+    },
+    "list_nodes_p99_s": {
+      "value": 4.389457364341082,
+      "ok": true
+    },
+    "list_nodes_rate": {
+      "value": 57.729166666666664,
+      "ok": true
+    },
+    "read_p99_s": {
+      "value": 0.09014648961254473,
+      "ok": true
+    },
+    "req_rate": {
+      "value": 441641.3194153331,
+      "ok": true
+    },
+    "write_p99_s": {
+      "value": 0.3396097133510117,
+      "ok": true
+    }
+  },
+  "etcd": {
+    "backend_commit_p99_s": {
+      "value": 0,
+      "ok": false
+    },
+    "db_size_mib": {
+      "value": 0,
+      "ok": false
+    },
+    "wal_fsync_p99_s": {
+      "value": 0,
+      "ok": false
+    }
+  },
+  "janitor_controller": {
+    "reconcile_rate_peak": {
+      "value": 0,
+      "ok": false
+    },
+    "restarts": {
+      "value": 302,
+      "ok": true
+    },
+    "workqueue_depth_peak": {
+      "value": 9857,
+      "ok": true
+    }
+  },
+  "gpureset_crs": {
+    "total": 10341,
+    "phase": {
+      "(pending)": 2796,
+      "Failed": 2,
+      "InProgress": 1151,
+      "Pending": 1,
+      "Succeeded": 6391
+    },
+    "latency": {
+      "count": 6393,
+      "min_s": 0,
+      "p50_s": 31,
+      "p90_s": 415,
+      "p99_s": 2925,
+      "max_s": 5049,
+      "mean_s": 168.03910527139058
+    },
+    "create_with_timestamp": 10341,
+    "create_first_ts": "2026-07-31T07:32:47Z",
+    "create_last_ts": "2026-07-31T10:35:49Z",
+    "create_span_seconds": 10982
+  },
+  "reset_jobs": {
+    "count": 7537,
+    "min_s": 1,
+    "p50_s": 31,
+    "p90_s": 32,
+    "p99_s": 47,
+    "max_s": 57,
+    "mean_s": 24.756401751359956
+  },
+  "reset_jobs_counts": {
+    "succeeded": 7537,
+    "total": 7537
+  },
+  "components": [
+    {
+      "name": "janitor-controller",
+      "pods": 1,
+      "cpu_millicores": 1,
+      "mem_mib": 497
+    },
+    {
+      "name": "kwok-controller",
+      "pods": 1,
+      "cpu_millicores": 228,
+      "mem_mib": 739
+    },
+    {
+      "name": "node-drainer",
+      "pods": 1,
+      "cpu_millicores": 34,
+      "mem_mib": 1606
+    },
+    {
+      "name": "fault-quarantine",
+      "pods": 1,
+      "cpu_millicores": 18,
+      "mem_mib": 454
+    },
+    {
+      "name": "fault-remediation",
+      "pods": 1,
+      "cpu_millicores": 17,
+      "mem_mib": 293
+    },
+    {
+      "name": "kubernetes-object-monitor",
+      "pods": 1,
+      "cpu_millicores": 183,
+      "mem_mib": 1982
+    },
+    {
+      "name": "mongodb",
+      "pods": 3,
+      "cpu_millicores": 813,
+      "mem_mib": 4387
+    },
+    {
+      "name": "connector-pool",
+      "pods": 320,
+      "cpu_millicores": 320,
+      "mem_mib": 4940
+    },
+    {
+      "name": "pool-injector",
+      "pods": 26,
+      "cpu_millicores": 0,
+      "mem_mib": 1326
+    }
+  ],
+  "mongodb": {
+    "ok": false,
+    "total_docs": 0,
+    "run_docs": 0,
+    "note": "unavailable from CLI (mTLS store is cluster-internal); set HARNESS_MONGO_URI or reconcile in-cluster"
+  },
+  "ceiling_attribution": "Remediation throughput bound: janitor gpureset workqueue peaked at 9857 (janitor-controller mem ~497Mi). Raise janitor memory limit + shrink cache footprint (Phase 2). Control plane healthy (read p99=0.090s, inflight peak=7).",
+  "node_ceiling": {
+    "target_nodes": 10000,
+    "ready_nodes": 10000,
+    "failed": 0,
+    "time_to_ready_seconds": 171.405970185,
+    "apiserver_p99_seconds": "0.034",
+    "guardrail_p99_seconds": 1,
+    "cluster_cpu_pct": 0.020734748093026147,
+    "cluster_mem_pct": 0.019883731599058638,
+    "cluster_cpu_used_cores": 53.387,
+    "cluster_mem_used_mi": 943347,
+    "cluster_real_nodes": 32,
+    "cluster_metrics_present": true
+  },
+  "reconcile": {
+    "run_id": "run-1785483330-47bcde59",
+    "injected": 10240,
+    "acked": 10240,
+    "stored_for_run": 10240,
+    "accounted": 10240,
+    "missing": 0,
+    "unexpected": 0,
+    "loss_fraction": 0,
+    "max_loss_fraction": 0,
+    "verdict": "PASS",
+    "node_checked": 5200,
+    "node_matched": 5200,
+    "node_mismatched": 0,
+    "node_attr_note": "node attribution OK: 5200/5200 sampled events attributed to the correct node",
+    "generated_at_utc": "2026-07-31T07:41:12Z"
+  },
+  "guardrails": {
+    "apiserver_p99_s": 1
+  },
+  "notes": {
+    "etcd": "etcd metrics not exposed (managed control plane) — collected none"
+  }
+}

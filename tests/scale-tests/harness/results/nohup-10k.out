@@ -1,0 +1,16 @@
+[13:00:02] ######## Phase 0 E2E for 10000 nodes -> results/2026-07-31/10000/ ########
+[13:00:02] ===== cleanup =====
+[13:00:20] cleanup OK
+[13:00:20] ===== P0.2 scale-nodes -count 10000 =====
+[13:03:13] P0.2 scale-nodes -count 10000 OK
+[13:03:13] ===== P0.5 connector-pool (per-node-pod-limit=10) =====
+[13:05:30] P0.5 connector-pool (per-node-pod-limit=10) OK
+[13:05:30] ===== P0.3 inject =====
+[13:10:12] P0.3 inject run-id=run-1785483330-47bcde59
+[13:10:12] ===== P0.3 reconcile -run-id run-1785483330-47bcde59 =====
+[13:11:12] P0.3 reconcile -run-id run-1785483330-47bcde59 OK
+[13:11:12] ===== P0.4 janitor-check =====
+[13:12:10] P0.4 janitor-check OK
+[13:12:10] ===== report =====
+[13:12:22] report OK
+[13:12:22] ######## DONE 10000 -> /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-07-31/10000/report.md (run-id=run-1785483330-47bcde59) ########

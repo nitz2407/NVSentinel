@@ -1,0 +1,11 @@
+[19:26:23] ######## Phase 0 E2E for 40000 nodes -> results/2026-08-03/40000/ ########
+[19:26:23] ===== cleanup SKIPPED (SKIP_CLEANUP=1) =====
+[19:26:23] ===== P0.2 scale-nodes -count 40000 =====
+[19:26:45] P0.2 scale-nodes -count 40000 OK
+[19:26:45] ===== P0.5 connector-pool SKIPPED (SKIP_POOL=1; reusing existing pool) =====
+[19:26:45] ===== P0.3 inject =====
+[19:28:53] P0.3 inject run-id=run-1785765405-4e5b9471
+[19:28:53] ===== P0.3 reconcile -run-id run-1785765405-4e5b9471 =====
+[19:29:20] P0.3 reconcile -run-id run-1785765405-4e5b9471 OK
+[19:29:20] ===== P0.4 janitor-check =====
+[19:35:50] P0.4 janitor-check FAILED (exit 1)

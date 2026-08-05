@@ -1,0 +1,17 @@
+{
+  "run_id": "run-1785867779-a9a24916",
+  "injected": 102400,
+  "acked": 102400,
+  "stored_for_run": 102400,
+  "accounted": 102400,
+  "missing": 0,
+  "unexpected": 0,
+  "loss_fraction": 0,
+  "max_loss_fraction": 0,
+  "verdict": "PASS",
+  "node_checked": 5600,
+  "node_matched": 5600,
+  "node_mismatched": 0,
+  "node_attr_note": "node attribution OK: 5600/5600 sampled events attributed to the correct node",
+  "generated_at_utc": "2026-08-04T18:26:00Z"
+}

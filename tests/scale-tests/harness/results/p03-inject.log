@@ -1,0 +1,35 @@
+2026-07-28T13:28:20Z [INFO]  using binary: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/harnessctl/harnessctl (sha256=c9640eaa4a0e…)
+2026-07-28T13:28:22Z [INFO]  shard geometry: nodes-per-connector=63 count/conn=100 rate/conn=20 fatal-fraction=0 run-id=p03-scale-1785245300
+
+2026-07-28T13:28:25Z ===== parallel inject: 160 connectors across 26 nodes (resident injector per node, concurrent) =====
+2026-07-28T13:30:26Z [INFO]  node aks-gpu-12493808-vmss000012: injected shard (acked=500)
+2026-07-28T13:30:35Z [INFO]  node aks-gpu-12493808-vmss000015: injected shard (acked=500)
+2026-07-28T13:30:45Z [INFO]  node aks-gpu-12493808-vmss000011: injected shard (acked=600)
+2026-07-28T13:30:45Z [INFO]  node aks-gpu-12493808-vmss000019: injected shard (acked=600)
+2026-07-28T13:30:48Z [INFO]  node aks-gpu-12493808-vmss000026: injected shard (acked=600)
+2026-07-28T13:30:49Z [INFO]  node aks-gpu-12493808-vmss000010: injected shard (acked=600)
+2026-07-28T13:30:49Z [INFO]  node aks-gpu-12493808-vmss000014: injected shard (acked=600)
+2026-07-28T13:30:50Z [INFO]  node aks-gpu-12493808-vmss000013: injected shard (acked=600)
+2026-07-28T13:30:50Z [INFO]  node aks-gpu-12493808-vmss000016: injected shard (acked=600)
+2026-07-28T13:31:02Z [INFO]  node aks-gpu-12493808-vmss000017: injected shard (acked=700)
+2026-07-28T13:32:49Z [INFO]  node aks-gpu-12493808-vmss00001j: injected shard (acked=600)
+2026-07-28T13:33:08Z [INFO]  node aks-gpu-12493808-vmss00001c: injected shard (acked=600)
+2026-07-28T13:33:09Z [INFO]  node aks-gpu-12493808-vmss00001a: injected shard (acked=600)
+2026-07-28T13:33:12Z [INFO]  node aks-gpu-12493808-vmss00001b: injected shard (acked=600)
+2026-07-28T13:33:13Z [INFO]  node aks-gpu-12493808-vmss00001h: injected shard (acked=700)
+2026-07-28T13:33:15Z [INFO]  node aks-gpu-12493808-vmss00001e: injected shard (acked=600)
+2026-07-28T13:33:17Z [INFO]  node aks-gpu-12493808-vmss00000q: injected shard (acked=600)
+2026-07-28T13:33:30Z [INFO]  node aks-gpu-12493808-vmss00000s: injected shard (acked=600)
+2026-07-28T13:33:35Z [INFO]  node aks-gpu-12493808-vmss00001f: injected shard (acked=700)
+2026-07-28T13:33:37Z [INFO]  node aks-gpu-12493808-vmss00001d: injected shard (acked=700)
+2026-07-28T13:35:13Z [INFO]  node aks-gpu-12493808-vmss00000r: injected shard (acked=600)
+2026-07-28T13:35:31Z [INFO]  node aks-gpu-12493808-vmss00000x: injected shard (acked=600)
+2026-07-28T13:35:36Z [INFO]  node aks-gpu-12493808-vmss00000v: injected shard (acked=600)
+2026-07-28T13:35:42Z [INFO]  node aks-gpu-12493808-vmss00000z: injected shard (acked=600)
+2026-07-28T13:35:49Z [INFO]  node aks-gpu-12493808-vmss00000t: injected shard (acked=700)
+2026-07-28T13:35:54Z [INFO]  node aks-gpu-12493808-vmss00000w: injected shard (acked=700)
+
+2026-07-28T13:35:54Z ===== parallel inject complete =====
+2026-07-28T13:35:54Z [INFO]  run-id=p03-scale-1785245300  connectors=160  expected=16000  acked=16000
+2026-07-28T13:35:54Z [INFO]  reconcile with:  harnessctl reconcile -run-id=p03-scale-1785245300 -expect-injected=16000 ...
+p03-scale-1785245300

@@ -1,0 +1,64 @@
+[08:41:53] cordon=9753 gpureset_cr=2609 ready=2609 jobs=2597 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=174 labeler=Running r=756
+[08:44:33] cordon=(skipped) gpureset_cr=2667 ready=2676 jobs=2674 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=174 labeler=Running r=756
+[08:46:58] cordon=(skipped) gpureset_cr=2908 ready=2917 jobs=2916 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=175 labeler=CrashLoopBackOff r=756
+[08:49:23] cordon=(skipped) gpureset_cr=3149 ready=3151 jobs=3139 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=175 labeler=CrashLoopBackOff r=756
+[08:51:52] cordon=(skipped) gpureset_cr=3380 ready=3380 jobs=3368 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=176 labeler=Running r=757
+[08:54:19] cordon=10000 gpureset_cr=3515 ready=3520 jobs=3514 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=176 labeler=CrashLoopBackOff r=757
+[08:57:07] cordon=(skipped) gpureset_cr=3632 ready=3590 jobs=3578 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=OOMKilled r=177 labeler=CrashLoopBackOff r=757
+[08:59:36] cordon=(skipped) gpureset_cr=3734 ready=3730 jobs=3718 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=177 labeler=Running r=758
+[09:02:05] cordon=(skipped) gpureset_cr=3816 ready=3821 jobs=3813 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=177 labeler=CrashLoopBackOff r=758
+[09:04:33] cordon=(skipped) gpureset_cr=3904 ready=3854 jobs=3900 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=178 labeler=CrashLoopBackOff r=758
+[09:07:02] cordon=10000 gpureset_cr=3984 ready=3974 jobs=3962 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=178 labeler=Running r=759
+[09:09:58] cordon=(skipped) gpureset_cr=4081 ready=4087 jobs=4081 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=179 labeler=Running r=759
+[09:12:29] cordon=(skipped) gpureset_cr=4211 ready=4218 jobs=4214 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=Running r=180 labeler=CrashLoopBackOff r=759
+[09:15:01] cordon=(skipped) gpureset_cr=4403 ready=4413 jobs=4414 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=180 labeler=CrashLoopBackOff r=759
+[09:17:33] cordon=(skipped) gpureset_cr=4620 ready=4623 jobs=4610 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=180 labeler=Running r=760
+[09:20:06] cordon=10000 gpureset_cr=4863 ready=4802 jobs=4790 | fault-remediation=Running rst=64 lastTerm=Error | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=181 labeler=CrashLoopBackOff r=760
+[09:22:55] cordon=(skipped) gpureset_cr=5069 ready=4954 jobs=4942 | fault-remediation=Running rst=65 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=OOMKilled r=182 labeler=CrashLoopBackOff r=760
+[09:22:55] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=65
+[09:25:35] cordon=(skipped) gpureset_cr=5413 ready=5168 jobs=5155 | fault-remediation=Running rst=65 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=182 labeler=Running r=761
+[09:25:35] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=65
+[09:28:09] cordon=(skipped) gpureset_cr=5557 ready=5335 jobs=5320 | fault-remediation=Running rst=65 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=OOMKilled r=183 labeler=CrashLoopBackOff r=761
+[09:28:09] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=65
+[09:30:45] cordon=(skipped) gpureset_cr=5816 ready=5335 jobs=5320 | fault-remediation=Running rst=65 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=183 labeler=CrashLoopBackOff r=761
+[09:30:45] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=65
+[09:33:22] cordon=10000 gpureset_cr=6131 ready=5600 jobs=5638 | fault-remediation=Running rst=65 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=OOMKilled r=184 labeler=Running r=762
+[09:33:22] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=65
+[09:36:13] cordon=(skipped) gpureset_cr=6148 ready=5675 jobs=5660 | fault-remediation=Running rst=65 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=184 labeler=CrashLoopBackOff r=762
+[09:36:13] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=65
+[09:38:53] cordon=(skipped) gpureset_cr=6153 ready=5805 jobs=5789 | fault-remediation=Running rst=65 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=185 labeler=Running r=763
+[09:38:53] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=65
+[09:41:33] cordon=(skipped) gpureset_cr=6182 ready=5959 jobs=5945 | fault-remediation=Running rst=65 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=185 labeler=CrashLoopBackOff r=763
+[09:41:33] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=65
+[09:44:13] cordon=(skipped) gpureset_cr=6182 ready=5959 jobs=5945 | fault-remediation=Running rst=65 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=186 labeler=CrashLoopBackOff r=763
+[09:44:13] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=65
+[09:46:51] cordon=10000 gpureset_cr=6674 ready=6121 jobs=6108 | fault-remediation=Running rst=65 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=186 labeler=Running r=764
+[09:46:51] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=65
+[09:49:47] cordon=(skipped) gpureset_cr=6815 ready=6285 jobs=6273 | fault-remediation=Running rst=65 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=187 labeler=CrashLoopBackOff r=764
+[09:49:47] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=65
+[09:52:31] cordon=(skipped) gpureset_cr=7097 ready=6285 jobs=6273 | fault-remediation=Running rst=65 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=187 labeler=CrashLoopBackOff r=764
+[09:52:31] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=65
+[09:55:21] cordon=(skipped) gpureset_cr=7520 ready=4882 jobs=6419 | fault-remediation=Running rst=65 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=188 labeler=Running r=765
+[09:55:21] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=65
+[09:58:01] cordon=(skipped) gpureset_cr=7520 ready=6433 jobs=6419 | fault-remediation=Running rst=65 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=188 labeler=CrashLoopBackOff r=765
+[09:58:01] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=65
+[10:00:46] cordon=10000 gpureset_cr=8026 ready=6556 jobs=6541 | fault-remediation=Running rst=65 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=189 labeler=Running r=766
+[10:00:46] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=65
+[10:03:46] cordon=(skipped) gpureset_cr=8195 ready=6659 jobs=6643 | fault-remediation=Running rst=66 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=189 labeler=CrashLoopBackOff r=766
+[10:03:46] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=66
+[10:06:35] cordon=(skipped) gpureset_cr=8497 ready=6659 jobs=6713 | fault-remediation=Running rst=66 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=190 labeler=CrashLoopBackOff r=766
+[10:06:35] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=66
+[10:09:21] cordon=(skipped) gpureset_cr=8874 ready=6730 jobs=6713 | fault-remediation=Running rst=66 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=190 labeler=Running r=767
+[10:09:21] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=66
+[10:12:07] cordon=(skipped) gpureset_cr=8874 ready=6730 jobs=6713 | fault-remediation=Running rst=66 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=191 labeler=CrashLoopBackOff r=767
+[10:12:07] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=66
+[10:14:55] cordon=10000 gpureset_cr=9446 ready=6839 jobs=6822 | fault-remediation=Running rst=66 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=191 labeler=CrashLoopBackOff r=767
+[10:14:55] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=66
+[10:17:57] cordon=(skipped) gpureset_cr=9564 ready=6877 jobs=6860 | fault-remediation=Running rst=66 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=192 labeler=CrashLoopBackOff r=768
+[10:17:57] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=66
+[10:20:47] cordon=(skipped) gpureset_cr=9966 ready=6901 jobs=6883 | fault-remediation=Running rst=66 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=193 labeler=CrashLoopBackOff r=768
+[10:20:47] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=66
+[10:23:38] cordon=(skipped) gpureset_cr=10233 ready=6901 jobs=6883 | fault-remediation=Running rst=66 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=193 labeler=Running r=769
+[10:23:38] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=66
+[10:26:27] cordon=(skipped) gpureset_cr=10244 ready=6901 jobs=6883 | fault-remediation=Running rst=66 lastTerm=OOMKilled | fq_rst=8 nd_rst=34 mongo_ready=3/3 | nvcf=CrashLoopBackOff r=194 labeler=CrashLoopBackOff r=769
+[10:26:27] !!! RECONCILER-ISSUE fault-remediation status=Running lastTerm=OOMKilled rst=66

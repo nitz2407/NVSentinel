@@ -1,0 +1,17 @@
+[
+  {
+    "id": "P0.4",
+    "name": "janitor action path",
+    "verdict": "PASS",
+    "message": "reboot=PASS gpureset=PASS on kwok-gpu-0",
+    "metrics": {
+      "boot_after": "1785499247-68096964",
+      "boot_before": "00000000-0000-0000-0000-000000000000",
+      "gpureset": "PASS",
+      "node": "kwok-gpu-0",
+      "reboot": "PASS"
+    },
+    "started": "2026-07-31T17:30:05.393364362+05:30",
+    "finished": "2026-07-31T17:31:34.148069139+05:30"
+  }
+]

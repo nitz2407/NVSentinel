@@ -1,0 +1,17 @@
+
+2026-07-28T13:22:18Z ===== P0.5: connector pool on real/GPU nodes (emulated fleet=10000) =====
+2026-07-28T13:22:21Z [INFO]  pool sizing: real_nodes=32 ceiling=160 replicas=160 density=5.0/node nodes/connector=63
+2026-07-28T13:22:31Z [INFO]  connector pool torn down (statefulset + service + injector DaemonSet nvs-harness-connector-pool)
+2026-07-28T13:22:44Z [INFO]  connector pool applied: nvs-harness-connector-pool (replicas=160)
+2026-07-28T13:22:45Z [INFO]  connector pool: 0/160 ready
+2026-07-28T13:23:20Z [INFO]  connector pool: 29/160 ready
+2026-07-28T13:23:25Z [INFO]  connector pool: 65/160 ready
+2026-07-28T13:23:30Z [INFO]  connector pool: 103/160 ready
+2026-07-28T13:23:35Z [INFO]  connector pool: 155/160 ready
+2026-07-28T13:23:40Z [INFO]  connector pool: 160/160 ready
+2026-07-28T13:23:49Z [INFO]  injector DaemonSet applied: nvs-harness-pool-injector pinned to 26 connector node(s) via nvs-harness/pool-node
+2026-07-28T13:23:49Z [INFO]  injector DaemonSet: 0/0 ready
+2026-07-28T13:24:10Z [INFO]  injector DaemonSet: 12/26 ready
+2026-07-28T13:24:29Z [INFO]  injector DaemonSet: 26/26 ready
+2026-07-28T13:24:29Z [INFO]  [P0.5] PASS - deployed 160 connectors (5.0/node) + 26 persistent node injectors; sockets under /var/run/nvs-harness-pool/<pod>; trigger with phase0/40-parallel-inject.sh (no per-run pod creation)
+2026-07-28T13:24:29Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/phase0-results.json (+ phase0-results.xml)

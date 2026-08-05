@@ -1,0 +1,17 @@
+{
+  "apiserver_p99_seconds": "0.083",
+  "cluster_cpu_guardrail": 0.85,
+  "cluster_cpu_pct": 0,
+  "cluster_cpu_used_cores": 0,
+  "cluster_mem_guardrail": 0.85,
+  "cluster_mem_pct": 0,
+  "cluster_mem_used_mi": 0,
+  "cluster_metrics_present": false,
+  "cluster_real_nodes": 0,
+  "created": 50000,
+  "failed": 0,
+  "guardrail_p99_seconds": 1,
+  "ready_nodes": 50000,
+  "target_nodes": 50000,
+  "time_to_ready_seconds": 847.539420018
+}

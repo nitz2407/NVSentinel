@@ -1,0 +1,16 @@
+
+2026-08-05T10:17:07Z ===== P0.1 bring-up: verifying cluster reachability =====
+2026-08-05T10:17:09Z [INFO]  cluster reachable: kubernetes v1.29.1
+
+2026-08-05T10:17:09Z ===== P0.1 bring-up: detecting components =====
+2026-08-05T10:17:09Z [INFO]    kube-prometheus-stack  PRESENT  (deploy/prometheus-operator in prometheus)
+2026-08-05T10:17:09Z [INFO]    metrics-server         PRESENT  (deploy/metrics-server in kube-system)
+2026-08-05T10:17:09Z [INFO]    kwok                   PRESENT  (deploy/kwok-controller in kube-system)
+2026-08-05T10:17:10Z [INFO]    cert-manager           PRESENT  (deploy/cert-manager-webhook in cert-manager)
+2026-08-05T10:17:10Z [INFO]    nvsentinel             PRESENT  (deploy/health-events-analyzer in nvsentinel @ v1.16.0 (== target))
+2026-08-05T10:17:10Z [INFO]      - janitor (in-chart)  PRESENT  (deploy/janitor in nvsentinel)
+2026-08-05T10:17:10Z [INFO]  nothing to install; all P0.1 components already present
+
+2026-08-05T10:17:10Z ===== P0.1 bring-up: verifying nodes =====
+2026-08-05T10:17:11Z [INFO]  nodes: 7 real, 0 kwok
+2026-08-05T10:17:11Z [INFO]  bring-up complete

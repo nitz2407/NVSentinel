@@ -1,0 +1,4 @@
+<testsuite name="nvsentinel-phase0" tests="1" failures="0">
+  <testcase classname="phase0" name="P0.4 janitor action path" time="98.9">
+  </testcase>
+</testsuite>

@@ -1,0 +1,5 @@
+<testsuite name="nvsentinel-phase0" tests="1" failures="1">
+  <testcase classname="phase0" name="P0.4 janitor action path" time="389.1">
+    <failure message="reboot=FAIL gpureset=PASS; NodeReady!=True within 5m0s (check janitor reboot provider wiring)"></failure>
+  </testcase>
+</testsuite>

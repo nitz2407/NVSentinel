@@ -1,0 +1,15 @@
+[
+  {
+    "id": "P0.4",
+    "name": "janitor action path",
+    "verdict": "FAIL",
+    "message": "reboot=FAIL gpureset=FAIL; reboot create: Internal error occurred: failed calling webhook \"vrebootnode-v1alpha1.kb.io\": failed to call webhook: Post \"https://dgxc-janitor-webhook-service.dgxc-janitor-system.svc:443/validate-janitor-dgxc-nvidia-com-v1alpha1-rebootnode?timeout=10s\": no endpoints available for service \"dgxc-janitor-webhook-service\"; gpureset create: Internal error occurred: failed calling webhook \"vgpureset-v1alpha1.kb.io\": failed to call webhook: Post \"https://dgxc-janitor-webhook-service.dgxc-janitor-system.svc:443/validate-janitor-dgxc-nvidia-com-v1alpha1-gpureset?timeout=10s\": no endpoints available for service \"dgxc-janitor-webhook-service\"",
+    "metrics": {
+      "gpureset": "FAIL",
+      "node": "kwok-gpu-0",
+      "reboot": "FAIL"
+    },
+    "started": "2026-08-03T10:50:28.765200345+05:30",
+    "finished": "2026-08-03T10:50:30.880950555+05:30"
+  }
+]

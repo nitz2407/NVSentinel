@@ -1,0 +1,570 @@
+{
+  "run_id": "run-1785498681-b843bfa3",
+  "started_utc": "2026-07-31T11:59:03Z",
+  "stopped_utc": "2026-07-31T12:00:05Z",
+  "samples": 3,
+  "cordoned_start": 882,
+  "cordoned_end": 986,
+  "kwok_ready_start": 20000,
+  "kwok_ready_end": 20000,
+  "gpureset_crs_start": 77,
+  "gpureset_crs_end": 77,
+  "rebootnode_crs_start": 0,
+  "rebootnode_crs_end": 0,
+  "max_restarts_by_component": {
+    "dgxc-janitor": 308,
+    "fault-quarantine": 8,
+    "fault-remediation": 71,
+    "labeler": 784,
+    "metadata-collector": 4455,
+    "mongodb": 16,
+    "node-drainer": 34,
+    "nvcf-drainer": 211,
+    "preflight": 32
+  },
+  "oomkilled_during_run": [
+    "nvcf-drainer/nvcf-drainer-68d65fdf9f-g6vfh/controller"
+  ],
+  "prior_oomkilled_containers": [
+    "fault-remediation/fault-remediation-5bf476f7b5-bjjhk/fault-remediation",
+    "labeler/labeler-6598c77fbf-sw29z/labeler",
+    "mongodb/mongodb-0/mongodb",
+    "node-drainer/node-drainer-576dfbc7-z2vd8/node-drainer",
+    "nvcf-drainer/nvcf-drainer-68d65fdf9f-g6vfh/controller",
+    "preflight/preflight-74458cd8bb-jnsgh/preflight",
+    "dgxc-janitor/dgxc-janitor-controller-manager-686f447f44-gn875/manager",
+    "dgxc-janitor/dgxc-janitor-controller-manager-686f447f44-vfj9v/manager"
+  ],
+  "pre_existing_issues": [
+    "dgxc-janitor (307 prior restarts)",
+    "dgxc-janitor (308 prior restarts)",
+    "dgxc-janitor (prior OOMKilled, 307 restarts)",
+    "dgxc-janitor (prior OOMKilled, 308 restarts)",
+    "fault-quarantine (8 prior restarts)",
+    "fault-remediation (71 prior restarts)",
+    "fault-remediation (CrashLoopBackOff)",
+    "fault-remediation (prior OOMKilled, 71 restarts)",
+    "labeler (784 prior restarts)",
+    "labeler (CrashLoopBackOff)",
+    "labeler (prior OOMKilled, 784 restarts)",
+    "metadata-collector (4454 prior restarts)",
+    "metadata-collector (CrashLoopBackOff)",
+    "mongodb (10 prior restarts)",
+    "mongodb (16 prior restarts)",
+    "mongodb (prior OOMKilled, 16 restarts)",
+    "node-drainer (34 prior restarts)",
+    "node-drainer (prior OOMKilled, 34 restarts)",
+    "nvcf-drainer (210 prior restarts)",
+    "nvcf-drainer (CrashLoopBackOff)",
+    "nvcf-drainer (prior OOMKilled, 210 restarts)",
+    "preflight (32 prior restarts)",
+    "preflight (prior OOMKilled, 32 restarts)"
+  ],
+  "issues_by_category": {
+    "event": 2,
+    "notready": 4,
+    "oom": 9,
+    "resource": 3,
+    "restart": 14,
+    "waiting": 4,
+    "workload": 4
+  },
+  "mongodb_quorum_lost": false,
+  "mongodb_cpu_pinned": false,
+  "findings": [
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "restart",
+      "message": "fault-quarantine container fault-quarantine-6fd65b5cd6-tsk2w/fault-quarantine entered monitoring with 8 prior restart(s) — pre-existing",
+      "details": {
+        "container": "fault-quarantine",
+        "ns": "nvsentinel",
+        "pod": "fault-quarantine-6fd65b5cd6-tsk2w",
+        "restarts": 8,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "restart",
+      "message": "fault-remediation container fault-remediation-5bf476f7b5-bjjhk/fault-remediation entered monitoring with 71 prior restart(s) — pre-existing",
+      "details": {
+        "container": "fault-remediation",
+        "ns": "nvsentinel",
+        "pod": "fault-remediation-5bf476f7b5-bjjhk",
+        "restarts": 71,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "oom",
+      "message": "fault-remediation container fault-remediation-5bf476f7b5-bjjhk/fault-remediation has prior OOMKilled history (71 restart(s)) — pre-existing; memory limit marginal at this scale",
+      "details": {
+        "container": "fault-remediation",
+        "pod": "fault-remediation-5bf476f7b5-bjjhk",
+        "restarts": 71,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "waiting",
+      "message": "fault-remediation container fault-remediation-5bf476f7b5-bjjhk/fault-remediation entered monitoring already CrashLoopBackOff: back-off 2m40s restarting failed container=fault-remediation pod=fault-remediation-5bf476f7b5-bjjhk_nvsentinel(f206f877-d304-4d71-a128-bcd7c9084d96) — pre-existing",
+      "details": {
+        "container": "fault-remediation",
+        "ns": "nvsentinel",
+        "pod": "fault-remediation-5bf476f7b5-bjjhk",
+        "reason": "CrashLoopBackOff",
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "notready",
+      "message": "fault-remediation pod fault-remediation-5bf476f7b5-bjjhk is Running but NotReady (readiness probe failing)",
+      "details": {
+        "ns": "nvsentinel",
+        "pod": "fault-remediation-5bf476f7b5-bjjhk"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "restart",
+      "message": "labeler container labeler-6598c77fbf-sw29z/labeler entered monitoring with 784 prior restart(s) — pre-existing",
+      "details": {
+        "container": "labeler",
+        "ns": "nvsentinel",
+        "pod": "labeler-6598c77fbf-sw29z",
+        "restarts": 784,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "oom",
+      "message": "labeler container labeler-6598c77fbf-sw29z/labeler has prior OOMKilled history (784 restart(s)) — pre-existing; memory limit marginal at this scale",
+      "details": {
+        "container": "labeler",
+        "pod": "labeler-6598c77fbf-sw29z",
+        "restarts": 784,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "waiting",
+      "message": "labeler container labeler-6598c77fbf-sw29z/labeler entered monitoring already CrashLoopBackOff: back-off 5m0s restarting failed container=labeler pod=labeler-6598c77fbf-sw29z_nvsentinel(50b596f2-903b-440f-bdf6-7f4a17a0df93) — pre-existing",
+      "details": {
+        "container": "labeler",
+        "ns": "nvsentinel",
+        "pod": "labeler-6598c77fbf-sw29z",
+        "reason": "CrashLoopBackOff",
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "notready",
+      "message": "labeler pod labeler-6598c77fbf-sw29z is Running but NotReady (readiness probe failing)",
+      "details": {
+        "ns": "nvsentinel",
+        "pod": "labeler-6598c77fbf-sw29z"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "restart",
+      "message": "metadata-collector container metadata-collector-tgmrf/metadata-collector entered monitoring with 4454 prior restart(s) — pre-existing",
+      "details": {
+        "container": "metadata-collector",
+        "ns": "nvsentinel",
+        "pod": "metadata-collector-tgmrf",
+        "restarts": 4454,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "waiting",
+      "message": "metadata-collector container metadata-collector-tgmrf/metadata-collector entered monitoring already CrashLoopBackOff: back-off 5m0s restarting failed container=metadata-collector pod=metadata-collector-tgmrf_nvsentinel(acf65de7-05b0-4a12-84ef-2b51de422b79) — pre-existing",
+      "details": {
+        "container": "metadata-collector",
+        "ns": "nvsentinel",
+        "pod": "metadata-collector-tgmrf",
+        "reason": "CrashLoopBackOff",
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "notready",
+      "message": "metadata-collector pod metadata-collector-tgmrf is Running but NotReady (readiness probe failing)",
+      "details": {
+        "ns": "nvsentinel",
+        "pod": "metadata-collector-tgmrf"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "restart",
+      "message": "mongodb container mongodb-0/mongodb entered monitoring with 16 prior restart(s) — pre-existing",
+      "details": {
+        "container": "mongodb",
+        "ns": "nvsentinel",
+        "pod": "mongodb-0",
+        "restarts": 16,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "oom",
+      "message": "mongodb container mongodb-0/mongodb has prior OOMKilled history (16 restart(s)) — pre-existing; memory limit marginal at this scale",
+      "details": {
+        "container": "mongodb",
+        "pod": "mongodb-0",
+        "restarts": 16,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "resource",
+      "message": "mongodb pod mongodb-0 memory 2Gi is \u003e=85% of its 2Gi limit (OOM risk)",
+      "details": {
+        "mem_bytes": 2104492032,
+        "mem_limit_bytes": 2348810240,
+        "ns": "nvsentinel",
+        "pod": "mongodb-0"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "restart",
+      "message": "mongodb container mongodb-1/mongodb entered monitoring with 10 prior restart(s) — pre-existing",
+      "details": {
+        "container": "mongodb",
+        "ns": "nvsentinel",
+        "pod": "mongodb-1",
+        "restarts": 10,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "restart",
+      "message": "mongodb container mongodb-2/mongodb entered monitoring with 10 prior restart(s) — pre-existing",
+      "details": {
+        "container": "mongodb",
+        "ns": "nvsentinel",
+        "pod": "mongodb-2",
+        "restarts": 10,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "restart",
+      "message": "node-drainer container node-drainer-576dfbc7-z2vd8/node-drainer entered monitoring with 34 prior restart(s) — pre-existing",
+      "details": {
+        "container": "node-drainer",
+        "ns": "nvsentinel",
+        "pod": "node-drainer-576dfbc7-z2vd8",
+        "restarts": 34,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "oom",
+      "message": "node-drainer container node-drainer-576dfbc7-z2vd8/node-drainer has prior OOMKilled history (34 restart(s)) — pre-existing; memory limit marginal at this scale",
+      "details": {
+        "container": "node-drainer",
+        "pod": "node-drainer-576dfbc7-z2vd8",
+        "restarts": 34,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "resource",
+      "message": "node-drainer pod node-drainer-576dfbc7-z2vd8 memory 2Gi is \u003e=85% of its 2Gi limit (OOM risk)",
+      "details": {
+        "mem_bytes": 1982857216,
+        "mem_limit_bytes": 2147483648,
+        "ns": "nvsentinel",
+        "pod": "node-drainer-576dfbc7-z2vd8"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "restart",
+      "message": "nvcf-drainer container nvcf-drainer-68d65fdf9f-g6vfh/controller entered monitoring with 210 prior restart(s) — pre-existing",
+      "details": {
+        "container": "controller",
+        "ns": "nvsentinel",
+        "pod": "nvcf-drainer-68d65fdf9f-g6vfh",
+        "restarts": 210,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "oom",
+      "message": "nvcf-drainer container nvcf-drainer-68d65fdf9f-g6vfh/controller has prior OOMKilled history (210 restart(s)) — pre-existing; memory limit marginal at this scale",
+      "details": {
+        "container": "controller",
+        "pod": "nvcf-drainer-68d65fdf9f-g6vfh",
+        "restarts": 210,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "waiting",
+      "message": "nvcf-drainer container nvcf-drainer-68d65fdf9f-g6vfh/controller entered monitoring already CrashLoopBackOff: back-off 2m40s restarting failed container=controller pod=nvcf-drainer-68d65fdf9f-g6vfh_nvsentinel(02894e76-72e4-494c-afba-6187d6801889) — pre-existing",
+      "details": {
+        "container": "controller",
+        "ns": "nvsentinel",
+        "pod": "nvcf-drainer-68d65fdf9f-g6vfh",
+        "reason": "CrashLoopBackOff",
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "notready",
+      "message": "nvcf-drainer pod nvcf-drainer-68d65fdf9f-g6vfh is Running but NotReady (readiness probe failing)",
+      "details": {
+        "ns": "nvsentinel",
+        "pod": "nvcf-drainer-68d65fdf9f-g6vfh"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "restart",
+      "message": "preflight container preflight-74458cd8bb-jnsgh/preflight entered monitoring with 32 prior restart(s) — pre-existing",
+      "details": {
+        "container": "preflight",
+        "ns": "nvsentinel",
+        "pod": "preflight-74458cd8bb-jnsgh",
+        "restarts": 32,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:09Z",
+      "severity": "WARN",
+      "category": "oom",
+      "message": "preflight container preflight-74458cd8bb-jnsgh/preflight has prior OOMKilled history (32 restart(s)) — pre-existing; memory limit marginal at this scale",
+      "details": {
+        "container": "preflight",
+        "pod": "preflight-74458cd8bb-jnsgh",
+        "restarts": 32,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:11Z",
+      "severity": "WARN",
+      "category": "restart",
+      "message": "dgxc-janitor container dgxc-janitor-controller-manager-686f447f44-gn875/manager entered monitoring with 308 prior restart(s) — pre-existing",
+      "details": {
+        "container": "manager",
+        "ns": "dgxc-janitor-system",
+        "pod": "dgxc-janitor-controller-manager-686f447f44-gn875",
+        "restarts": 308,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:11Z",
+      "severity": "WARN",
+      "category": "oom",
+      "message": "dgxc-janitor container dgxc-janitor-controller-manager-686f447f44-gn875/manager has prior OOMKilled history (308 restart(s)) — pre-existing; memory limit marginal at this scale",
+      "details": {
+        "container": "manager",
+        "pod": "dgxc-janitor-controller-manager-686f447f44-gn875",
+        "restarts": 308,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:11Z",
+      "severity": "WARN",
+      "category": "resource",
+      "message": "dgxc-janitor pod dgxc-janitor-controller-manager-686f447f44-gn875 memory 942Mi is \u003e=85% of its 1Gi limit (OOM risk)",
+      "details": {
+        "mem_bytes": 987758592,
+        "mem_limit_bytes": 1073741824,
+        "ns": "dgxc-janitor-system",
+        "pod": "dgxc-janitor-controller-manager-686f447f44-gn875"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:11Z",
+      "severity": "WARN",
+      "category": "restart",
+      "message": "dgxc-janitor container dgxc-janitor-controller-manager-686f447f44-vfj9v/manager entered monitoring with 307 prior restart(s) — pre-existing",
+      "details": {
+        "container": "manager",
+        "ns": "dgxc-janitor-system",
+        "pod": "dgxc-janitor-controller-manager-686f447f44-vfj9v",
+        "restarts": 307,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:11Z",
+      "severity": "WARN",
+      "category": "oom",
+      "message": "dgxc-janitor container dgxc-janitor-controller-manager-686f447f44-vfj9v/manager has prior OOMKilled history (307 restart(s)) — pre-existing; memory limit marginal at this scale",
+      "details": {
+        "container": "manager",
+        "pod": "dgxc-janitor-controller-manager-686f447f44-vfj9v",
+        "restarts": 307,
+        "when": "pre-existing"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:14Z",
+      "severity": "WARN",
+      "category": "event",
+      "message": "pod/fault-remediation-5bf476f7b5-bjjhk: BackOff — Back-off restarting failed container fault-remediation in pod fault-remediation-5bf476f7b5-bjjhk_nvsentinel(f206f877-d304-4d71-a128-bcd7c9084d96) (x1089)",
+      "details": {
+        "count": 1089,
+        "kind": "Pod",
+        "name": "fault-remediation-5bf476f7b5-bjjhk",
+        "ns": "nvsentinel",
+        "reason": "BackOff"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:35Z",
+      "severity": "ERROR",
+      "category": "restart",
+      "message": "metadata-collector container metadata-collector-tgmrf/metadata-collector restarted 1 time(s) during the run (total 4455) — CrashLoopBackOff",
+      "details": {
+        "container": "metadata-collector",
+        "ns": "nvsentinel",
+        "pod": "metadata-collector-tgmrf",
+        "restarts": 4455,
+        "when": "during-run"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:35Z",
+      "severity": "ERROR",
+      "category": "restart",
+      "message": "nvcf-drainer container nvcf-drainer-68d65fdf9f-g6vfh/controller restarted 1 time(s) during the run (total 211) — CrashLoopBackOff",
+      "details": {
+        "container": "controller",
+        "ns": "nvsentinel",
+        "pod": "nvcf-drainer-68d65fdf9f-g6vfh",
+        "restarts": 211,
+        "when": "during-run"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:35Z",
+      "severity": "ERROR",
+      "category": "oom",
+      "message": "nvcf-drainer container nvcf-drainer-68d65fdf9f-g6vfh/controller was OOMKilled during the run (memory limit too low for this scale; 211 restart(s))",
+      "details": {
+        "container": "controller",
+        "pod": "nvcf-drainer-68d65fdf9f-g6vfh",
+        "restarts": 211,
+        "when": "during-run"
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:38Z",
+      "severity": "WARN",
+      "category": "workload",
+      "message": "deploy nvsentinel/fault-remediation has 0/1 ready replicas (pods missing/not ready)",
+      "details": {
+        "desired": 1,
+        "name": "fault-remediation",
+        "ns": "nvsentinel",
+        "ready": 0
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:38Z",
+      "severity": "WARN",
+      "category": "workload",
+      "message": "deploy nvsentinel/labeler has 0/1 ready replicas (pods missing/not ready)",
+      "details": {
+        "desired": 1,
+        "name": "labeler",
+        "ns": "nvsentinel",
+        "ready": 0
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:38Z",
+      "severity": "WARN",
+      "category": "workload",
+      "message": "deploy nvsentinel/nvcf-drainer has 0/1 ready replicas (pods missing/not ready)",
+      "details": {
+        "desired": 1,
+        "name": "nvcf-drainer",
+        "ns": "nvsentinel",
+        "ready": 0
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:38Z",
+      "severity": "WARN",
+      "category": "workload",
+      "message": "daemonset nvsentinel/metadata-collector has 25/26 ready replicas (pods missing/not ready)",
+      "details": {
+        "desired": 26,
+        "name": "metadata-collector",
+        "ns": "nvsentinel",
+        "ready": 25
+      }
+    },
+    {
+      "time": "2026-07-31T11:59:40Z",
+      "severity": "WARN",
+      "category": "event",
+      "message": "pod/labeler-6598c77fbf-sw29z: BackOff — Back-off restarting failed container labeler in pod labeler-6598c77fbf-sw29z_nvsentinel(50b596f2-903b-440f-bdf6-7f4a17a0df93) (x9116)",
+      "details": {
+        "count": 9116,
+        "kind": "Pod",
+        "name": "labeler-6598c77fbf-sw29z",
+        "ns": "nvsentinel",
+        "reason": "BackOff"
+      }
+    }
+  ],
+  "verdict": "DEGRADED",
+  "note": "OOMKilled during run: nvcf-drainer/nvcf-drainer-68d65fdf9f-g6vfh/controller; pre-existing instability (not attributed to this run): dgxc-janitor (307 prior restarts), dgxc-janitor (308 prior restarts), dgxc-janitor (prior OOMKilled, 307 restarts), dgxc-janitor (prior OOMKilled, 308 restarts), fault-quarantine (8 prior restarts), fault-remediation (71 prior restarts), fault-remediation (CrashLoopBackOff), fault-remediation (prior OOMKilled, 71 restarts), labeler (784 prior restarts), labeler (CrashLoopBackOff), labeler (prior OOMKilled, 784 restarts), metadata-collector (4454 prior restarts), metadata-collector (CrashLoopBackOff), mongodb (10 prior restarts), mongodb (16 prior restarts), mongodb (prior OOMKilled, 16 restarts), node-drainer (34 prior restarts), node-drainer (prior OOMKilled, 34 restarts), nvcf-drainer (210 prior restarts), nvcf-drainer (CrashLoopBackOff), nvcf-drainer (prior OOMKilled, 210 restarts), preflight (32 prior restarts), preflight (prior OOMKilled, 32 restarts)"
+}

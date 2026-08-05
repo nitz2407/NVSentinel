@@ -1,0 +1,150 @@
+[19:10:26] ######## Phase 0 E2E for 5000 nodes -> results-5000/ ########
+[19:10:26] ===== cleanup =====
+
+2026-07-30T13:40:26Z ===== cleanup: connector pool =====
+2026-07-30T13:40:38Z [INFO]  connector pool torn down (statefulset + service + injector DaemonSet nvs-harness-connector-pool)
+
+2026-07-30T13:40:38Z ===== cleanup: KWOK nodes =====
+2026-07-30T13:40:39Z [INFO]  deleting 5000 kwok nodes (delete-collection; cascades fake pods)
+2026-07-30T13:40:56Z [INFO]  all kwok nodes deleted
+
+2026-07-30T13:40:56Z ===== cleanup: restart kwok-controller (clear stale lease cache) =====
+2026-07-30T13:41:10Z [INFO]  kwok-controller restarted (clean cache)
+
+2026-07-30T13:41:10Z ===== cleanup: orphaned janitor CRs =====
+2026-07-30T13:41:11Z [INFO]  gpuresets: 172 orphaned CR(s) to remove
+2026-07-30T13:41:15Z [INFO]  created 172 placeholder node(s) to unwedge finalizers
+2026-07-30T13:41:17Z [INFO]  gpuresets: cleared finalizers + deleted 172 CR(s)
+2026-07-30T13:41:18Z [INFO]  removed 172 placeholder node(s)
+2026-07-30T13:41:18Z [INFO]  garbage-collected 172 orphaned janitor CR(s)
+2026-07-30T13:41:18Z [INFO]  cleanup complete
+[19:11:18] cleanup OK
+[19:11:18] ===== P0.2 scale-nodes -count 5000 =====
+
+2026-07-30T13:41:18Z ===== P0.2: scale simulated nodes to 5000 =====
+2026-07-30T13:41:20Z [INFO]  existing kwok nodes: 0; target: 5000
+I0730 19:11:23.390410 2660379 request.go:752] "Waited before sending request" delay="1.003515503s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-225"
+I0730 19:11:33.391050 2660379 request.go:752] "Waited before sending request" delay="2.264094213s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-722/status"
+I0730 19:11:43.395544 2660379 request.go:752] "Waited before sending request" delay="2.231053908s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0730 19:11:53.400066 2660379 request.go:752] "Waited before sending request" delay="2.240186464s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-1967/status"
+2026-07-30T13:41:54Z [INFO]    created 2000/5000 nodes this pass
+I0730 19:12:03.400503 2660379 request.go:752] "Waited before sending request" delay="2.199342666s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-2781"
+I0730 19:12:13.401107 2660379 request.go:752] "Waited before sending request" delay="2.224742418s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-3465"
+I0730 19:12:23.405166 2660379 request.go:752] "Waited before sending request" delay="2.159537407s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-07-30T13:42:24Z [INFO]    created 4000/5000 nodes this pass
+I0730 19:12:33.405790 2660379 request.go:752] "Waited before sending request" delay="2.23128342s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-4608/status"
+2026-07-30T13:42:37Z [INFO]  scale: created=5000 skipped=0 failed=0
+2026-07-30T13:42:41Z [INFO]  kwok nodes Ready: 4987/5000
+2026-07-30T13:44:11Z [WARN]  node readiness stalled at 4987/5000 for 1m30s — restarting kwok-controller to force a full re-list (heal 1/3)
+2026-07-30T13:44:25Z [INFO]  kwok-controller restarted (clean cache)
+2026-07-30T13:44:25Z [INFO]  kwok nodes Ready: 5000/5000
+2026-07-30T13:44:27Z [INFO]  cluster resources: cluster cpu=2.1% (55.0/2574.8 cores) mem=1.9% (924667/47443157 Mi) over 32 real nodes vs guardrails cpu=85% mem=85%
+2026-07-30T13:44:27Z [INFO]  [P0.2] PASS - ready=5000/5000 in 187s, apiserver p99=0.042 s, cluster cpu=2.1% (55.0/2574.8 cores) mem=1.9% (924667/47443157 Mi) over 32 real nodes vs guardrails cpu=85% mem=85%
+2026-07-30T13:44:27Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results-5000/phase0-results.json (+ phase0-results.xml)
+[19:14:27] P0.2 scale-nodes -count 5000 OK
+[19:14:27] ===== P0.5 connector-pool (per-node-pod-limit=10) =====
+
+2026-07-30T13:44:29Z ===== P0.5: connector pool on real/GPU nodes (emulated fleet=5000) =====
+2026-07-30T13:44:30Z [INFO]  pool sizing: real_nodes=32 ceiling=320 replicas=320 density=10.0/node nodes/connector=16
+2026-07-30T13:44:32Z [INFO]  connector pool torn down (statefulset + service + injector DaemonSet nvs-harness-connector-pool)
+2026-07-30T13:44:32Z [INFO]  connector pool applied: nvs-harness-connector-pool (replicas=320)
+2026-07-30T13:44:33Z [INFO]  connector pool: 0/320 ready
+2026-07-30T13:45:18Z [INFO]  connector pool: 87/320 ready
+2026-07-30T13:45:23Z [INFO]  connector pool: 100/320 ready
+2026-07-30T13:45:38Z [INFO]  connector pool: 121/320 ready
+2026-07-30T13:45:43Z [INFO]  connector pool: 279/320 ready
+2026-07-30T13:45:48Z [INFO]  connector pool: 300/320 ready
+2026-07-30T13:45:53Z [INFO]  connector pool: 317/320 ready
+2026-07-30T13:45:58Z [INFO]  connector pool: 320/320 ready
+2026-07-30T13:46:08Z [INFO]  injector DaemonSet applied: nvs-harness-pool-injector pinned to 26 connector node(s) via nvs-harness/pool-node
+2026-07-30T13:46:08Z [INFO]  injector DaemonSet: 0/0 ready
+2026-07-30T13:46:28Z [INFO]  injector DaemonSet: 14/26 ready
+2026-07-30T13:46:48Z [INFO]  injector DaemonSet: 26/26 ready
+2026-07-30T13:46:48Z [INFO]  [P0.5] PASS - staged 320 connectors (10.0/node) + 26 persistent node injectors; sockets under /var/run/nvs-harness-pool/<pod>; fire events with the P0.3 inject/reconcile flow (drives these resident injectors)
+2026-07-30T13:46:48Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results-5000/phase0-results.json (+ phase0-results.xml)
+[19:16:48] P0.5 connector-pool (per-node-pod-limit=10) OK
+[19:16:48] ===== P0.3 inject =====
+
+2026-07-30T13:46:48Z ===== P0.3 distributed inject across the connector pool (image-free) =====
+2026-07-30T13:48:41Z [INFO]  distributed inject: nodes=26 connectors=320 nodes/conn=16 expect=5120 run-id=run-1785419208-168cb97b
+
+2026-07-30T13:48:41Z ===== distributed inject: 320 connectors across 26 nodes (resident injector per node, parallel) =====
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss000011: acked=176
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00001d: acked=176
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00000q: acked=192
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00001b: acked=192
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00001h: acked=192
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00000r: acked=208
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss000012: acked=208
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00001f: acked=192
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00000t: acked=192
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00000v: acked=192
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss000019: acked=192
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss000014: acked=192
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00000x: acked=192
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00001j: acked=208
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00001e: acked=192
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss000013: acked=208
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00001a: acked=208
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00001c: acked=208
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00000s: acked=192
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss000026: acked=208
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss000016: acked=192
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00000z: acked=192
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss000010: acked=208
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss000017: acked=208
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss00000w: acked=192
+2026-07-30T13:49:37Z [INFO]  node aks-gpu-12493808-vmss000015: acked=208
+2026-07-30T13:49:37Z [INFO]  [P0.3 inject] run-id=run-1785419208-168cb97b connectors=320 expect=5120 acked=5120
+[19:19:37] P0.3 inject run-id=run-1785419208-168cb97b
+[19:19:37] ===== P0.3 reconcile -run-id run-1785419208-168cb97b =====
+
+2026-07-30T13:49:49Z ===== health monitor started (interval 15s) — watching cordoning, CR creation, restarts, MongoDB quorum, resource saturation =====
+
+2026-07-30T13:49:49Z ===== drain: polling stored count for run run-1785419208-168cb97b (expect=5120, stable after 2 equal polls, timeout 5m0s) =====
+2026-07-30T13:49:55Z [INFO]  [monitor] cordoned=167 kwok-ready=5000 gpureset-crs=24 rebootnode-crs=7 mongodb-ready=3/3
+2026-07-30T13:49:55Z [INFO]  drain: stored=5120/5120 for run run-1785419208-168cb97b
+2026-07-30T13:49:55Z [INFO]  drain: reached expected total
+
+2026-07-30T13:49:55Z ===== distributed reconcile: per-ID + NodeName across 320 connectors on 26 nodes (resident injector per node, parallel) =====
+2026-07-30T13:50:15Z [INFO]  [monitor] cordoned=215 kwok-ready=5000 gpureset-crs=31 rebootnode-crs=7 mongodb-ready=3/3
+2026-07-30T13:50:30Z [INFO]  [monitor] cordoned=253 kwok-ready=5000 gpureset-crs=37 rebootnode-crs=7 mongodb-ready=3/3
+{
+  "run_id": "run-1785419208-168cb97b",
+  "injected": 5120,
+  "acked": 5120,
+  "stored_for_run": 5120,
+  "accounted": 5120,
+  "missing": 0,
+  "unexpected": 0,
+  "loss_fraction": 0,
+  "max_loss_fraction": 0,
+  "verdict": "PASS",
+  "node_checked": 5040,
+  "node_matched": 5040,
+  "node_mismatched": 0,
+  "node_attr_note": "node attribution OK: 5040/5040 sampled events attributed to the correct node",
+  "generated_at_utc": "2026-07-30T13:50:40Z"
+}
+2026-07-30T13:50:40Z [INFO]  [P0.3 reconcile] run-id=run-1785419208-168cb97b injected=5120 accounted=5120 missing=0 loss=0.0000 node=5040/5040 verdict=PASS
+2026-07-30T13:50:40Z [INFO]  node attribution OK: 5040/5040 sampled events attributed to the correct node
+E0730 19:20:40.774116 2685167 request.go:1196] "Unexpected error when reading response body" err="context canceled"
+2026-07-30T13:50:40Z [INFO]  [monitor] cordoned=0 kwok-ready=0 gpureset-crs=0 rebootnode-crs=0 mongodb-ready=0/0
+
+2026-07-30T13:50:40Z ===== health monitor: verdict=HEALTHY samples=4 cordoned 167→0 gpureset-crs 24→0 restarts=map[] mongo-quorum-lost=false findings=0 =====
+[19:20:40] P0.3 reconcile -run-id run-1785419208-168cb97b OK
+[19:20:40] ===== P0.4 janitor-check =====
+
+2026-07-30T13:50:40Z ===== P0.4: janitor reboot + GPU reset on a KWOK node =====
+2026-07-30T13:50:41Z [INFO]  target kwok node: kwok-gpu-0
+2026-07-30T13:51:33Z [INFO]  RebootNode result: PASS
+2026-07-30T13:52:08Z [INFO]  GPUReset result: PASS
+2026-07-30T13:52:08Z [INFO]  [P0.4] PASS - reboot=PASS gpureset=PASS on kwok-gpu-0
+2026-07-30T13:52:08Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results-5000/phase0-results.json (+ phase0-results.xml)
+[19:22:08] P0.4 janitor-check OK
+[19:22:08] ===== report =====
+
+2026-07-30T13:52:08Z ===== report: collecting metrics (window=1h) =====
+2026-07-30T13:52:19Z [INFO]  report written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results-5000/report.md (+ /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results-5000/report.json)
+[19:22:19] report OK
+[19:22:19] ######## DONE 5000 -> /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results-5000/report.md (run-id=run-1785419208-168cb97b) ########

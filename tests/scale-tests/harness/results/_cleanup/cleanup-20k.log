@@ -1,0 +1,20 @@
+
+2026-07-31T11:18:32Z ===== cleanup: connector pool =====
+2026-07-31T11:18:44Z [INFO]  connector pool torn down (statefulset + service + injector DaemonSet nvs-harness-connector-pool)
+
+2026-07-31T11:18:44Z ===== cleanup: KWOK nodes =====
+2026-07-31T11:18:46Z [INFO]  deleting 10000 kwok nodes (delete-collection; cascades fake pods)
+2026-07-31T11:19:23Z [INFO]  all kwok nodes deleted
+
+2026-07-31T11:19:23Z ===== cleanup: restart kwok-controller (clear stale lease cache) =====
+2026-07-31T11:19:37Z [INFO]  kwok-controller restarted (clean cache)
+
+2026-07-31T11:19:37Z ===== cleanup: orphaned janitor CRs =====
+2026-07-31T11:19:54Z [INFO]  gpuresets: 10122 orphaned CR(s) to remove
+2026-07-31T11:19:54Z [INFO]  rebootnodes: 1 orphaned CR(s) to remove
+2026-07-31T11:21:46Z [INFO]  created 9771 placeholder node(s) to unwedge finalizers
+2026-07-31T11:23:36Z [INFO]  gpuresets: cleared finalizers + deleted 10122 CR(s)
+2026-07-31T11:23:37Z [INFO]  rebootnodes: cleared finalizers + deleted 1 CR(s)
+2026-07-31T11:24:29Z [INFO]  removed 9771 placeholder node(s)
+2026-07-31T11:24:29Z [INFO]  garbage-collected 10123 orphaned janitor CR(s)
+2026-07-31T11:24:29Z [INFO]  cleanup complete

@@ -1,0 +1,17 @@
+[
+  {
+    "id": "P0.4",
+    "name": "janitor action path",
+    "verdict": "FAIL",
+    "message": "reboot=FAIL gpureset=PASS; NodeReady!=True within 5m0s (check janitor reboot provider wiring)",
+    "metrics": {
+      "boot_after": "00000000-0000-0000-0000-000000000000",
+      "boot_before": "00000000-0000-0000-0000-000000000000",
+      "gpureset": "PASS",
+      "node": "kwok-gpu-0",
+      "reboot": "FAIL"
+    },
+    "started": "2026-08-03T19:29:20.968396144+05:30",
+    "finished": "2026-08-03T19:35:50.112928363+05:30"
+  }
+]

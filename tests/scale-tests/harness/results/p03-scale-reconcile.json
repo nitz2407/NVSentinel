@@ -1,0 +1,17 @@
+{
+  "run_id": "p03-scale-1785245300",
+  "injected": 16000,
+  "acked": 16000,
+  "stored_for_run": 16000,
+  "accounted": 16000,
+  "missing": 0,
+  "unexpected": 0,
+  "loss_fraction": 0,
+  "max_loss_fraction": 0,
+  "verdict": "PASS",
+  "node_checked": 0,
+  "node_matched": 0,
+  "node_mismatched": 0,
+  "node_attr_note": "node attribution not verified in count-only mode (no per-event ledger)",
+  "generated_at_utc": "2026-07-28T15:28:54Z"
+}

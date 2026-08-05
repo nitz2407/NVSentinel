@@ -1,0 +1,17 @@
+{
+  "run_id": "p03-attr-1785252614",
+  "injected": 300,
+  "acked": 300,
+  "stored_for_run": 300,
+  "accounted": 300,
+  "missing": 0,
+  "unexpected": 0,
+  "loss_fraction": 0,
+  "max_loss_fraction": 0,
+  "verdict": "PASS",
+  "node_checked": 200,
+  "node_matched": 200,
+  "node_mismatched": 0,
+  "node_attr_note": "node attribution OK: 200/200 sampled events attributed to the correct node",
+  "generated_at_utc": "2026-07-28T15:37:18Z"
+}

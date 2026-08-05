@@ -1,0 +1,14 @@
+{
+  "sizing": {
+    "emulated_nodes": 20000,
+    "real_nodes": 32,
+    "per_node_pod_limit": 20,
+    "pod_ceiling": 640,
+    "real_connectors": 640,
+    "per_node_density": 20,
+    "nodes_per_connector": 32,
+    "rate_multiplier": 32,
+    "real_to_emulated_ratio": 0.032,
+    "pod_ceiling_reached": true
+  }
+}

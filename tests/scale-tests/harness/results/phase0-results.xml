@@ -1,0 +1,4 @@
+<testsuite name="nvsentinel-phase0" tests="1" failures="0">
+  <testcase classname="phase0" name="P0.2c node ceiling (sweep)" time="4617.7">
+  </testcase>
+</testsuite>

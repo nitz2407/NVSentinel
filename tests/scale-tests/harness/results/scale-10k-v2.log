@@ -1,0 +1,30 @@
+
+2026-07-28T13:11:14Z ===== P0.2: scale simulated nodes to 10000 =====
+2026-07-28T13:11:15Z [INFO]  existing kwok nodes: 0; target: 10000
+I0728 18:41:18.160529 1920640 request.go:752] "Waited before sending request" delay="1.000124538s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-257/status"
+I0728 18:41:28.165258 1920640 request.go:752] "Waited before sending request" delay="2.150294331s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0728 18:41:38.169770 1920640 request.go:752] "Waited before sending request" delay="2.205345108s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0728 18:41:48.169912 1920640 request.go:752] "Waited before sending request" delay="2.237003573s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-2118"
+2026-07-28T13:11:49Z [INFO]    created 2000/10000 nodes this pass
+I0728 18:41:58.170237 1920640 request.go:752] "Waited before sending request" delay="2.228030829s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-2620/status"
+I0728 18:42:08.174689 1920640 request.go:752] "Waited before sending request" delay="2.226466116s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-3429"
+I0728 18:42:18.175372 1920640 request.go:752] "Waited before sending request" delay="2.188115334s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-4109"
+2026-07-28T13:12:19Z [INFO]    created 4000/10000 nodes this pass
+I0728 18:42:28.179751 1920640 request.go:752] "Waited before sending request" delay="2.235364719s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0728 18:42:38.179890 1920640 request.go:752] "Waited before sending request" delay="2.216432875s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-5262/status"
+I0728 18:42:48.184944 1920640 request.go:752] "Waited before sending request" delay="2.230415676s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-6093"
+2026-07-28T13:12:49Z [INFO]    created 6000/10000 nodes this pass
+I0728 18:42:58.185279 1920640 request.go:752] "Waited before sending request" delay="2.236881514s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-6592/status"
+I0728 18:43:08.190161 1920640 request.go:752] "Waited before sending request" delay="2.17364075s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0728 18:43:18.190447 1920640 request.go:752] "Waited before sending request" delay="2.233201687s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-7908/status"
+2026-07-28T13:13:19Z [INFO]    created 8000/10000 nodes this pass
+I0728 18:43:28.194974 1920640 request.go:752] "Waited before sending request" delay="2.162362702s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0728 18:43:38.200343 1920640 request.go:752] "Waited before sending request" delay="2.177464353s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-9406"
+I0728 18:43:48.200313 1920640 request.go:752] "Waited before sending request" delay="2.239931549s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-9580/status"
+2026-07-28T13:13:52Z [INFO]    created 10000/10000 nodes this pass
+2026-07-28T13:13:54Z [INFO]  scale: created=10000 skipped=0 failed=0
+2026-07-28T13:13:57Z [INFO]  kwok nodes Ready: 10000/10000
+E0728 18:43:57.539661 1920640 reflector.go:227] "Failed to watch" err="Get \"https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes?allowWatchBookmarks=true&labelSelector=type%3Dkwok&resourceVersion=894019682&timeout=5m0s&timeoutSeconds=300&watch=true\": context canceled" logger="UnhandledError" reflector="/tmp/cursor-sandbox-cache/fe55c5b9407ddb16a318ebf0fa0513bf/go-mod/k8s.io/client-go@v0.36.2/tools/cache/reflector.go:343" type="*v1.Node"
+2026-07-28T13:13:59Z [INFO]  cluster resources: cluster cpu=2.2% (57.4/2574.8 cores) mem=1.9% (889339/47443157 Mi) over 32 real nodes vs guardrails cpu=85% mem=85%
+2026-07-28T13:13:59Z [INFO]  [P0.2] PASS - ready=10000/10000 in 163s, apiserver p99=0.072 s, cluster cpu=2.2% (57.4/2574.8 cores) mem=1.9% (889339/47443157 Mi) over 32 real nodes vs guardrails cpu=85% mem=85%
+2026-07-28T13:13:59Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/phase0-results.json (+ phase0-results.xml)

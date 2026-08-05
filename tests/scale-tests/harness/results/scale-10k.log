@@ -1,0 +1,175 @@
+
+2026-07-28T12:49:01Z ===== P0.2: scale simulated nodes to 10000 =====
+2026-07-28T12:49:02Z [INFO]  existing kwok nodes: 0; target: 10000
+2026-07-28T12:49:04Z [WARN]  node kwok-gpu-318 created but status touch-up failed (non-fatal): nodes "kwok-gpu-318" not found
+2026-07-28T12:49:04Z [WARN]  node kwok-gpu-105 created but status touch-up failed (non-fatal): nodes "kwok-gpu-105" not found
+2026-07-28T12:49:04Z [WARN]  node kwok-gpu-1 created but status touch-up failed (non-fatal): nodes "kwok-gpu-1" not found
+2026-07-28T12:49:04Z [WARN]  node kwok-gpu-156 created but status touch-up failed (non-fatal): nodes "kwok-gpu-156" not found
+2026-07-28T12:49:05Z [WARN]  node kwok-gpu-499 created but status touch-up failed (non-fatal): nodes "kwok-gpu-499" not found
+I0728 18:19:05.373124 1900040 request.go:752] "Waited before sending request" delay="1.001600373s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-384"
+2026-07-28T12:49:05Z [WARN]  node kwok-gpu-292 created but status touch-up failed (non-fatal): nodes "kwok-gpu-292" not found
+2026-07-28T12:49:05Z [WARN]  node kwok-gpu-461 created but status touch-up failed (non-fatal): nodes "kwok-gpu-461" not found
+2026-07-28T12:49:05Z [WARN]  node kwok-gpu-189 created but status touch-up failed (non-fatal): nodes "kwok-gpu-189" not found
+2026-07-28T12:49:05Z [WARN]  node kwok-gpu-339 created but status touch-up failed (non-fatal): nodes "kwok-gpu-339" not found
+2026-07-28T12:49:05Z [WARN]  node kwok-gpu-476 created but status touch-up failed (non-fatal): nodes "kwok-gpu-476" not found
+2026-07-28T12:49:05Z [WARN]  node kwok-gpu-283 created but status touch-up failed (non-fatal): nodes "kwok-gpu-283" not found
+2026-07-28T12:49:05Z [WARN]  node kwok-gpu-317 created but status touch-up failed (non-fatal): nodes "kwok-gpu-317" not found
+2026-07-28T12:49:05Z [WARN]  node kwok-gpu-458 created but status touch-up failed (non-fatal): nodes "kwok-gpu-458" not found
+2026-07-28T12:49:05Z [WARN]  node kwok-gpu-121 created but status touch-up failed (non-fatal): nodes "kwok-gpu-121" not found
+2026-07-28T12:49:05Z [WARN]  node kwok-gpu-278 created but status touch-up failed (non-fatal): nodes "kwok-gpu-278" not found
+2026-07-28T12:49:05Z [WARN]  node kwok-gpu-111 created but status touch-up failed (non-fatal): nodes "kwok-gpu-111" not found
+2026-07-28T12:49:06Z [WARN]  node kwok-gpu-229 created but status touch-up failed (non-fatal): nodes "kwok-gpu-229" not found
+2026-07-28T12:49:06Z [WARN]  node kwok-gpu-266 created but status touch-up failed (non-fatal): nodes "kwok-gpu-266" not found
+2026-07-28T12:49:06Z [WARN]  node kwok-gpu-418 created but status touch-up failed (non-fatal): nodes "kwok-gpu-418" not found
+2026-07-28T12:49:06Z [WARN]  node kwok-gpu-410 created but status touch-up failed (non-fatal): nodes "kwok-gpu-410" not found
+2026-07-28T12:49:06Z [WARN]  node kwok-gpu-493 created but status touch-up failed (non-fatal): nodes "kwok-gpu-493" not found
+2026-07-28T12:49:06Z [WARN]  node kwok-gpu-471 created but status touch-up failed (non-fatal): nodes "kwok-gpu-471" not found
+2026-07-28T12:49:06Z [WARN]  node kwok-gpu-184 created but status touch-up failed (non-fatal): nodes "kwok-gpu-184" not found
+2026-07-28T12:49:06Z [WARN]  node kwok-gpu-243 created but status touch-up failed (non-fatal): nodes "kwok-gpu-243" not found
+2026-07-28T12:49:06Z [WARN]  node kwok-gpu-4 created but status touch-up failed (non-fatal): nodes "kwok-gpu-4" not found
+2026-07-28T12:49:06Z [WARN]  node kwok-gpu-218 created but status touch-up failed (non-fatal): nodes "kwok-gpu-218" not found
+2026-07-28T12:49:06Z [WARN]  node kwok-gpu-401 created but status touch-up failed (non-fatal): nodes "kwok-gpu-401" not found
+2026-07-28T12:49:06Z [WARN]  node kwok-gpu-347 created but status touch-up failed (non-fatal): nodes "kwok-gpu-347" not found
+2026-07-28T12:49:08Z [WARN]  node kwok-gpu-352 created but status touch-up failed (non-fatal): nodes "kwok-gpu-352" not found
+2026-07-28T12:49:09Z [WARN]  node kwok-gpu-469 created but status touch-up failed (non-fatal): nodes "kwok-gpu-469" not found
+2026-07-28T12:49:09Z [WARN]  node kwok-gpu-145 created but status touch-up failed (non-fatal): nodes "kwok-gpu-145" not found
+2026-07-28T12:49:09Z [WARN]  node kwok-gpu-69 created but status touch-up failed (non-fatal): nodes "kwok-gpu-69" not found
+2026-07-28T12:49:09Z [WARN]  node kwok-gpu-196 created but status touch-up failed (non-fatal): nodes "kwok-gpu-196" not found
+2026-07-28T12:49:09Z [WARN]  node kwok-gpu-18 created but status touch-up failed (non-fatal): nodes "kwok-gpu-18" not found
+2026-07-28T12:49:09Z [WARN]  node kwok-gpu-492 created but status touch-up failed (non-fatal): nodes "kwok-gpu-492" not found
+2026-07-28T12:49:09Z [WARN]  node kwok-gpu-432 created but status touch-up failed (non-fatal): nodes "kwok-gpu-432" not found
+2026-07-28T12:49:09Z [WARN]  node kwok-gpu-231 created but status touch-up failed (non-fatal): nodes "kwok-gpu-231" not found
+2026-07-28T12:49:09Z [WARN]  node kwok-gpu-83 created but status touch-up failed (non-fatal): nodes "kwok-gpu-83" not found
+2026-07-28T12:49:10Z [WARN]  node kwok-gpu-486 created but status touch-up failed (non-fatal): nodes "kwok-gpu-486" not found
+2026-07-28T12:49:10Z [WARN]  node kwok-gpu-311 created but status touch-up failed (non-fatal): nodes "kwok-gpu-311" not found
+2026-07-28T12:49:10Z [WARN]  node kwok-gpu-62 created but status touch-up failed (non-fatal): nodes "kwok-gpu-62" not found
+2026-07-28T12:49:10Z [WARN]  node kwok-gpu-244 created but status touch-up failed (non-fatal): nodes "kwok-gpu-244" not found
+2026-07-28T12:49:10Z [WARN]  node kwok-gpu-14 created but status touch-up failed (non-fatal): nodes "kwok-gpu-14" not found
+2026-07-28T12:49:10Z [WARN]  node kwok-gpu-431 created but status touch-up failed (non-fatal): nodes "kwok-gpu-431" not found
+2026-07-28T12:49:11Z [WARN]  node kwok-gpu-171 created but status touch-up failed (non-fatal): nodes "kwok-gpu-171" not found
+2026-07-28T12:49:11Z [WARN]  node kwok-gpu-17 created but status touch-up failed (non-fatal): nodes "kwok-gpu-17" not found
+2026-07-28T12:49:11Z [WARN]  node kwok-gpu-299 created but status touch-up failed (non-fatal): nodes "kwok-gpu-299" not found
+2026-07-28T12:49:11Z [WARN]  node kwok-gpu-273 created but status touch-up failed (non-fatal): nodes "kwok-gpu-273" not found
+2026-07-28T12:49:11Z [WARN]  node kwok-gpu-331 created but status touch-up failed (non-fatal): nodes "kwok-gpu-331" not found
+2026-07-28T12:49:11Z [WARN]  node kwok-gpu-460 created but status touch-up failed (non-fatal): nodes "kwok-gpu-460" not found
+2026-07-28T12:49:11Z [WARN]  node kwok-gpu-341 created but status touch-up failed (non-fatal): nodes "kwok-gpu-341" not found
+2026-07-28T12:49:11Z [WARN]  node kwok-gpu-359 created but status touch-up failed (non-fatal): nodes "kwok-gpu-359" not found
+2026-07-28T12:49:11Z [WARN]  node kwok-gpu-191 created but status touch-up failed (non-fatal): nodes "kwok-gpu-191" not found
+2026-07-28T12:49:11Z [WARN]  node kwok-gpu-152 created but status touch-up failed (non-fatal): nodes "kwok-gpu-152" not found
+2026-07-28T12:49:11Z [WARN]  node kwok-gpu-76 created but status touch-up failed (non-fatal): nodes "kwok-gpu-76" not found
+2026-07-28T12:49:11Z [WARN]  node kwok-gpu-391 created but status touch-up failed (non-fatal): nodes "kwok-gpu-391" not found
+2026-07-28T12:49:13Z [WARN]  node kwok-gpu-389 created but status touch-up failed (non-fatal): nodes "kwok-gpu-389" not found
+2026-07-28T12:49:13Z [WARN]  node kwok-gpu-267 created but status touch-up failed (non-fatal): nodes "kwok-gpu-267" not found
+2026-07-28T12:49:14Z [WARN]  node kwok-gpu-424 created but status touch-up failed (non-fatal): nodes "kwok-gpu-424" not found
+2026-07-28T12:49:14Z [WARN]  node kwok-gpu-212 created but status touch-up failed (non-fatal): nodes "kwok-gpu-212" not found
+2026-07-28T12:49:14Z [WARN]  node kwok-gpu-34 created but status touch-up failed (non-fatal): nodes "kwok-gpu-34" not found
+2026-07-28T12:49:14Z [WARN]  node kwok-gpu-201 created but status touch-up failed (non-fatal): nodes "kwok-gpu-201" not found
+2026-07-28T12:49:15Z [WARN]  node kwok-gpu-216 created but status touch-up failed (non-fatal): nodes "kwok-gpu-216" not found
+I0728 18:19:15.373584 1900040 request.go:752] "Waited before sending request" delay="2.220711017s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-549"
+2026-07-28T12:49:21Z [WARN]  node kwok-gpu-276 created but status touch-up failed (non-fatal): nodes "kwok-gpu-276" not found
+I0728 18:19:25.378131 1900040 request.go:752] "Waited before sending request" delay="2.246393685s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-1370/status"
+I0728 18:19:35.383747 1900040 request.go:752] "Waited before sending request" delay="2.167131622s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-2108"
+2026-07-28T12:49:36Z [INFO]    created 2000/10000 nodes this pass
+2026-07-28T12:49:43Z [WARN]  node kwok-gpu-2588 created but status touch-up failed (non-fatal): nodes "kwok-gpu-2588" not found
+2026-07-28T12:49:43Z [WARN]  node kwok-gpu-2594 created but status touch-up failed (non-fatal): nodes "kwok-gpu-2594" not found
+I0728 18:19:45.388448 1900040 request.go:752] "Waited before sending request" delay="2.220708916s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-2843"
+2026-07-28T12:49:53Z [WARN]  node kwok-gpu-3324 created but status touch-up failed (non-fatal): nodes "kwok-gpu-3324" not found
+2026-07-28T12:49:53Z [WARN]  node kwok-gpu-3334 created but status touch-up failed (non-fatal): nodes "kwok-gpu-3334" not found
+2026-07-28T12:49:53Z [WARN]  node kwok-gpu-3336 created but status touch-up failed (non-fatal): nodes "kwok-gpu-3336" not found
+2026-07-28T12:49:53Z [WARN]  node kwok-gpu-3335 created but status touch-up failed (non-fatal): nodes "kwok-gpu-3335" not found
+2026-07-28T12:49:53Z [WARN]  node kwok-gpu-3333 created but status touch-up failed (non-fatal): nodes "kwok-gpu-3333" not found
+I0728 18:19:55.393635 1900040 request.go:752] "Waited before sending request" delay="2.249760934s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-3472"
+2026-07-28T12:49:58Z [WARN]  node kwok-gpu-3611 created but status touch-up failed (non-fatal): nodes "kwok-gpu-3611" not found
+I0728 18:20:05.393707 1900040 request.go:752] "Waited before sending request" delay="2.220797859s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-4103"
+2026-07-28T12:50:06Z [INFO]    created 4000/10000 nodes this pass
+2026-07-28T12:50:13Z [WARN]  node kwok-gpu-4611 created but status touch-up failed (non-fatal): nodes "kwok-gpu-4611" not found
+2026-07-28T12:50:13Z [WARN]  node kwok-gpu-4615 created but status touch-up failed (non-fatal): nodes "kwok-gpu-4615" not found
+I0728 18:20:15.398553 1900040 request.go:752] "Waited before sending request" delay="2.252051882s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-4441"
+2026-07-28T12:50:18Z [WARN]  node kwok-gpu-4970 created but status touch-up failed (non-fatal): nodes "kwok-gpu-4970" not found
+2026-07-28T12:50:23Z [WARN]  node kwok-gpu-5340 created but status touch-up failed (non-fatal): nodes "kwok-gpu-5340" not found
+I0728 18:20:25.403291 1900040 request.go:752] "Waited before sending request" delay="2.22692391s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-07-28T12:50:28Z [WARN]  node kwok-gpu-5640 created but status touch-up failed (non-fatal): nodes "kwok-gpu-5640" not found
+2026-07-28T12:50:28Z [WARN]  node kwok-gpu-5635 created but status touch-up failed (non-fatal): nodes "kwok-gpu-5635" not found
+2026-07-28T12:50:28Z [WARN]  node kwok-gpu-5643 created but status touch-up failed (non-fatal): nodes "kwok-gpu-5643" not found
+2026-07-28T12:50:28Z [WARN]  node kwok-gpu-5642 created but status touch-up failed (non-fatal): nodes "kwok-gpu-5642" not found
+2026-07-28T12:50:28Z [WARN]  node kwok-gpu-5641 created but status touch-up failed (non-fatal): nodes "kwok-gpu-5641" not found
+2026-07-28T12:50:28Z [WARN]  node kwok-gpu-5646 created but status touch-up failed (non-fatal): nodes "kwok-gpu-5646" not found
+2026-07-28T12:50:28Z [WARN]  node kwok-gpu-5644 created but status touch-up failed (non-fatal): nodes "kwok-gpu-5644" not found
+2026-07-28T12:50:28Z [WARN]  node kwok-gpu-5639 created but status touch-up failed (non-fatal): nodes "kwok-gpu-5639" not found
+2026-07-28T12:50:33Z [WARN]  node kwok-gpu-5985 created but status touch-up failed (non-fatal): nodes "kwok-gpu-5985" not found
+2026-07-28T12:50:33Z [WARN]  node kwok-gpu-5986 created but status touch-up failed (non-fatal): nodes "kwok-gpu-5986" not found
+2026-07-28T12:50:33Z [WARN]  node kwok-gpu-5983 created but status touch-up failed (non-fatal): nodes "kwok-gpu-5983" not found
+I0728 18:20:35.408136 1900040 request.go:752] "Waited before sending request" delay="2.226349393s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-07-28T12:50:36Z [INFO]    created 6000/10000 nodes this pass
+2026-07-28T12:50:38Z [WARN]  node kwok-gpu-6353 created but status touch-up failed (non-fatal): nodes "kwok-gpu-6353" not found
+2026-07-28T12:50:38Z [WARN]  node kwok-gpu-6350 created but status touch-up failed (non-fatal): nodes "kwok-gpu-6350" not found
+2026-07-28T12:50:38Z [WARN]  node kwok-gpu-6352 created but status touch-up failed (non-fatal): nodes "kwok-gpu-6352" not found
+2026-07-28T12:50:38Z [WARN]  node kwok-gpu-6348 created but status touch-up failed (non-fatal): nodes "kwok-gpu-6348" not found
+2026-07-28T12:50:43Z [WARN]  node kwok-gpu-6670 created but status touch-up failed (non-fatal): nodes "kwok-gpu-6670" not found
+2026-07-28T12:50:43Z [WARN]  node kwok-gpu-6672 created but status touch-up failed (non-fatal): nodes "kwok-gpu-6672" not found
+I0728 18:20:45.408337 1900040 request.go:752] "Waited before sending request" delay="2.222511516s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-6608/status"
+2026-07-28T12:50:48Z [WARN]  node kwok-gpu-6990 created but status touch-up failed (non-fatal): nodes "kwok-gpu-6990" not found
+2026-07-28T12:50:53Z [WARN]  node kwok-gpu-7361 created but status touch-up failed (non-fatal): nodes "kwok-gpu-7361" not found
+2026-07-28T12:50:53Z [WARN]  node kwok-gpu-7363 created but status touch-up failed (non-fatal): nodes "kwok-gpu-7363" not found
+I0728 18:20:55.413448 1900040 request.go:752] "Waited before sending request" delay="2.209834605s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-07-28T12:50:58Z [WARN]  node kwok-gpu-7686 created but status touch-up failed (non-fatal): nodes "kwok-gpu-7686" not found
+2026-07-28T12:50:58Z [WARN]  node kwok-gpu-7685 created but status touch-up failed (non-fatal): nodes "kwok-gpu-7685" not found
+2026-07-28T12:50:58Z [WARN]  node kwok-gpu-7687 created but status touch-up failed (non-fatal): nodes "kwok-gpu-7687" not found
+2026-07-28T12:50:58Z [WARN]  node kwok-gpu-7683 created but status touch-up failed (non-fatal): nodes "kwok-gpu-7683" not found
+I0728 18:21:05.418102 1900040 request.go:752] "Waited before sending request" delay="2.24047967s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-8116"
+2026-07-28T12:51:06Z [INFO]    created 8000/10000 nodes this pass
+2026-07-28T12:51:14Z [WARN]  node kwok-gpu-8695 created but status touch-up failed (non-fatal): nodes "kwok-gpu-8695" not found
+2026-07-28T12:51:14Z [WARN]  node kwok-gpu-8699 created but status touch-up failed (non-fatal): nodes "kwok-gpu-8699" not found
+I0728 18:21:15.418148 1900040 request.go:752] "Waited before sending request" delay="2.260668093s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0728 18:21:25.423681 1900040 request.go:752] "Waited before sending request" delay="2.239062568s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-9314/status"
+2026-07-28T12:51:29Z [WARN]  node kwok-gpu-9693 created but status touch-up failed (non-fatal): nodes "kwok-gpu-9693" not found
+2026-07-28T12:51:29Z [WARN]  node kwok-gpu-9699 created but status touch-up failed (non-fatal): nodes "kwok-gpu-9699" not found
+2026-07-28T12:51:33Z [INFO]    created 10000/10000 nodes this pass
+2026-07-28T12:51:35Z [INFO]  scale pass 2: 367 nodes still missing, retrying
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-176 created but status touch-up failed (non-fatal): nodes "kwok-gpu-176" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-413 created but status touch-up failed (non-fatal): nodes "kwok-gpu-413" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-7687 created but status touch-up failed (non-fatal): nodes "kwok-gpu-7687" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-315 created but status touch-up failed (non-fatal): nodes "kwok-gpu-315" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-245 created but status touch-up failed (non-fatal): nodes "kwok-gpu-245" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-272 created but status touch-up failed (non-fatal): nodes "kwok-gpu-272" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-304 created but status touch-up failed (non-fatal): nodes "kwok-gpu-304" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-168 created but status touch-up failed (non-fatal): nodes "kwok-gpu-168" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-41 created but status touch-up failed (non-fatal): nodes "kwok-gpu-41" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-481 created but status touch-up failed (non-fatal): nodes "kwok-gpu-481" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-200 created but status touch-up failed (non-fatal): nodes "kwok-gpu-200" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-375 created but status touch-up failed (non-fatal): nodes "kwok-gpu-375" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-56 created but status touch-up failed (non-fatal): nodes "kwok-gpu-56" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-351 created but status touch-up failed (non-fatal): nodes "kwok-gpu-351" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-3324 created but status touch-up failed (non-fatal): nodes "kwok-gpu-3324" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-3335 created but status touch-up failed (non-fatal): nodes "kwok-gpu-3335" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-7685 created but status touch-up failed (non-fatal): nodes "kwok-gpu-7685" not found
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-427 created but status touch-up failed (non-fatal): nodes "kwok-gpu-427" not found
+I0728 18:21:37.943197 1900040 request.go:752] "Waited before sending request" delay="1.002083343s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-97/status"
+2026-07-28T12:51:37Z [WARN]  node kwok-gpu-165 created but status touch-up failed (non-fatal): nodes "kwok-gpu-165" not found
+2026-07-28T12:51:38Z [WARN]  node kwok-gpu-258 created but status touch-up failed (non-fatal): nodes "kwok-gpu-258" not found
+2026-07-28T12:51:38Z [WARN]  node kwok-gpu-425 created but status touch-up failed (non-fatal): nodes "kwok-gpu-425" not found
+2026-07-28T12:51:38Z [WARN]  node kwok-gpu-408 created but status touch-up failed (non-fatal): nodes "kwok-gpu-408" not found
+2026-07-28T12:51:38Z [WARN]  node kwok-gpu-186 created but status touch-up failed (non-fatal): nodes "kwok-gpu-186" not found
+2026-07-28T12:51:38Z [WARN]  node kwok-gpu-131 created but status touch-up failed (non-fatal): nodes "kwok-gpu-131" not found
+2026-07-28T12:51:38Z [WARN]  node kwok-gpu-5640 created but status touch-up failed (non-fatal): nodes "kwok-gpu-5640" not found
+2026-07-28T12:51:38Z [WARN]  node kwok-gpu-321 created but status touch-up failed (non-fatal): nodes "kwok-gpu-321" not found
+2026-07-28T12:51:39Z [WARN]  node kwok-gpu-274 created but status touch-up failed (non-fatal): nodes "kwok-gpu-274" not found
+2026-07-28T12:51:39Z [WARN]  node kwok-gpu-6670 created but status touch-up failed (non-fatal): nodes "kwok-gpu-6670" not found
+2026-07-28T12:51:39Z [WARN]  node kwok-gpu-39 created but status touch-up failed (non-fatal): nodes "kwok-gpu-39" not found
+2026-07-28T12:51:39Z [WARN]  node kwok-gpu-491 created but status touch-up failed (non-fatal): nodes "kwok-gpu-491" not found
+2026-07-28T12:51:39Z [WARN]  node kwok-gpu-436 created but status touch-up failed (non-fatal): nodes "kwok-gpu-436" not found
+2026-07-28T12:51:39Z [WARN]  node kwok-gpu-6990 created but status touch-up failed (non-fatal): nodes "kwok-gpu-6990" not found
+2026-07-28T12:51:39Z [WARN]  node kwok-gpu-316 created but status touch-up failed (non-fatal): nodes "kwok-gpu-316" not found
+2026-07-28T12:51:39Z [WARN]  node kwok-gpu-6348 created but status touch-up failed (non-fatal): nodes "kwok-gpu-6348" not found
+2026-07-28T12:51:39Z [WARN]  node kwok-gpu-144 created but status touch-up failed (non-fatal): nodes "kwok-gpu-144" not found
+2026-07-28T12:51:40Z [INFO]  scale pass 3: 44 nodes still missing, retrying
+2026-07-28T12:51:42Z [INFO]  scale pass 4: 20 nodes still missing, retrying
+2026-07-28T12:51:44Z [WARN]  scale pass 5 made no progress (20 still missing); stopping
+2026-07-28T12:51:44Z [INFO]  scale: created=10431 skipped=0 failed=0
+2026-07-28T12:51:47Z [INFO]  kwok nodes Ready: 9967/10000
+2026-07-28T12:51:52Z [INFO]  kwok nodes Ready: 9933/10000
+2026-07-28T13:03:15Z [WARN]  prometheus query failed (prometheus-prometheus:9090 in prometheus): client rate limiter Wait returned an error: context canceled
+2026-07-28T13:03:15Z [INFO]  cluster resources: cluster cpu/mem: unavailable (metrics-server absent)
+2026-07-28T13:03:15Z [ERROR] [P0.2] FAIL - only 9933/10000 nodes Ready within 1800s — attribute what saturated first (kwok controller vs api server/etcd)
+2026-07-28T13:03:15Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/phase0-results.json (+ phase0-results.xml)
+2026-07-28T13:03:15Z [ERROR] scale-nodes: only 9933/10000 nodes Ready within 1800s — attribute what saturated first (kwok controller vs api server/etcd)

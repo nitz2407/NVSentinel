@@ -1,0 +1,215 @@
+{
+  "title": "NVSentinel 30k scale run (fatal-fraction=1.0, gpu-reset)",
+  "cluster": "https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443",
+  "kube_version": "v1.32.5",
+  "generated_at_utc": "2026-08-03T08:18:10Z",
+  "window": "6h",
+  "footprint": {
+    "connector_pool": 640,
+    "gpureset_crs": 0,
+    "kwok_nodes": 30000,
+    "node_lock_leases": 1,
+    "reset_jobs": 0,
+    "total_nodes": 30032
+  },
+  "nodes": {
+    "total": 30032,
+    "kwok": 30000,
+    "kwok_ready": 29548,
+    "cordoned": 30001,
+    "cordon_with_timestamp": 30000,
+    "cordon_first_ts": "2026-08-03T04:54:28Z",
+    "cordon_last_ts": "2026-08-03T08:15:05Z",
+    "cordon_span_seconds": 12037
+  },
+  "apiserver": {
+    "all_p99_s": {
+      "value": 0.3954795913278085,
+      "ok": true
+    },
+    "err5xx_rate": {
+      "value": 551.0039328888889,
+      "ok": true
+    },
+    "inflight": {
+      "value": 73,
+      "ok": true
+    },
+    "list_nodes_p99_s": {
+      "value": 29.6783265042053,
+      "ok": true
+    },
+    "list_nodes_rate": {
+      "value": 139.1125,
+      "ok": true
+    },
+    "read_p99_s": {
+      "value": 0.7532708764558748,
+      "ok": true
+    },
+    "req_rate": {
+      "value": 997484.4614270543,
+      "ok": true
+    },
+    "write_p99_s": {
+      "value": 0.5566592601700361,
+      "ok": true
+    }
+  },
+  "etcd": {
+    "backend_commit_p99_s": {
+      "value": 0,
+      "ok": false
+    },
+    "db_size_mib": {
+      "value": 0,
+      "ok": false
+    },
+    "wal_fsync_p99_s": {
+      "value": 0,
+      "ok": false
+    }
+  },
+  "janitor_controller": {
+    "reconcile_rate_peak": {
+      "value": 0,
+      "ok": false
+    },
+    "restarts": {
+      "value": 927,
+      "ok": true
+    },
+    "workqueue_depth_peak": {
+      "value": 0,
+      "ok": false
+    }
+  },
+  "gpureset_crs": {
+    "total": 0,
+    "phase": {},
+    "latency": {
+      "count": 0,
+      "min_s": 0,
+      "p50_s": 0,
+      "p90_s": 0,
+      "p99_s": 0,
+      "max_s": 0,
+      "mean_s": 0
+    },
+    "create_with_timestamp": 0,
+    "create_span_seconds": 0
+  },
+  "reset_jobs": {
+    "count": 0,
+    "min_s": 0,
+    "p50_s": 0,
+    "p90_s": 0,
+    "p99_s": 0,
+    "max_s": 0,
+    "mean_s": 0
+  },
+  "reset_jobs_counts": {
+    "succeeded": 0,
+    "total": 0
+  },
+  "components": [
+    {
+      "name": "janitor-controller",
+      "pods": 0,
+      "cpu_millicores": 0,
+      "mem_mib": 0
+    },
+    {
+      "name": "kwok-controller",
+      "pods": 0,
+      "cpu_millicores": 0,
+      "mem_mib": 0
+    },
+    {
+      "name": "node-drainer",
+      "pods": 0,
+      "cpu_millicores": 0,
+      "mem_mib": 0
+    },
+    {
+      "name": "fault-quarantine",
+      "pods": 0,
+      "cpu_millicores": 0,
+      "mem_mib": 0
+    },
+    {
+      "name": "fault-remediation",
+      "pods": 0,
+      "cpu_millicores": 0,
+      "mem_mib": 0
+    },
+    {
+      "name": "kubernetes-object-monitor",
+      "pods": 0,
+      "cpu_millicores": 0,
+      "mem_mib": 0
+    },
+    {
+      "name": "mongodb",
+      "pods": 0,
+      "cpu_millicores": 0,
+      "mem_mib": 0
+    },
+    {
+      "name": "connector-pool",
+      "pods": 0,
+      "cpu_millicores": 0,
+      "mem_mib": 0
+    },
+    {
+      "name": "pool-injector",
+      "pods": 0,
+      "cpu_millicores": 0,
+      "mem_mib": 0
+    }
+  ],
+  "mongodb": {
+    "ok": false,
+    "total_docs": 0,
+    "run_docs": 0,
+    "note": "unavailable from CLI (mTLS store is cluster-internal); set HARNESS_MONGO_URI or reconcile in-cluster"
+  },
+  "ceiling_attribution": "REAL ceiling: apiserver LIST-nodes p99 29.678s exceeded guardrail 1.000s — large-collection LIST against apiserver/etcd is the bound for node scale (Phase 2). Overall read p99 stays low (0.753s) and in-flight peak 73, so it's LIST-fanout cost, not general control-plane saturation.",
+  "node_ceiling": {
+    "target_nodes": 30000,
+    "ready_nodes": 30000,
+    "failed": 0,
+    "time_to_ready_seconds": 1020.232172309,
+    "apiserver_p99_seconds": "0.005",
+    "guardrail_p99_seconds": 1,
+    "cluster_cpu_pct": 0.02144432879180972,
+    "cluster_mem_pct": 0.02007619349614529,
+    "cluster_cpu_used_cores": 55.214,
+    "cluster_mem_used_mi": 952478,
+    "cluster_real_nodes": 32,
+    "cluster_metrics_present": true
+  },
+  "reconcile": {
+    "run_id": "run-1785732761-9e6c961c",
+    "injected": 30080,
+    "acked": 30080,
+    "stored_for_run": 30080,
+    "accounted": 30080,
+    "missing": 0,
+    "unexpected": 0,
+    "loss_fraction": 0,
+    "max_loss_fraction": 0,
+    "verdict": "PASS",
+    "node_checked": 5200,
+    "node_matched": 5200,
+    "node_mismatched": 0,
+    "node_attr_note": "node attribution OK: 5200/5200 sampled events attributed to the correct node",
+    "generated_at_utc": "2026-08-03T05:06:36Z"
+  },
+  "guardrails": {
+    "apiserver_p99_s": 1
+  },
+  "notes": {
+    "etcd": "etcd metrics not exposed (managed control plane) — collected none"
+  }
+}

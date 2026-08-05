@@ -1,0 +1,215 @@
+[17:12:41] ######## Phase 0 E2E for 20000 nodes -> results/2026-07-31/20000/ ########
+[17:12:41] ===== cleanup =====
+[17:12:58] cleanup OK
+[17:12:58] ===== P0.2 scale-nodes -count 20000 =====
+[17:18:11] P0.2 scale-nodes -count 20000 OK
+[17:18:11] ===== P0.5 connector-pool (per-node-pod-limit=20) =====
+[17:21:21] P0.5 connector-pool (per-node-pod-limit=20) OK
+[17:21:21] ===== P0.3 inject =====
+[17:28:53] P0.3 inject run-id=run-1785498681-b843bfa3
+[17:28:53] ===== P0.3 reconcile -run-id run-1785498681-b843bfa3 =====
+[17:30:05] P0.3 reconcile -run-id run-1785498681-b843bfa3 OK
+[17:30:05] ===== P0.4 janitor-check =====
+[17:31:34] P0.4 janitor-check OK
+[17:31:34] ===== report =====
+[17:31:44] report OK
+[17:31:44] ######## DONE 20000 -> /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-07-31/20000/report.md (run-id=run-1785498681-b843bfa3) ########
+nodes -count 20000 =====
+
+2026-07-31T11:42:58Z ===== P0.2: scale simulated nodes to 20000 =====
+2026-07-31T11:42:59Z [INFO]  existing kwok nodes: 0; target: 20000
+I0731 17:13:02.361510 1221258 request.go:752] "Waited before sending request" delay="1.00264746s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-433"
+I0731 17:13:12.366560 1221258 request.go:752] "Waited before sending request" delay="2.245030347s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-340"
+I0731 17:13:22.370922 1221258 request.go:752] "Waited before sending request" delay="2.242869816s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0731 17:13:32.376671 1221258 request.go:752] "Waited before sending request" delay="2.227693527s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-2111"
+2026-07-31T11:43:34Z [INFO]    created 2000/20000 nodes this pass
+I0731 17:13:42.381650 1221258 request.go:752] "Waited before sending request" delay="2.247686185s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-2607/status"
+I0731 17:13:52.386825 1221258 request.go:752] "Waited before sending request" delay="2.224262083s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-3297/status"
+I0731 17:14:02.391221 1221258 request.go:752] "Waited before sending request" delay="2.227639069s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-07-31T11:44:04Z [INFO]    created 4000/20000 nodes this pass
+I0731 17:14:12.391770 1221258 request.go:752] "Waited before sending request" delay="2.231627666s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-4587/status"
+I0731 17:14:22.396290 1221258 request.go:752] "Waited before sending request" delay="2.202690248s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0731 17:14:32.401297 1221258 request.go:752] "Waited before sending request" delay="2.217918654s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-6087"
+2026-07-31T11:44:34Z [INFO]    created 6000/20000 nodes this pass
+I0731 17:14:42.405977 1221258 request.go:752] "Waited before sending request" delay="2.249233102s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0731 17:14:52.410878 1221258 request.go:752] "Waited before sending request" delay="2.23902177s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-7371"
+I0731 17:15:02.415900 1221258 request.go:752] "Waited before sending request" delay="2.223753968s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-07-31T11:45:04Z [INFO]    created 8000/20000 nodes this pass
+I0731 17:15:12.416018 1221258 request.go:752] "Waited before sending request" delay="2.217754175s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-8586/status"
+I0731 17:15:22.421141 1221258 request.go:752] "Waited before sending request" delay="2.220071846s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-9368"
+I0731 17:15:32.426604 1221258 request.go:752] "Waited before sending request" delay="2.197382522s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-07-31T11:45:34Z [INFO]    created 10000/20000 nodes this pass
+I0731 17:15:42.431535 1221258 request.go:752] "Waited before sending request" delay="2.232965036s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-10570/status"
+I0731 17:15:52.436007 1221258 request.go:752] "Waited before sending request" delay="2.190767091s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-11276/status"
+I0731 17:16:02.436328 1221258 request.go:752] "Waited before sending request" delay="2.228707715s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-12056"
+2026-07-31T11:46:04Z [INFO]    created 12000/20000 nodes this pass
+I0731 17:16:12.436627 1221258 request.go:752] "Waited before sending request" delay="2.230523296s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-12562/status"
+I0731 17:16:22.441174 1221258 request.go:752] "Waited before sending request" delay="2.218951923s" reason="client-side throttling, not priority and fairness" verb="PUT" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-13266/status"
+I0731 17:16:32.445667 1221258 request.go:752] "Waited before sending request" delay="2.174855085s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-07-31T11:46:34Z [INFO]    created 14000/20000 nodes this pass
+I0731 17:16:42.446165 1221258 request.go:752] "Waited before sending request" delay="2.228603733s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0731 17:16:52.450853 1221258 request.go:752] "Waited before sending request" delay="2.223968434s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0731 17:17:02.451288 1221258 request.go:752] "Waited before sending request" delay="2.234384917s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-16060"
+2026-07-31T11:47:04Z [INFO]    created 16000/20000 nodes this pass
+I0731 17:17:12.455852 1221258 request.go:752] "Waited before sending request" delay="2.230576732s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-16755"
+I0731 17:17:22.455987 1221258 request.go:752] "Waited before sending request" delay="2.231610143s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+I0731 17:17:32.460587 1221258 request.go:752] "Waited before sending request" delay="2.229805784s" reason="client-side throttling, not priority and fairness" verb="POST" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes"
+2026-07-31T11:47:34Z [INFO]    created 18000/20000 nodes this pass
+I0731 17:17:42.461459 1221258 request.go:752] "Waited before sending request" delay="2.244607911s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-18753"
+I0731 17:17:52.466294 1221258 request.go:752] "Waited before sending request" delay="2.209073004s" reason="client-side throttling, not priority and fairness" verb="GET" URL="https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes/kwok-gpu-19365"
+2026-07-31T11:48:01Z [INFO]    created 20000/20000 nodes this pass
+2026-07-31T11:48:03Z [INFO]  scale: created=20000 skipped=0 failed=0
+2026-07-31T11:48:09Z [INFO]  kwok nodes Ready: 20000/20000
+E0731 17:18:09.172345 1221258 reflector.go:227] "Failed to watch" err="Get \"https://aks-h6rr9wnc.hcp.southcentralus.azmk8s.io:443/api/v1/nodes?allowWatchBookmarks=true&labelSelector=type%3Dkwok&resourceVersion=1013736030&timeout=9m27s&timeoutSeconds=567&watch=true\": context canceled" logger="UnhandledError" reflector="/tmp/cursor-sandbox-cache/1ff09a48de941e0c44ef00635c5ad5db/go-mod/k8s.io/client-go@v0.36.2/tools/cache/reflector.go:343" type="*v1.Node"
+2026-07-31T11:48:11Z [INFO]  cluster resources: cluster cpu=2.2% (55.7/2574.8 cores) mem=2.0% (942438/47443157 Mi) over 32 real nodes vs guardrails cpu=85% mem=85%
+2026-07-31T11:48:11Z [INFO]  [P0.2] PASS - ready=20000/20000 in 310s, apiserver p99=0.065 s, cluster cpu=2.2% (55.7/2574.8 cores) mem=2.0% (942438/47443157 Mi) over 32 real nodes vs guardrails cpu=85% mem=85%
+2026-07-31T11:48:11Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-07-31/20000/phase0-results.json (+ phase0-results.xml)
+[17:18:11] P0.2 scale-nodes -count 20000 OK
+[17:18:11] ===== P0.5 connector-pool (per-node-pod-limit=20) =====
+
+2026-07-31T11:48:15Z ===== P0.5: connector pool on real/GPU nodes (emulated fleet=20000) =====
+2026-07-31T11:48:16Z [INFO]  pool sizing: real_nodes=32 ceiling=640 replicas=640 density=20.0/node nodes/connector=32
+2026-07-31T11:48:17Z [INFO]  connector pool torn down (statefulset + service + injector DaemonSet nvs-harness-connector-pool)
+2026-07-31T11:48:18Z [INFO]  connector pool applied: nvs-harness-connector-pool (replicas=640)
+2026-07-31T11:48:18Z [INFO]  connector pool: 0/640 ready
+2026-07-31T11:49:13Z [INFO]  connector pool: 30/640 ready
+2026-07-31T11:49:18Z [INFO]  connector pool: 134/640 ready
+2026-07-31T11:49:38Z [INFO]  connector pool: 154/640 ready
+2026-07-31T11:49:53Z [INFO]  connector pool: 277/640 ready
+2026-07-31T11:49:58Z [INFO]  connector pool: 333/640 ready
+2026-07-31T11:50:13Z [INFO]  connector pool: 334/640 ready
+2026-07-31T11:50:23Z [INFO]  connector pool: 390/640 ready
+2026-07-31T11:50:33Z [INFO]  connector pool: 571/640 ready
+2026-07-31T11:50:38Z [INFO]  connector pool: 621/640 ready
+2026-07-31T11:50:43Z [INFO]  connector pool: 640/640 ready
+2026-07-31T11:50:56Z [INFO]  injector DaemonSet applied: nvs-harness-pool-injector pinned to 26 connector node(s) via nvs-harness/pool-node
+2026-07-31T11:50:56Z [INFO]  injector DaemonSet: 0/0 ready
+2026-07-31T11:51:06Z [INFO]  injector DaemonSet: 11/26 ready
+2026-07-31T11:51:21Z [INFO]  injector DaemonSet: 26/26 ready
+2026-07-31T11:51:21Z [INFO]  [P0.5] PASS - staged 640 connectors (20.0/node) + 26 persistent node injectors; sockets under /var/run/nvs-harness-pool/<pod>; fire events with the P0.3 inject/reconcile flow (drives these resident injectors)
+2026-07-31T11:51:21Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-07-31/20000/phase0-results.json (+ phase0-results.xml)
+[17:21:21] P0.5 connector-pool (per-node-pod-limit=20) OK
+[17:21:21] ===== P0.3 inject =====
+
+2026-07-31T11:51:21Z ===== P0.3 distributed inject across the connector pool (image-free) =====
+2026-07-31T11:53:09Z [INFO]  distributed inject: nodes=26 connectors=640 nodes/conn=32 expect=20480 run-id=run-1785498681-b843bfa3
+
+2026-07-31T11:53:09Z ===== distributed inject: 640 connectors across 26 nodes (resident injector per node, parallel) =====
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00001a: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00001b: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss000010: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss000012: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss000019: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00001c: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss000015: acked=832
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss000017: acked=832
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss000014: acked=832
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00000v: acked=864
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss000011: acked=512
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss000013: acked=512
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00001d: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00000z: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss000026: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00001f: acked=832
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00000w: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00000s: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00000r: acked=832
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00000t: acked=832
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00001j: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00001e: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00000q: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss000016: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00001h: acked=800
+2026-07-31T11:58:53Z [INFO]  node aks-gpu-12493808-vmss00000x: acked=800
+2026-07-31T11:58:53Z [INFO]  [P0.3 inject] run-id=run-1785498681-b843bfa3 connectors=640 expect=20480 acked=20480
+[17:28:53] P0.3 inject run-id=run-1785498681-b843bfa3
+[17:28:53] ===== P0.3 reconcile -run-id run-1785498681-b843bfa3 =====
+
+2026-07-31T11:59:03Z ===== health monitor started (interval 15s) — full-namespace watch of [nvsentinel dgxc-janitor-system]: cordoning, CRs, OOM/restarts/crashloops, image-pull & config errors, Pending/Failed/Evicted, NotReady, workload replicas, Warning events, MongoDB quorum, resource saturation =====
+
+2026-07-31T11:59:03Z ===== drain: polling stored count for run run-1785498681-b843bfa3 (expect=20480, stable after 2 equal polls, timeout 5m0s) =====
+2026-07-31T11:59:07Z [INFO]  drain: stored=20480/20480 for run run-1785498681-b843bfa3
+2026-07-31T11:59:07Z [INFO]  drain: reached expected total
+
+2026-07-31T11:59:07Z ===== distributed reconcile: per-ID + NodeName across 640 connectors on 26 nodes (resident injector per node, parallel) =====
+2026-07-31T11:59:09Z [WARN]  [monitor] fault-quarantine container fault-quarantine-6fd65b5cd6-tsk2w/fault-quarantine entered monitoring with 8 prior restart(s) — pre-existing
+2026-07-31T11:59:09Z [WARN]  [monitor] fault-remediation container fault-remediation-5bf476f7b5-bjjhk/fault-remediation entered monitoring with 71 prior restart(s) — pre-existing
+2026-07-31T11:59:09Z [WARN]  [monitor] fault-remediation container fault-remediation-5bf476f7b5-bjjhk/fault-remediation has prior OOMKilled history (71 restart(s)) — pre-existing; memory limit marginal at this scale
+2026-07-31T11:59:09Z [WARN]  [monitor] fault-remediation container fault-remediation-5bf476f7b5-bjjhk/fault-remediation entered monitoring already CrashLoopBackOff: back-off 2m40s restarting failed container=fault-remediation pod=fault-remediation-5bf476f7b5-bjjhk_nvsentinel(f206f877-d304-4d71-a128-bcd7c9084d96) — pre-existing
+2026-07-31T11:59:09Z [WARN]  [monitor] fault-remediation pod fault-remediation-5bf476f7b5-bjjhk is Running but NotReady (readiness probe failing)
+2026-07-31T11:59:09Z [WARN]  [monitor] labeler container labeler-6598c77fbf-sw29z/labeler entered monitoring with 784 prior restart(s) — pre-existing
+2026-07-31T11:59:09Z [WARN]  [monitor] labeler container labeler-6598c77fbf-sw29z/labeler has prior OOMKilled history (784 restart(s)) — pre-existing; memory limit marginal at this scale
+2026-07-31T11:59:09Z [WARN]  [monitor] labeler container labeler-6598c77fbf-sw29z/labeler entered monitoring already CrashLoopBackOff: back-off 5m0s restarting failed container=labeler pod=labeler-6598c77fbf-sw29z_nvsentinel(50b596f2-903b-440f-bdf6-7f4a17a0df93) — pre-existing
+2026-07-31T11:59:09Z [WARN]  [monitor] labeler pod labeler-6598c77fbf-sw29z is Running but NotReady (readiness probe failing)
+2026-07-31T11:59:09Z [WARN]  [monitor] metadata-collector container metadata-collector-tgmrf/metadata-collector entered monitoring with 4454 prior restart(s) — pre-existing
+2026-07-31T11:59:09Z [WARN]  [monitor] metadata-collector container metadata-collector-tgmrf/metadata-collector entered monitoring already CrashLoopBackOff: back-off 5m0s restarting failed container=metadata-collector pod=metadata-collector-tgmrf_nvsentinel(acf65de7-05b0-4a12-84ef-2b51de422b79) — pre-existing
+2026-07-31T11:59:09Z [WARN]  [monitor] metadata-collector pod metadata-collector-tgmrf is Running but NotReady (readiness probe failing)
+2026-07-31T11:59:09Z [WARN]  [monitor] mongodb container mongodb-0/mongodb entered monitoring with 16 prior restart(s) — pre-existing
+2026-07-31T11:59:09Z [WARN]  [monitor] mongodb container mongodb-0/mongodb has prior OOMKilled history (16 restart(s)) — pre-existing; memory limit marginal at this scale
+2026-07-31T11:59:09Z [WARN]  [monitor] mongodb pod mongodb-0 memory 2Gi is >=85% of its 2Gi limit (OOM risk)
+2026-07-31T11:59:09Z [WARN]  [monitor] mongodb container mongodb-1/mongodb entered monitoring with 10 prior restart(s) — pre-existing
+2026-07-31T11:59:09Z [WARN]  [monitor] mongodb container mongodb-2/mongodb entered monitoring with 10 prior restart(s) — pre-existing
+2026-07-31T11:59:09Z [WARN]  [monitor] node-drainer container node-drainer-576dfbc7-z2vd8/node-drainer entered monitoring with 34 prior restart(s) — pre-existing
+2026-07-31T11:59:09Z [WARN]  [monitor] node-drainer container node-drainer-576dfbc7-z2vd8/node-drainer has prior OOMKilled history (34 restart(s)) — pre-existing; memory limit marginal at this scale
+2026-07-31T11:59:09Z [WARN]  [monitor] node-drainer pod node-drainer-576dfbc7-z2vd8 memory 2Gi is >=85% of its 2Gi limit (OOM risk)
+2026-07-31T11:59:09Z [WARN]  [monitor] nvcf-drainer container nvcf-drainer-68d65fdf9f-g6vfh/controller entered monitoring with 210 prior restart(s) — pre-existing
+2026-07-31T11:59:09Z [WARN]  [monitor] nvcf-drainer container nvcf-drainer-68d65fdf9f-g6vfh/controller has prior OOMKilled history (210 restart(s)) — pre-existing; memory limit marginal at this scale
+2026-07-31T11:59:09Z [WARN]  [monitor] nvcf-drainer container nvcf-drainer-68d65fdf9f-g6vfh/controller entered monitoring already CrashLoopBackOff: back-off 2m40s restarting failed container=controller pod=nvcf-drainer-68d65fdf9f-g6vfh_nvsentinel(02894e76-72e4-494c-afba-6187d6801889) — pre-existing
+2026-07-31T11:59:09Z [WARN]  [monitor] nvcf-drainer pod nvcf-drainer-68d65fdf9f-g6vfh is Running but NotReady (readiness probe failing)
+2026-07-31T11:59:09Z [WARN]  [monitor] preflight container preflight-74458cd8bb-jnsgh/preflight entered monitoring with 32 prior restart(s) — pre-existing
+2026-07-31T11:59:09Z [WARN]  [monitor] preflight container preflight-74458cd8bb-jnsgh/preflight has prior OOMKilled history (32 restart(s)) — pre-existing; memory limit marginal at this scale
+2026-07-31T11:59:11Z [WARN]  [monitor] dgxc-janitor container dgxc-janitor-controller-manager-686f447f44-gn875/manager entered monitoring with 308 prior restart(s) — pre-existing
+2026-07-31T11:59:11Z [WARN]  [monitor] dgxc-janitor container dgxc-janitor-controller-manager-686f447f44-gn875/manager has prior OOMKilled history (308 restart(s)) — pre-existing; memory limit marginal at this scale
+2026-07-31T11:59:11Z [WARN]  [monitor] dgxc-janitor pod dgxc-janitor-controller-manager-686f447f44-gn875 memory 942Mi is >=85% of its 1Gi limit (OOM risk)
+2026-07-31T11:59:11Z [WARN]  [monitor] dgxc-janitor container dgxc-janitor-controller-manager-686f447f44-vfj9v/manager entered monitoring with 307 prior restart(s) — pre-existing
+2026-07-31T11:59:11Z [WARN]  [monitor] dgxc-janitor container dgxc-janitor-controller-manager-686f447f44-vfj9v/manager has prior OOMKilled history (307 restart(s)) — pre-existing; memory limit marginal at this scale
+2026-07-31T11:59:14Z [WARN]  [monitor] pod/fault-remediation-5bf476f7b5-bjjhk: BackOff — Back-off restarting failed container fault-remediation in pod fault-remediation-5bf476f7b5-bjjhk_nvsentinel(f206f877-d304-4d71-a128-bcd7c9084d96) (x1089)
+2026-07-31T11:59:14Z [INFO]  [monitor] cordoned=882 kwok-ready=20000 gpureset-crs=77 rebootnode-crs=0 mongodb-ready=3/3
+2026-07-31T11:59:35Z [ERROR] [monitor] metadata-collector container metadata-collector-tgmrf/metadata-collector restarted 1 time(s) during the run (total 4455) — CrashLoopBackOff
+2026-07-31T11:59:35Z [ERROR] [monitor] nvcf-drainer container nvcf-drainer-68d65fdf9f-g6vfh/controller restarted 1 time(s) during the run (total 211) — CrashLoopBackOff
+2026-07-31T11:59:35Z [ERROR] [monitor] nvcf-drainer container nvcf-drainer-68d65fdf9f-g6vfh/controller was OOMKilled during the run (memory limit too low for this scale; 211 restart(s))
+2026-07-31T11:59:38Z [WARN]  [monitor] deploy nvsentinel/fault-remediation has 0/1 ready replicas (pods missing/not ready)
+2026-07-31T11:59:38Z [WARN]  [monitor] deploy nvsentinel/labeler has 0/1 ready replicas (pods missing/not ready)
+2026-07-31T11:59:38Z [WARN]  [monitor] deploy nvsentinel/nvcf-drainer has 0/1 ready replicas (pods missing/not ready)
+2026-07-31T11:59:38Z [WARN]  [monitor] daemonset nvsentinel/metadata-collector has 25/26 ready replicas (pods missing/not ready)
+2026-07-31T11:59:40Z [WARN]  [monitor] pod/labeler-6598c77fbf-sw29z: BackOff — Back-off restarting failed container labeler in pod labeler-6598c77fbf-sw29z_nvsentinel(50b596f2-903b-440f-bdf6-7f4a17a0df93) (x9116)
+2026-07-31T11:59:40Z [INFO]  [monitor] cordoned=948 kwok-ready=20000 gpureset-crs=77 rebootnode-crs=0 mongodb-ready=3/3
+2026-07-31T11:59:56Z [INFO]  [monitor] cordoned=986 kwok-ready=20000 gpureset-crs=77 rebootnode-crs=0 mongodb-ready=3/3
+{
+  "run_id": "run-1785498681-b843bfa3",
+  "injected": 20480,
+  "acked": 20480,
+  "stored_for_run": 20480,
+  "accounted": 20480,
+  "missing": 0,
+  "unexpected": 0,
+  "loss_fraction": 0,
+  "max_loss_fraction": 0,
+  "verdict": "PASS",
+  "node_checked": 5200,
+  "node_matched": 5200,
+  "node_mismatched": 0,
+  "node_attr_note": "node attribution OK: 5200/5200 sampled events attributed to the correct node",
+  "generated_at_utc": "2026-07-31T12:00:05Z"
+}
+2026-07-31T12:00:05Z [INFO]  [P0.3 reconcile] run-id=run-1785498681-b843bfa3 injected=20480 accounted=20480 missing=0 loss=0.0000 node=5200/5200 verdict=PASS
+2026-07-31T12:00:05Z [INFO]  node attribution OK: 5200/5200 sampled events attributed to the correct node
+E0731 17:30:05.364550 1260680 request.go:1196] "Unexpected error when reading response body" err="context canceled"
+
+2026-07-31T12:00:05Z ===== health monitor: verdict=DEGRADED (run-attributable) samples=3 cordoned 882→986 gpureset-crs 77→77 oomkilled-during-run=[nvcf-drainer/nvcf-drainer-68d65fdf9f-g6vfh/controller] prior-oom=8 pre-existing=23 mongo-quorum-lost=false findings=40 by-category=map[event:2 notready:4 oom:9 resource:3 restart:14 waiting:4 workload:4] =====
+[17:30:05] P0.3 reconcile -run-id run-1785498681-b843bfa3 OK
+[17:30:05] ===== P0.4 janitor-check =====
+
+2026-07-31T12:00:05Z ===== P0.4: janitor reboot + GPU reset on a KWOK node =====
+2026-07-31T12:00:06Z [INFO]  target kwok node: kwok-gpu-0
+2026-07-31T12:00:58Z [INFO]  RebootNode result: PASS
+2026-07-31T12:01:34Z [INFO]  GPUReset result: PASS
+2026-07-31T12:01:34Z [INFO]  [P0.4] PASS - reboot=PASS gpureset=PASS on kwok-gpu-0
+2026-07-31T12:01:34Z [INFO]  results written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-07-31/20000/phase0-results.json (+ phase0-results.xml)
+[17:31:34] P0.4 janitor-check OK
+[17:31:34] ===== report =====
+
+2026-07-31T12:01:34Z ===== report: collecting metrics (window=1h) =====
+2026-07-31T12:01:44Z [INFO]  report written: /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-07-31/20000/report.md (+ /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-07-31/20000/report.json)
+[17:31:44] report OK
+[17:31:44] ######## DONE 20000 -> /home/nitijain/workspace_github/NVSentinel/tests/scale-tests/harness/results/2026-07-31/20000/report.md (run-id=run-1785498681-b843bfa3) ########
