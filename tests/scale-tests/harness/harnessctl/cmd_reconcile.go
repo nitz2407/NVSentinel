@@ -158,7 +158,20 @@ func runReconcileDistributed(ctx context.Context, runID string) error {
 		warnf("drain wait: %v (reconciling anyway)", err)
 	}
 
-	rep, err := c.reconcilePerNode(ctx, cfg, geo, conn, runID)
+	// Pick the accounting mode. The direct-`mongo` inject bypasses the connector
+	// pool and writes NO per-connector shard ledger, so the ledger-based per-ID
+	// reconcile has nothing to diff (and would otherwise read leftover gRPC
+	// ledgers). Its inject leaves a run manifest recording mechanism + expected
+	// count; when present for a mongo run, reconcile by counting stored docs for
+	// the run label against that expected total. Absent manifest => ledger-based
+	// per-ID + NodeName reconcile, the gRPC pool default (older runs unaffected).
+	var rep *ReconcileReport
+	if m, ok := readRunManifest(cfg, runID); ok && m.Mechanism == mechanismMongo && m.Expected > 0 {
+		infof("run %s was injected via mechanism=mongo (expected=%d); reconciling by run-label count", runID, m.Expected)
+		rep, err = c.reconcileByCountPool(ctx, cfg, geo, conn, runID, m.Expected)
+	} else {
+		rep, err = c.reconcilePerNode(ctx, cfg, geo, conn, runID)
+	}
 	if err != nil {
 		return fmt.Errorf("distributed reconcile: %w", err)
 	}
@@ -527,4 +540,46 @@ func extractStoredNode(doc bson.M, prefix string) string {
 		}
 	}
 	return ""
+}
+
+// runManifest records how a run was injected so a later `reconcile` — invoked
+// standalone, without the inject-time flags — can pick the right accounting mode.
+// The gRPC pool path needs none (its per-connector shard ledgers drive a per-ID
+// reconcile); the direct-`mongo` path writes one, because it has no shard ledger
+// and must be reconciled by run-label count. Absent manifest => ledger-based
+// reconcile, so older runs and external callers are unaffected.
+type runManifest struct {
+	Mechanism string `json:"mechanism"`
+	Expected  int    `json:"expected"`
+}
+
+// runManifestPath is the operator-side manifest location for a run. Written by
+// the inject process and read by the reconcile process; both run operator-side
+// against the same HARNESS_RESULTS_DIR, so no in-cluster round-trip is needed.
+func runManifestPath(cfg Config, runID string) string {
+	return filepath.Join(cfg.ResultsDir, "runs", runID+".json")
+}
+
+func writeRunManifest(cfg Config, runID, mechanism string, expected int) {
+	p := runManifestPath(cfg, runID)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		warnf("run manifest dir %s: %v", filepath.Dir(p), err)
+		return
+	}
+	b, _ := json.MarshalIndent(runManifest{Mechanism: mechanism, Expected: expected}, "", "  ")
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		warnf("write run manifest %s: %v", p, err)
+	}
+}
+
+func readRunManifest(cfg Config, runID string) (runManifest, bool) {
+	var m runManifest
+	b, err := os.ReadFile(runManifestPath(cfg, runID))
+	if err != nil {
+		return m, false
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return m, false
+	}
+	return m, true
 }

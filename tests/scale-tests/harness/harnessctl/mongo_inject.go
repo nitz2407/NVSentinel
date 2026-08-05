@@ -211,6 +211,9 @@ func (c *clients) injectMongoAcrossPool(ctx context.Context, cfg Config, o mongo
 	if pod == "" {
 		return fmt.Errorf("no resident injector available (deploy the connector pool first)")
 	}
+	// Direct-mongo writes no shard ledger; drop any stale gRPC led-*.jsonl so a
+	// later reconcile can never misread a previous run's ledger for this run.
+	c.clearPoolLedgers(ctx, cfg.NVSNamespace, geo)
 	localBin, err := resolveLocalBinary(cfg.HarnessBin)
 	if err != nil {
 		return err
@@ -287,6 +290,10 @@ func (c *clients) injectMongoAcrossPool(ctx context.Context, cfg Config, o mongo
 			infof("  %s", strings.TrimSpace(ln))
 		}
 	}
+	// Record how this run was injected so a standalone `reconcile -run-id` (which
+	// sees none of the inject flags) accounts it by run-label count instead of the
+	// per-ID shard-ledger path the mongo mechanism never populates.
+	writeRunManifest(cfg, o.runID, mechanismMongo, total)
 	// Emit the run id last so callers can capture it for `reconcile -run-id`.
 	fmt.Println(o.runID)
 	return nil

@@ -445,6 +445,48 @@ func (c *clients) reconcilePerNode(ctx context.Context, cfg Config, g poolGeomet
 	return agg, nil
 }
 
+// reconcileByCountPool is the count-only distributed reconcile used for runs with
+// no per-connector shard ledger (the direct-`mongo` mechanism). MongoDB is a
+// single shared datastore, so one resident injector counts the docs stored under
+// the run label and diffs that against the expected injected total — no per-ID
+// ledger and no fan-out needed. Node attribution is not verified in this mode
+// (there is no per-event ledger to compare stored NodeName against).
+func (c *clients) reconcileByCountPool(ctx context.Context, cfg Config, g poolGeometry, conn mongoConn, runID string, expected int) (*ReconcileReport, error) {
+	pod := firstInjector(g)
+	if pod == "" {
+		return nil, fmt.Errorf("no resident injector available to reconcile run %s", runID)
+	}
+	args := reconcileArgs(cfg, conn, runID)
+	// Empty -ledger + -expect-injected selects the primitive's count-only mode.
+	args = append(args, "-ledger=", fmt.Sprintf("-expect-injected=%d", expected), "-report=/tmp/reconcile-count.json")
+	out, err := c.execShEnv(ctx, cfg.NVSNamespace, pod, map[string]string{"MONGO_URI": conn.uri}, shellQuoteRun(args)+" 2>/dev/null")
+	rep := extractReport(out)
+	if rep == nil {
+		if err != nil {
+			return nil, fmt.Errorf("count-only reconcile on %s: %w", pod, err)
+		}
+		return nil, fmt.Errorf("count-only reconcile on %s produced no parseable report", pod)
+	}
+	return rep, nil
+}
+
+// clearPoolLedgers removes stale per-connector shard ledgers from every injector
+// node. The gRPC inject clears its own node's ledgers before writing, but a run
+// that produces NO ledger (the direct-`mongo` mechanism) would otherwise leave a
+// previous gRPC run's led-*.jsonl in place for a later reconcile to misread, so
+// the mongo inject clears them fleet-wide up front. Best-effort: a failure to
+// clear one node is warned, not fatal.
+func (c *clients) clearPoolLedgers(ctx context.Context, ns string, g poolGeometry) {
+	for node, pod := range g.injByNode {
+		if pod == "" {
+			continue
+		}
+		if _, err := c.execSh(ctx, ns, pod, "rm -f "+poolLedgerDir+"/led-*.jsonl"); err != nil {
+			warnf("clear stale shard ledgers on %s: %v", node, err)
+		}
+	}
+}
+
 // waitStoredStable replaces a fixed drain sleep: it polls the datastore's stored
 // count for the run (via a single count query inside one resident injector) until
 // the count stops changing across consecutive polls or reaches the expected
