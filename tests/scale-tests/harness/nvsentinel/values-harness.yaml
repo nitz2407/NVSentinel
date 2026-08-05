@@ -95,15 +95,66 @@ platformConnector:
                 operator: NotIn
                 values: ["kwok"]
 
-# node-drainer default memory is too low once it caches Pods cluster-wide.
+# Scale resource overrides. NVSentinel component defaults are sized for real
+# fleets; at tens of thousands of KWOK nodes several controllers cache the whole
+# node/pod population and OOM at the stock limits. These ceilings were raised as
+# each was observed OOMKilled during the 40k/50k/100k runs (see findings/). Lower
+# them for small runs if the cluster is memory-constrained.
+#
+# node-drainer caches Pods cluster-wide; the heaviest memory user under a drain storm.
 node-drainer:
   resources:
     requests:
-      cpu: 200m
-      memory: 1Gi
-    limits:
-      cpu: "1"
+      cpu: 500m
       memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 12Gi
+  # Drive drains with the built-in node-drainer only. nvcf-drainer (the custom
+  # drain integration) is disabled so RebootNode/GPUReset flow straight through the
+  # node-drainer -> janitor path on the harness cluster (no NVCF backend here).
+  customDrain:
+    enabled: false
+
+# labeler lists+watches every node; its cache dominates memory at fleet scale.
+labeler:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 4Gi
+    limits:
+      cpu: "2"
+      memory: 16Gi
+
+# fault-remediation holds the remediation queue; OOM'd at the stock limit at 20k+.
+fault-remediation:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 6Gi
+
+# fault-quarantine caches nodes for the circuit breaker; OOM'd during cordon storms.
+fault-quarantine:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 6Gi
+
+# kubernetes-object-monitor mirrors cluster objects; cache is large at fleet scale.
+kubernetes-object-monitor:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 8Gi
 
 janitor:
   ttl:
@@ -149,13 +200,17 @@ mongodb-store:
     architecture: replicaset
     replicaCount: 3
     replicaSetName: rs0
+    # Sized for the connector-pool write plane at high density. At ~1600+ mTLS
+    # connections a 1.5–2 core mongod loses its primary and the remediation
+    # pipeline crash-loops (findings/2026-07-30-mongodb-saturation-under-connector-pool.md);
+    # 6 cores / 12Gi carried ~3200 connectors through the 100k run without saturation.
     resources:
       requests:
-        memory: 6Gi
-        cpu: "2"
+        memory: 12Gi
+        cpu: "6"
       limits:
-        memory: 6Gi
-        cpu: "2"
+        memory: 12Gi
+        cpu: "6"
     persistence:
       enabled: true
       size: 40Gi

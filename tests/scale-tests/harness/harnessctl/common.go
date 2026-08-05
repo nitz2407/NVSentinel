@@ -121,6 +121,15 @@ func escapeXML(s string) string {
 // Kubernetes API types.
 func ptr[T any](v T) *T { return &v }
 
+// defStr returns s, or def when s is empty — used to give env-threaded strings a
+// stable fallback before they cross into an in-pod shell invocation.
+func defStr(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
 // writeArtifact writes an arbitrary named artifact into the results dir.
 func writeArtifact(dir, name string, v any) {
 	_ = os.MkdirAll(dir, 0o755)

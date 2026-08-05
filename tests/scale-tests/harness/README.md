@@ -77,6 +77,58 @@ harness/
 - `kubectl`, `helm` (for installs), `go` and `docker` (to build/push `harnessctl`).
 - A container registry the cluster can pull from, for the `harnessctl` image.
 
+### Bare / from-scratch clusters (e.g. Kind)
+
+Managed clusters (AKS/EKS/OKE) already satisfy these; a bare cluster does not, and
+`bringup` installs NVSentinel with `helm --wait`, so an unmet item leaves a pod
+never-Ready and the install eventually times out.
+
+1. **At least one node labeled `nvidia.com/gpu.present=true` must exist** *(manual
+   on a bare cluster)*. `fault-quarantine`'s startup circuit breaker uses the count
+   of GPU-labeled nodes as its denominator (`fault-quarantine/pkg/informer/node_informer.go`
+   lists nodes matching `nvidia.com/gpu.present=true`). With zero such nodes it exits
+   fatally at startup and crashloops — the log says `GetTotalNodes returning 0 …
+   NodeInformer cache sync issues`, which is misleading: it is the deterministic
+   "no GPU nodes" branch, not a cache race. `scale-nodes` stamps this label on every
+   KWOK node, so it is a non-issue at scale; a bare cluster needs one **before**
+   `bringup`. Label an existing worker:
+
+   ```bash
+   kubectl label node <worker> nvidia.com/gpu.present=true --overwrite
+   ```
+
+   …or, if there is no schedulable worker (single-node Kind), create an untainted
+   KWOK node carrying the label (the `NoSchedule` fake-node taint would make it
+   unschedulable):
+
+   ```bash
+   kubectl apply -f - <<'EOF'
+   apiVersion: v1
+   kind: Node
+   metadata:
+     name: kwok-seed-0
+     annotations: { kwok.x-k8s.io/node: fake, node.alpha.kubernetes.io/ttl: "0" }
+     labels:
+       type: kwok
+       nvidia.com/gpu.present: "true"
+       kubernetes.io/hostname: kwok-seed-0
+       kubernetes.io/os: linux
+   EOF
+   ```
+
+2. **`event-exporter-oidc-secret`** *(handled automatically)*. event-exporter mounts
+   this Secret as a required (`optional:false`) volume, so without it the pod is stuck
+   `ContainerCreating`/`FailedMount` and blocks `helm --wait`. `bringup` seeds a
+   placeholder if the secret is absent (only-if-absent, so a real tenant/GitOps secret
+   is never overwritten); the pod then serves `/healthz` and goes Ready. Only actual
+   event egress fails, which the harness does not exercise. To wire real egress, create
+   the secret with the tenant OIDC client secret before `bringup`.
+
+3. **cert-manager webhook** *(handled automatically)*. `bringup` probes the webhook
+   with a throwaway dry-run and, if it is broken (commonly an expired 1-year serving
+   cert that cert-manager will not rotate post-expiry), regenerates the CA and restarts
+   it before installing NVSentinel.
+
 ## Quick start
 
 ```bash

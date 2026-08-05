@@ -18,6 +18,7 @@ import (
 	"math/big"
 	mrand "math/rand"
 	"os"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -26,6 +27,83 @@ import (
 
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
 )
+
+// Fatal-event kinds (selectable via -fatal-event / HARNESS_FATAL_EVENT): which
+// remediation the fatal events drive end to end.
+const (
+	fatalEventNodeReboot = "node-reboot" // RESTART_BM     => node-drainer => RebootNode CR
+	fatalEventGPUReset   = "gpu-reset"   // COMPONENT_RESET => node-drainer => GPUReset CR
+)
+
+// Generation patterns (selectable via -pattern / HARNESS_INJECT_PATTERN): the
+// shape of the fatal/healthy mix over the injected node set.
+const (
+	patternFleetStorm      = "fleet-storm"       // independent per-event fatal draw at fatal-fraction across the fleet
+	patternFlappy          = "flappy"            // alternate fatal/healthy so nodes repeatedly flap state
+	patternSingleNodeBurst = "single-node-burst" // every event fatal (a burst concentrated on the caller's node set)
+)
+
+// HealthEvent processingStrategy overrides (selectable via -processing-strategy /
+// HARNESS_PROCESSING_STRATEGY). default leaves the field UNSPECIFIED so the
+// connector/analyzer decides; the others force a downstream handling path.
+const (
+	procStrategyDefault            = "default"
+	procStrategyStoreOnly          = "store-only"
+	procStrategyStoreAndAnalyse    = "store-and-analyse"
+	procStrategyExecuteRemediation = "execute-remediation"
+)
+
+// Injection mechanisms (selectable via -mechanism / HARNESS_INJECT_MECHANISM):
+//   - grpc: send through the platform-connector's gRPC UDS ingress (the faithful
+//     production path; exercises the connector's dedup/transform/APF/write plus the
+//     downstream FQ->ND->FR->janitor pipeline). Requires a deployed connector pool.
+//   - mongo: insert HealthEvent documents straight into MongoDB, byte-compatible with
+//     the connector's write (model.HealthEventWithStatus), BYPASSING the connector.
+//     For storage/change-stream stress at rates the connector can't reach (STORE_ONLY
+//     flood, remediation flood) and cold-start pre-seeding. Runs inside one resident
+//     injector (in-cluster mTLS reachability) with a worker pool.
+const (
+	mechanismGRPC  = "grpc"
+	mechanismMongo = "mongo"
+)
+
+func normalizeFatalEvent(s string) string {
+	if strings.EqualFold(strings.TrimSpace(s), fatalEventGPUReset) {
+		return fatalEventGPUReset
+	}
+	return fatalEventNodeReboot
+}
+
+func normalizePattern(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case patternFlappy:
+		return patternFlappy
+	case patternSingleNodeBurst:
+		return patternSingleNodeBurst
+	default:
+		return patternFleetStorm
+	}
+}
+
+func normalizeProcStrategyName(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case procStrategyStoreOnly:
+		return procStrategyStoreOnly
+	case procStrategyStoreAndAnalyse:
+		return procStrategyStoreAndAnalyse
+	case procStrategyExecuteRemediation:
+		return procStrategyExecuteRemediation
+	default:
+		return procStrategyDefault
+	}
+}
+
+func normalizeMechanism(s string) string {
+	if strings.EqualFold(strings.TrimSpace(s), mechanismMongo) {
+		return mechanismMongo
+	}
+	return mechanismGRPC
+}
 
 type ledgerEntry struct {
 	ID       string `json:"id"`
@@ -59,25 +137,76 @@ func runInject(ctx context.Context, args []string) error {
 	runLabel := fs.String("run-label", "nvs_harness_run", "metadata key stamped with the run id")
 	idLabel := fs.String("id-label", "nvs_harness_id", "metadata key stamped with the per-event id")
 	ledgerPath := fs.String("ledger", "/results/injection-ledger.jsonl", "path to write the injection ledger (JSONL)")
-	fatalFrac := fs.Float64("fatal-fraction", 0.08, "fraction of fatal GPU XID events")
+	fatalFrac := fs.Float64("fatal-fraction", 0.08, "fraction of fatal events (fleet-storm pattern)")
 	fatalAgent := fs.String("fatal-agent", "gpu-health-monitor", "agent for fatal events (gpu-health-monitor => FQM cordons)")
+	fatalEvent := fs.String("fatal-event", fatalEventNodeReboot, "fatal event to inject: node-reboot (RESTART_BM => RebootNode) or gpu-reset (COMPONENT_RESET => GPUReset)")
+	pattern := fs.String("pattern", patternFleetStorm, "generation pattern: fleet-storm | flappy | single-node-burst")
+	procStrategy := fs.String("processing-strategy", procStrategyDefault, "HealthEvent processingStrategy: default | store-only | store-and-analyse | execute-remediation")
+	mechanism := fs.String("mechanism", mechanismGRPC, "injection mechanism: grpc (through platform-connector) | mongo (direct MongoDB insert, bypasses connector)")
+	directMongo := fs.Bool("direct-mongo", false, "run the primitive direct-MongoDB insert inline (set automatically inside an injector); otherwise mongo mechanism orchestrates one injector")
+	mWorkers := fs.Int("mongo-workers", 50, "direct-mongo: concurrent InsertMany workers")
+	mBatch := fs.Int("mongo-batch", 500, "direct-mongo: InsertMany batch size")
+	coldstartRatio := fs.Float64("coldstart-ratio", 0, "direct-mongo: cold-start seed mix — fraction of docs that are remediation-ready needles (rest are STORE_ONLY noise); 0 disables (used by the `coldstart` command)")
+	// Direct-mongo connection knobs (shared defaults with reconcile).
+	mURI := fs.String("uri", env("MONGO_URI", "mongodb://localhost:27017"), "direct-mongo: MongoDB URI")
+	mDB := fs.String("db", env("MONGO_DATABASE", "HealthEventsDatabase"), "direct-mongo: database")
+	mColl := fs.String("collection", env("MONGO_COLLECTION", "HealthEvents"), "direct-mongo: collection")
+	mTLSDir := fs.String("tls-cert-dir", env("MONGO_TLS_CERT_DIR", ""), "direct-mongo: dir with ca.crt (+ tls.crt/tls.key for mTLS)")
+	mTLSInsecure := fs.Bool("tls-insecure", envBool("MONGO_TLS_INSECURE", false), "direct-mongo: skip TLS server verification")
+	mAuthMech := fs.String("auth-mechanism", env("MONGO_AUTH_MECHANISM", ""), "direct-mongo: auth mechanism, e.g. MONGODB-X509")
+	mAuthSrc := fs.String("auth-source", env("MONGO_AUTH_SOURCE", ""), "direct-mongo: auth source db, e.g. $external")
+	mTimeout := fs.Duration("mongo-timeout", 60*time.Second, "direct-mongo: MongoDB op timeout")
 	_ = fs.Parse(args)
+
+	fe := normalizeFatalEvent(*fatalEvent)
+	pat := normalizePattern(*pattern)
+	ps := *procStrategy
 
 	if *runID == "" {
 		*runID = fmt.Sprintf("run-%d-%s", time.Now().Unix(), randHex(4))
 	}
 
-	// Distributed mode: one command fires every resident injector in the pool.
+	// Primitive direct-MongoDB insert (checked before distributed dispatch so it
+	// does not recurse — mirrors reconcile's -direct). Set automatically inside an
+	// injector by the mongo-mechanism / coldstart orchestration.
+	if *directMongo {
+		nodes := buildNodeNames(*nodesFrom, *nodePrefix, *nodeOffset, *nodeCount)
+		return runInjectMongoPrimitive(ctx,
+			reconcileParams{uri: *mURI, db: *mDB, coll: *mColl, timeout: *mTimeout,
+				tlsCertDir: *mTLSDir, tlsInsecure: *mTLSInsecure, authMech: *mAuthMech, authSource: *mAuthSrc},
+			mongoInjectOptions{nodes: nodes, total: *total, workers: *mWorkers, batch: *mBatch,
+				pattern: pat, procStrategy: ps, fatalFrac: *fatalFrac, fatalAgent: *fatalAgent, fatalEvent: fe,
+				runID: *runID, runLabel: *runLabel, idLabel: *idLabel, ledgerPath: *ledgerPath,
+				coldstartRatio: *coldstartRatio})
+	}
+
+	// Distributed mode: one command fires every resident injector in the pool. The
+	// mechanism (grpc through the connectors vs mongo direct insert) comes from the
+	// -mechanism flag when set to mongo, else from config (HARNESS_INJECT_MECHANISM).
 	if *socket == "" {
 		cfg := loadConfig()
+		// CLI flags win over env-sourced config for this run.
+		cfg.FatalEvent, cfg.Pattern, cfg.ProcessingStrategy = fe, pat, ps
 		c, err := newClients(cfg)
 		if err != nil {
 			return err
 		}
+		mech := normalizeMechanism(cfg.Mechanism)
+		if normalizeMechanism(*mechanism) == mechanismMongo {
+			mech = mechanismMongo // explicit CLI override
+		}
+		if mech == mechanismMongo {
+			return c.injectMongoAcrossPool(ctx, cfg, mongoDistOptions{
+				total: *total, workers: *mWorkers, batch: *mBatch,
+				nodeCount: *nodeCount, nodeOffset: *nodeOffset, runID: *runID,
+				coldstartRatio: *coldstartRatio,
+			})
+		}
 		return c.injectAcrossPool(ctx, cfg, *rate, *runID)
 	}
 
-	infof("injector run-id=%s socket=%s nodes=%d count=%d rate=%.1f/s", *runID, *socket, *nodeCount, *total, *rate)
+	infof("injector run-id=%s socket=%s nodes=%d count=%d rate=%.1f/s pattern=%s fatal-event=%s proc-strategy=%s",
+		*runID, *socket, *nodeCount, *total, *rate, pat, fe, normalizeProcStrategyName(ps))
 
 	nodes := buildNodeNames(*nodesFrom, *nodePrefix, *nodeOffset, *nodeCount)
 	if len(nodes) == 0 {
@@ -115,7 +244,7 @@ func runInject(ctx context.Context, args []string) error {
 		}
 		node := nodes[i%len(nodes)]
 		id := fmt.Sprintf("%s-%08d-%s", *runID, i, randHex(4))
-		evt, kind := buildEvent(node, id, *runID, *runLabel, *idLabel, *fatalFrac, *fatalAgent)
+		evt, kind := genEvent(node, id, *runID, *runLabel, *idLabel, i, pat, *fatalFrac, *fatalAgent, fe, ps)
 		ok := sendEvent(ctx, client, evt)
 		if ok {
 			acked++
@@ -163,26 +292,67 @@ func buildNodeNames(from, prefix string, offset, count int) []string {
 	return out
 }
 
-func buildEvent(node, id, runID, runLabel, idLabel string, fatalFrac float64, fatalAgent string) (*pb.HealthEvent, string) {
+// genEvent builds one HealthEvent for injection index i under the given pattern.
+// The pattern decides whether this event is fatal; buildFatalEvent/buildHealthyEvent
+// build the body; applyProcStrategy stamps the optional processingStrategy override.
+//
+//	fleet-storm       independent per-event fatal draw at fatalFrac (a realistic mix)
+//	flappy            alternate fatal/healthy by index so nodes repeatedly flap
+//	single-node-burst every event fatal (the caller narrows the node set to a few)
+func genEvent(node, id, runID, runLabel, idLabel string, i int, pattern string, fatalFrac float64, fatalAgent, fatalEvent, procStrategy string) (*pb.HealthEvent, string) {
 	meta := map[string]string{runLabel: runID, idLabel: id}
-	switch {
-	case mrand.Float64() < fatalFrac:
-		// Emit the real syslog GPU-XID signature: RecommendedAction=COMPONENT_RESET
-		// with a supported GPU_UUID impacted entity (+ PCI), so the node-drainer's
-		// partial-drain path finds a supported entity and advances (cordon ->
-		// drain -> GPUReset CR) instead of failing with "no supported entities for
-		// a partial drain". A stable per-node UUID keeps re-runs idempotent.
-		return &pb.HealthEvent{
-			Version: 1, Id: id, Agent: fatalAgent, ComponentClass: "GPU", CheckName: "GpuXidError",
-			IsFatal: true, IsHealthy: false, Message: "XID 79 - GPU has fallen off the bus (harness)",
-			RecommendedAction: pb.RecommendedAction_COMPONENT_RESET, ErrorCode: []string{"79"},
-			EntitiesImpacted: []*pb.Entity{
-				{EntityType: "PCI", EntityValue: "0000:03:00"},
-				{EntityType: "GPU_UUID", EntityValue: gpuUUIDForNode(node)},
-			},
-			Metadata: meta, NodeName: node, GeneratedTimestamp: timestamppb.Now(),
-		}, "fatal"
-	case mrand.Intn(100) < 70:
+	fatal := false
+	switch normalizePattern(pattern) {
+	case patternSingleNodeBurst:
+		fatal = true
+	case patternFlappy:
+		fatal = i%2 == 0
+	default: // fleet-storm
+		fatal = mrand.Float64() < fatalFrac
+	}
+	var evt *pb.HealthEvent
+	var kind string
+	if fatal {
+		evt, kind = buildFatalEvent(node, id, meta, fatalAgent, fatalEvent), "fatal"
+	} else {
+		evt, kind = buildHealthyEvent(node, id, meta)
+	}
+	applyProcStrategy(evt, procStrategy)
+	return evt, kind
+}
+
+// buildFatalEvent emits a fatal HealthEvent whose RecommendedAction selects the
+// remediation: node-reboot => RESTART_BM (node-drainer emits a RebootNode CR),
+// gpu-reset => COMPONENT_RESET (a GPUReset CR). Both carry a supported GPU_UUID
+// impacted entity (+ PCI) so the node-drainer's partial-drain path finds a
+// supported entity and advances (cordon -> drain -> CR) instead of failing with
+// "no supported entities for a partial drain". A stable per-node UUID keeps
+// re-runs idempotent.
+func buildFatalEvent(node, id string, meta map[string]string, fatalAgent, fatalEvent string) *pb.HealthEvent {
+	action := pb.RecommendedAction_RESTART_BM
+	check, msg := "NodeRebootRequired", "fatal fault requires node reboot (harness)"
+	errCode := []string{"reboot"}
+	if normalizeFatalEvent(fatalEvent) == fatalEventGPUReset {
+		action = pb.RecommendedAction_COMPONENT_RESET
+		check, msg = "GpuXidError", "XID 79 - GPU has fallen off the bus (harness)"
+		errCode = []string{"79"}
+	}
+	return &pb.HealthEvent{
+		Version: 1, Id: id, Agent: fatalAgent, ComponentClass: "GPU", CheckName: check,
+		IsFatal: true, IsHealthy: false, Message: msg,
+		RecommendedAction: action, ErrorCode: errCode,
+		EntitiesImpacted: []*pb.Entity{
+			{EntityType: "PCI", EntityValue: "0000:03:00"},
+			{EntityType: "GPU_UUID", EntityValue: gpuUUIDForNode(node)},
+		},
+		Metadata: meta, NodeName: node, GeneratedTimestamp: timestamppb.Now(),
+	}
+}
+
+// buildHealthyEvent emits a non-fatal heartbeat (GPU-health or system-info),
+// mirroring the base 70/30 mix so a fleet-storm run still carries realistic noise.
+func buildHealthyEvent(node, id string, meta map[string]string) (*pb.HealthEvent, string) {
+	if mrand.Intn(100) < 70 {
 		return &pb.HealthEvent{
 			Version: 1, Id: id, Agent: "event-generator", ComponentClass: "GPU", CheckName: "GpuHealth",
 			IsFatal: false, IsHealthy: true, Message: "GPU operating normally (harness)",
@@ -190,13 +360,28 @@ func buildEvent(node, id, runID, runLabel, idLabel string, fatalFrac float64, fa
 			EntitiesImpacted:  []*pb.Entity{{EntityType: "gpu", EntityValue: "0"}},
 			Metadata:          meta, NodeName: node, GeneratedTimestamp: timestamppb.Now(),
 		}, "healthy"
-	default:
-		return &pb.HealthEvent{
-			Version: 1, Id: id, Agent: "event-generator", ComponentClass: "System", CheckName: "SystemInfo",
-			IsFatal: false, IsHealthy: true, Message: "System heartbeat (harness)",
-			RecommendedAction: pb.RecommendedAction_NONE,
-			Metadata:          meta, NodeName: node, GeneratedTimestamp: timestamppb.Now(),
-		}, "system"
+	}
+	return &pb.HealthEvent{
+		Version: 1, Id: id, Agent: "event-generator", ComponentClass: "System", CheckName: "SystemInfo",
+		IsFatal: false, IsHealthy: true, Message: "System heartbeat (harness)",
+		RecommendedAction: pb.RecommendedAction_NONE,
+		Metadata:          meta, NodeName: node, GeneratedTimestamp: timestamppb.Now(),
+	}, "system"
+}
+
+// applyProcStrategy stamps the optional processingStrategy override onto an event.
+// default leaves it UNSPECIFIED (0) so the connector/analyzer decides.
+func applyProcStrategy(evt *pb.HealthEvent, ps string) {
+	if evt == nil {
+		return
+	}
+	switch normalizeProcStrategyName(ps) {
+	case procStrategyStoreOnly:
+		evt.ProcessingStrategy = pb.ProcessingStrategy_STORE_ONLY
+	case procStrategyStoreAndAnalyse:
+		evt.ProcessingStrategy = pb.ProcessingStrategy_STORE_AND_ANALYSE
+	case procStrategyExecuteRemediation:
+		evt.ProcessingStrategy = pb.ProcessingStrategy_EXECUTE_REMEDIATION
 	}
 }
 

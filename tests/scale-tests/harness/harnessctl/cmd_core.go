@@ -40,20 +40,26 @@ func runInstallScript(ctx context.Context, dir, name string) error {
 type component struct {
 	id     string
 	script string
-	detect func(ctx context.Context, c *clients, cfg Config) (present bool, detail string)
+	// required marks whether a failed install aborts bring-up. Observability
+	// niceties (monitoring, metrics-server) are optional: a failure there is
+	// warned-and-skipped so it never blocks the critical NVSentinel path.
+	required bool
+	detect   func(ctx context.Context, c *clients, cfg Config) (present bool, detail string)
 }
 
 // p01Components lists the P0.1 stack in install order (numeric script prefixes
-// sort naturally: 10 → 20 → 25 → 30). NVSentinel and Janitor ship from the same
-// chart/script, so they share 30-install-nvsentinel.sh; the runner dedupes.
+// sort naturally: 10 → 15 → 20 → 25 → 30). The janitor is NOT a separate entry:
+// it ships inside the NVSentinel chart (30-install-nvsentinel.sh), so its status
+// is reported as an informational sub-line under nvsentinel in runBringup.
+// monitoring + metrics-server are optional (observability niceties); kwok,
+// cert-manager and nvsentinel are required.
 func p01Components() []component {
 	return []component{
-		{"kube-prometheus-stack", "10-install-monitoring.sh", detectMonitoring},
-		{"metrics-server", "15-install-metrics-server.sh", detectMetricsServer},
-		{"kwok", "20-install-kwok.sh", detectKwok},
-		{"cert-manager", "25-install-cert-manager.sh", detectCertManager},
-		{"nvsentinel", "30-install-nvsentinel.sh", detectNVSentinel},
-		{"janitor", "30-install-nvsentinel.sh", detectJanitor},
+		{"kube-prometheus-stack", "10-install-monitoring.sh", false, detectMonitoring},
+		{"metrics-server", "15-install-metrics-server.sh", false, detectMetricsServer},
+		{"kwok", "20-install-kwok.sh", true, detectKwok},
+		{"cert-manager", "25-install-cert-manager.sh", true, detectCertManager},
+		{"nvsentinel", "30-install-nvsentinel.sh", true, detectNVSentinel},
 	}
 }
 
@@ -99,12 +105,63 @@ func detectCertManager(ctx context.Context, c *clients, cfg Config) (bool, strin
 	return c.deployPresent(ctx, cfg.CertManagerNamespace, "cert-manager-webhook", "cert-manager")
 }
 
+// detectNVSentinel is version-aware: if NVSentinel is present AND a target version
+// (NVS_CHART_VERSION) is set AND the installed image tag differs, it reports the
+// component as MISSING so runBringup re-runs 30-install-nvsentinel.sh — which does
+// a `helm upgrade --install` to the target tag. When the versions already match
+// (or no target is set) it reports PRESENT and is left untouched.
 func detectNVSentinel(ctx context.Context, c *clients, cfg Config) (bool, string) {
-	if ok, d := c.deployPresent(ctx, cfg.NVSNamespace,
-		"health-events-analyzer", "fault-quarantine", "node-drainer", "fault-remediation"); ok {
-		return true, d
+	present, detail := c.deployPresent(ctx, cfg.NVSNamespace,
+		"health-events-analyzer", "fault-quarantine", "node-drainer", "fault-remediation")
+	if !present {
+		if ok, d := c.dsPresent(ctx, cfg.NVSNamespace, "platform-connectors"); ok {
+			present, detail = true, d
+		}
 	}
-	return c.dsPresent(ctx, cfg.NVSNamespace, "platform-connectors")
+	if !present {
+		return false, ""
+	}
+	installed := c.nvsentinelVersion(ctx, cfg)
+	target := cfg.NVSChartVersion
+	if target == "" || installed == "" || installed == target {
+		if installed != "" {
+			return true, detail + ", version " + installed
+		}
+		return true, detail
+	}
+	warnf("  nvsentinel present at %s but target is %s -> will upgrade", installed, target)
+	return false, ""
+}
+
+// nvsentinelVersion returns the running NVSentinel version (the container image
+// tag of a core Deployment), or "" if it cannot be determined.
+func (c *clients) nvsentinelVersion(ctx context.Context, cfg Config) string {
+	for _, name := range []string{"fault-quarantine", "health-events-analyzer", "node-drainer", "fault-remediation"} {
+		d, err := c.kube.AppsV1().Deployments(cfg.NVSNamespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			continue
+		}
+		for _, ct := range d.Spec.Template.Spec.Containers {
+			if tag := imageTag(ct.Image); tag != "" {
+				return tag
+			}
+		}
+	}
+	return ""
+}
+
+// imageTag returns the tag portion of a container image ref (after the final
+// ':', ignoring a registry port and any @digest), or "" if untagged.
+func imageTag(image string) string {
+	if i := strings.Index(image, "@"); i >= 0 {
+		image = image[:i]
+	}
+	slash := strings.LastIndex(image, "/")
+	colon := strings.LastIndex(image, ":")
+	if colon > slash {
+		return image[colon+1:]
+	}
+	return ""
 }
 
 func detectJanitor(ctx context.Context, c *clients, cfg Config) (bool, string) {
@@ -154,6 +211,15 @@ func runBringup(ctx context.Context, args []string) error {
 		} else {
 			infof("  %-22s MISSING", comp.id)
 		}
+		// The janitor ships inside the NVSentinel chart, so it is not a standalone
+		// component; surface its status as an info sub-line under nvsentinel.
+		if comp.id == "nvsentinel" {
+			if jok, jd := detectJanitor(ctx, c, cfg); jok {
+				infof("    - janitor (in-chart)  PRESENT  (%s)", jd)
+			} else {
+				infof("    - janitor (in-chart)  MISSING")
+			}
+		}
 	}
 
 	// (3)+(4) Decide, per component, whether to run its install script.
@@ -178,22 +244,37 @@ func runBringup(ctx context.Context, args []string) error {
 		}
 	}
 
-	// Build the ordered, de-duplicated script set (nvsentinel+janitor share 30).
-	var scripts []string
-	seen := map[string]bool{}
-	for i, comp := range comps {
-		if run[i] && !seen[comp.script] {
-			seen[comp.script] = true
-			scripts = append(scripts, comp.script)
-		}
+	// Build the ordered, de-duplicated task set, carrying each script's required
+	// flag (a script is required if ANY component mapping to it is required).
+	type installTask struct {
+		script   string
+		required bool
 	}
-	if len(scripts) == 0 {
+	var tasks []installTask
+	idxOf := map[string]int{}
+	for i, comp := range comps {
+		if !run[i] {
+			continue
+		}
+		if j, ok := idxOf[comp.script]; ok {
+			tasks[j].required = tasks[j].required || comp.required
+			continue
+		}
+		idxOf[comp.script] = len(tasks)
+		tasks = append(tasks, installTask{script: comp.script, required: comp.required})
+	}
+	if len(tasks) == 0 {
 		infof("nothing to install; all P0.1 components already present")
 	} else {
-		stepf("P0.1 bring-up: installing %d script(s) from %s", len(scripts), *dir)
-		for _, s := range scripts {
-			if err := runInstallScript(ctx, *dir, s); err != nil {
-				return err
+		stepf("P0.1 bring-up: installing %d script(s) from %s", len(tasks), *dir)
+		for _, t := range tasks {
+			if err := runInstallScript(ctx, *dir, t.script); err != nil {
+				if t.required {
+					return err
+				}
+				// Optional component (observability niceties): don't let it block
+				// the critical NVSentinel path — warn and continue.
+				warnf("optional component %s failed to install: %v — continuing", t.script, err)
 			}
 		}
 	}

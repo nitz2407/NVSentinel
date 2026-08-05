@@ -26,6 +26,13 @@ type Config struct {
 	// (max_over_time) queries — long enough to span a full run.
 	ReportWindow string
 
+	// NVSChartVersion is the TARGET NVSentinel version for version-aware bringup:
+	// the container image tag (e.g. v1.16.0). When set, `bringup` compares it
+	// against the running NVSentinel and helm-upgrades on mismatch; empty leaves
+	// whatever is installed untouched. Sourced from NVS_CHART_VERSION so the Go
+	// CLI and 30-install-nvsentinel.sh share one target.
+	NVSChartVersion string
+
 	// NodeCount is the KWOK scale target. It has NO config-file default: pass it
 	// per run on the CLI (`scale-nodes -count` or `connector-pool -emulated-nodes`).
 	// The KWOK_NODE_COUNT env var is still an optional shell override, but 0
@@ -66,14 +73,25 @@ type Config struct {
 	EventCount    int
 	EventRate     float64
 	FatalFraction float64 // fraction of injected events that are fatal (drive cordon/remediation)
-	RunLabel      string
-	IDLabel       string
-	MaxLossFrac   float64
-	NodeSample    int // per-shard sample size for P0.3 NodeName attribution (0 disables)
-	MongoURI      string
-	MongoDB       string
-	MongoColl     string
-	FieldPrefix   string
+	// FatalEvent selects the remediation the fatal events drive: node-reboot
+	// (RESTART_BM => RebootNode CR) or gpu-reset (COMPONENT_RESET => GPUReset CR).
+	FatalEvent string
+	// Pattern is the event-generation shape: fleet-storm | flappy |
+	// single-node-burst. ProcessingStrategy is the HealthEvent processingStrategy
+	// override: default | store-only | store-and-analyse | execute-remediation.
+	// Mechanism selects the write path: grpc (through the platform-connector) or
+	// mongo (direct MongoDB insert, bypassing the connector).
+	Pattern            string
+	ProcessingStrategy string
+	Mechanism          string
+	RunLabel           string
+	IDLabel            string
+	MaxLossFrac        float64
+	NodeSample         int // per-shard sample size for P0.3 NodeName attribution (0 disables)
+	MongoURI           string
+	MongoDB            string
+	MongoColl          string
+	FieldPrefix        string
 
 	// Mongo connection discovery (used to build the reconciler's connection when
 	// HARNESS_MONGO_URI is unset). Defaults match the NVSentinel mongodb-store
@@ -108,10 +126,11 @@ type Config struct {
 func loadConfig() Config {
 	return Config{
 		NVSNamespace:         env("NVS_NAMESPACE", "nvsentinel"),
-		MonitoringNamespace:  env("MONITORING_NAMESPACE", "monitoring"),
+		MonitoringNamespace:  env("MONITORING_NAMESPACE", "prometheus"),
 		JanitorNamespace:     env("JANITOR_NAMESPACE", "dgxc-janitor-system"),
 		CertManagerNamespace: env("CERT_MANAGER_NAMESPACE", "cert-manager"),
 		KWOKNamespace:        env("KWOK_NAMESPACE", "kube-system"),
+		NVSChartVersion:      env("NVS_CHART_VERSION", ""),
 		ReportWindow:         env("REPORT_WINDOW", "3h"),
 
 		NodeCount:   envInt("KWOK_NODE_COUNT", 0),
@@ -138,17 +157,21 @@ func loadConfig() Config {
 		CeilingKwokCPU: envFloat("CEILING_KWOK_CPU_CORES", 3.5),
 		MetricsWindow:  env("METRICS_WINDOW", "5m"),
 
-		EventCount:    envInt("P03_EVENT_COUNT", 10000),
-		EventRate:     envFloat("P03_EVENT_RATE", 500),
-		FatalFraction: envFloat("HARNESS_FATAL_FRACTION", 0.08),
-		RunLabel:      env("HARNESS_RUN_LABEL", "nvs_harness_run"),
-		IDLabel:       env("HARNESS_ID_LABEL", "nvs_harness_id"),
-		MaxLossFrac:   envFloat("P03_MAX_LOSS_FRACTION", 0.0),
-		NodeSample:    envInt("P03_NODE_SAMPLE", 200),
-		MongoURI:      env("HARNESS_MONGO_URI", ""),
-		MongoDB:       env("MONGO_DATABASE", "HealthEventsDatabase"),
-		MongoColl:     env("MONGO_COLLECTION", "HealthEvents"),
-		FieldPrefix:   env("MONGO_FIELD_PREFIX", "healthevent"),
+		EventCount:         envInt("P03_EVENT_COUNT", 10000),
+		EventRate:          envFloat("P03_EVENT_RATE", 500),
+		FatalFraction:      envFloat("HARNESS_FATAL_FRACTION", 0.08),
+		FatalEvent:         env("HARNESS_FATAL_EVENT", "node-reboot"),
+		Pattern:            env("HARNESS_INJECT_PATTERN", "fleet-storm"),
+		ProcessingStrategy: env("HARNESS_PROCESSING_STRATEGY", "default"),
+		Mechanism:          env("HARNESS_INJECT_MECHANISM", "grpc"),
+		RunLabel:           env("HARNESS_RUN_LABEL", "nvs_harness_run"),
+		IDLabel:            env("HARNESS_ID_LABEL", "nvs_harness_id"),
+		MaxLossFrac:        envFloat("P03_MAX_LOSS_FRACTION", 0.0),
+		NodeSample:         envInt("P03_NODE_SAMPLE", 200),
+		MongoURI:           env("HARNESS_MONGO_URI", ""),
+		MongoDB:            env("MONGO_DATABASE", "HealthEventsDatabase"),
+		MongoColl:          env("MONGO_COLLECTION", "HealthEvents"),
+		FieldPrefix:        env("MONGO_FIELD_PREFIX", "healthevent"),
 
 		MongoService:    env("MONGO_SERVICE", "mongodb-headless"),
 		MongoReplicaSet: env("MONGO_REPLICA_SET", "rs0"),

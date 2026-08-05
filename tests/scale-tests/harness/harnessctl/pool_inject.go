@@ -67,6 +67,12 @@ type injectOptions struct {
 	fatalFrac float64
 	runID     string
 	force     bool // re-stage the binary even if the on-node sum matches
+	// Event-generation knobs threaded to each resident injector so a distributed
+	// gRPC run honors the operator's -pattern / -fatal-event / -processing-strategy
+	// (or their HARNESS_* config defaults), not just fatal-fraction.
+	fatalEvent   string
+	pattern      string
+	procStrategy string
 }
 
 var ackedRe = regexp.MustCompile(`acked=([0-9]+)`)
@@ -99,6 +105,7 @@ func (c *clients) injectAcrossPool(ctx context.Context, cfg Config, rate float64
 		len(geo.byNode), geo.totalConn, geo.npc, expect, runID)
 	acked, err := c.injectViaInjectors(ctx, cfg, geo, injectOptions{
 		count: geo.npc, rate: rate, fatalFrac: cfg.FatalFraction, runID: runID,
+		fatalEvent: cfg.FatalEvent, pattern: cfg.Pattern, procStrategy: cfg.ProcessingStrategy,
 	})
 	if err != nil {
 		return err
@@ -230,6 +237,9 @@ func (c *clients) injectViaInjectors(ctx context.Context, cfg Config, g poolGeom
 				"RATE": strconv.FormatFloat(opt.rate, 'g', -1, 64), "FATAL": strconv.FormatFloat(opt.fatalFrac, 'g', -1, 64),
 				"RUNID": opt.runID, "RUNLABEL": cfg.RunLabel, "IDLABEL": cfg.IDLabel,
 				"BIN": binOnNode, "POOL": connectorPoolName, "LEDGERS": poolLedgerDir,
+				"FATALEVENT": defStr(opt.fatalEvent, fatalEventNodeReboot),
+				"PATTERN":    defStr(opt.pattern, patternFleetStorm),
+				"PROCSTRAT":  defStr(opt.procStrategy, procStrategyDefault),
 			}
 			out, err := c.execShEnv(ctx, cfg.NVSNamespace, pod, env, nodeInjectShell())
 			ch <- res{node, sumAcked(out), err}
@@ -271,7 +281,9 @@ for ORD in $ORDS; do
   F="/tmp/n-$ORD.txt"; : > "$F"; i=$OFF
   while [ "$i" -lt "$END" ]; do echo "$PREFIX-$i" >> "$F"; i=$((i + 1)); done
   "$BIN" inject -socket="$SOCK" -nodes-from="$F" -count="$COUNT" -rate="$RATE" \
-    -fatal-fraction="$FATAL" -run-id="$RUNID" -run-label="$RUNLABEL" -id-label="$IDLABEL" \
+    -fatal-fraction="$FATAL" -fatal-event="$FATALEVENT" -pattern="$PATTERN" \
+    -processing-strategy="$PROCSTRAT" \
+    -run-id="$RUNID" -run-label="$RUNLABEL" -id-label="$IDLABEL" \
     -ledger="$LEDGERS/led-$ORD.jsonl" 2>&1 | grep "done: sent="
 done
 echo POOL_NODE_INJECT_COMPLETE

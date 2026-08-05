@@ -118,6 +118,13 @@ func runConnectorPool(ctx context.Context, args []string) error {
 	cfg := loadConfig()
 	perNodeLimit := fs.Int("per-node-pod-limit", cfg.ConnectorPoolPerNodeLimit, "connector pods/node density cap; connector count = min(live KWOK nodes, realNodes*this)")
 	teardown := fs.Bool("teardown", false, "delete the connector pool + resident injectors and exit")
+	startupBurst := fs.Bool("startup-burst", false, "experiment: recreate the pool with -replicas connectors started simultaneously across -burst-steps client-go burst values; measure APF saturation at startup")
+	burstSteps := fs.String("burst-steps", "10,15,40", "startup-burst: comma-separated client-go burst values to sweep")
+	burstReplicas := fs.Int("replicas", 0, "startup-burst: fixed connector replica count (0 => current live pool size)")
+	connSweep := fs.Bool("connection-sweep", false, "experiment: scale the pool across -replica-steps and record MongoDB connections + mongod CPU/memory at each step")
+	replicaSteps := fs.String("replica-steps", "5,10,50,100,200", "connection-sweep: comma-separated replica counts to sweep")
+	settle := fs.Int("settle-seconds", 30, "connection-sweep: seconds to wait for connections to stabilize before measuring each step")
+	window := fs.String("window", cfg.MetricsWindow, "PromQL rate window for sweep measurements")
 	_ = fs.Parse(args)
 
 	cfg.ConnectorPoolPerNodeLimit = *perNodeLimit
@@ -130,6 +137,24 @@ func runConnectorPool(ctx context.Context, args []string) error {
 	if *teardown {
 		stepf("connector-pool: teardown")
 		return c.teardownConnectorPool(ctx, cfg)
+	}
+
+	if *startupBurst {
+		steps := parseIntCSV(*burstSteps)
+		if len(steps) == 0 {
+			return fmt.Errorf("-burst-steps parsed to nothing; give e.g. -burst-steps 10,15,40")
+		}
+		stepf("connector-pool: startup-burst sweep %v (window %s)", steps, *window)
+		return c.startupBurstSweep(ctx, cfg, *burstReplicas, steps, *window)
+	}
+
+	if *connSweep {
+		steps := parseIntCSV(*replicaSteps)
+		if len(steps) == 0 {
+			return fmt.Errorf("-replica-steps parsed to nothing; give e.g. -replica-steps 5,10,50")
+		}
+		stepf("connector-pool: connection sweep %v (settle %ds, window %s)", steps, *settle, *window)
+		return c.connectionSweep(ctx, cfg, steps, *settle, *window)
 	}
 
 	// The emulated fleet the pool must represent IS the live KWOK fleet — derive
@@ -342,8 +367,23 @@ func (c *clients) teardownConnectorPool(ctx context.Context, cfg Config) error {
 	c.unlabelPoolNodes(ctx)
 	_ = c.kube.AppsV1().StatefulSets(ns).Delete(ctx, connectorPoolName, metav1.DeleteOptions{PropagationPolicy: &pol})
 	_ = c.kube.CoreV1().Services(ns).Delete(ctx, connectorPoolName, metav1.DeleteOptions{})
+	// Drop the burst-override ConfigMap left by a startup-burst experiment (if any).
+	_ = c.kube.CoreV1().ConfigMaps(ns).Delete(ctx, poolConfigConfigMap, metav1.DeleteOptions{})
 	infof("connector pool torn down (statefulset + service + injector DaemonSet %s)", connectorPoolName)
 	return nil
+}
+
+// currentPoolReplicas returns the deployed pool's desired replica count, or -1 if
+// no pool StatefulSet exists.
+func (c *clients) currentPoolReplicas(ctx context.Context, cfg Config) int {
+	sts, err := c.kube.AppsV1().StatefulSets(cfg.NVSNamespace).Get(ctx, connectorPoolName, metav1.GetOptions{})
+	if err != nil {
+		return -1
+	}
+	if sts.Spec.Replicas == nil {
+		return 0
+	}
+	return int(*sts.Spec.Replicas)
 }
 
 // unlabelPoolNodes strips poolNodeLabel from every node that carried it, so the

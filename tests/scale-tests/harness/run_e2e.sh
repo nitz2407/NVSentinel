@@ -25,10 +25,23 @@ PER_NODE_POD_LIMIT="${PER_NODE_POD_LIMIT:-10}"
 # likely cap cordoning near ~50% of the fleet rather than 100%).
 FATAL_FRACTION="${FATAL_FRACTION:-}"
 
+# Injection knobs (empty => harness defaults). FATAL_EVENT: node-reboot | gpu-reset.
+# MECHANISM: grpc (through the platform-connector) | mongo (direct MongoDB insert).
+# PATTERN: fleet-storm | flappy | single-node-burst. PROCESSING_STRATEGY: default |
+# store-only | store-and-analyse | execute-remediation.
+FATAL_EVENT="${FATAL_EVENT:-}"
+MECHANISM="${MECHANISM:-}"
+PATTERN="${PATTERN:-}"
+PROCESSING_STRATEGY="${PROCESSING_STRATEGY:-}"
+
 set -a; source "$HARN/config/harness.env"; set +a
 export MONITORING_NAMESPACE=prometheus PROM_SERVICE=prometheus-prometheus PROM_PORT=9090
-# Apply the fatal-fraction override AFTER sourcing harness.env so it wins.
+# Apply the injection overrides AFTER sourcing harness.env so they win.
 [ -n "$FATAL_FRACTION" ] && export HARNESS_FATAL_FRACTION="$FATAL_FRACTION"
+[ -n "$FATAL_EVENT" ] && export HARNESS_FATAL_EVENT="$FATAL_EVENT"
+[ -n "$MECHANISM" ] && export HARNESS_INJECT_MECHANISM="$MECHANISM"
+[ -n "$PATTERN" ] && export HARNESS_INJECT_PATTERN="$PATTERN"
+[ -n "$PROCESSING_STRATEGY" ] && export HARNESS_PROCESSING_STRATEGY="$PROCESSING_STRATEGY"
 # Results are grouped by run date, then node count: results/<YYYY-MM-DD>/<N>/.
 # Override the date with RUN_DATE (e.g. to append to an earlier day's set).
 RUN_DATE="${RUN_DATE:-$(date +%F)}"
@@ -55,6 +68,11 @@ run "P0.2 scale-nodes -count $N" "$BIN" scale-nodes -count "$N" || exit 1
 # P0.5: deploy connector pool (+ resident injectors), PER_NODE_POD_LIMIT/real-node.
 run "P0.5 connector-pool (per-node-pod-limit=$PER_NODE_POD_LIMIT)" "$BIN" connector-pool -per-node-pod-limit "$PER_NODE_POD_LIMIT" || exit 1
 
+# P0.4: janitor reboot + GPU reset on a KWOK node — BEFORE inject, so janitor-check
+# targets a quiet fleet. Under a fatal storm (e.g. FATAL_FRACTION=1.0) its target
+# node could already be mid-remediation and the check would time out.
+run "P0.4 janitor-check" "$BIN" janitor-check || exit 1
+
 # P0.3: fire all injectors (distributed), capture run-id, then reconcile.
 log "===== P0.3 inject ====="
 RID="$("$BIN" inject 2>>"$LOG" | tail -1)"
@@ -62,11 +80,12 @@ log "P0.3 inject run-id=$RID"
 if [ -z "$RID" ]; then log "P0.3 inject produced no run-id"; exit 1; fi
 run "P0.3 reconcile -run-id $RID" "$BIN" reconcile -run-id "$RID" || exit 1
 
-# P0.4: janitor reboot + GPU reset on a KWOK node.
-run "P0.4 janitor-check" "$BIN" janitor-check || exit 1
-
 # Report.
-FF_TITLE=""; [ -n "$FATAL_FRACTION" ] && FF_TITLE=", fatal-fraction=$FATAL_FRACTION"
+FF_TITLE=""
+[ -n "$FATAL_FRACTION" ] && FF_TITLE="$FF_TITLE, fatal-fraction=$FATAL_FRACTION"
+[ -n "$FATAL_EVENT" ] && FF_TITLE="$FF_TITLE, fatal-event=$FATAL_EVENT"
+[ -n "$MECHANISM" ] && FF_TITLE="$FF_TITLE, mechanism=$MECHANISM"
+[ -n "$PATTERN" ] && FF_TITLE="$FF_TITLE, pattern=$PATTERN"
 run "report" "$BIN" report -title "Phase 0 Harness E2E — Azure ($N nodes$FF_TITLE)" -window 1h || exit 1
 
 log "######## DONE $N -> $HARNESS_RESULTS_DIR/report.md (run-id=$RID) ########"

@@ -32,7 +32,10 @@ fi
 # surfaced in harness.env. Still overridable via the environment for the rare
 # non-standard cluster. (harnessctl carries the identical defaults in config.go.)
 export NVS_NAMESPACE="${NVS_NAMESPACE:-nvsentinel}"
-export MONITORING_NAMESPACE="${MONITORING_NAMESPACE:-monitoring}"
+# Namespace hosting kube-prometheus-stack. Varies per cluster (the harness's own
+# installs use release name `prometheus`); override MONITORING_NAMESPACE for a
+# cluster that parks the stack elsewhere. (Same default in harnessctl/config.go.)
+export MONITORING_NAMESPACE="${MONITORING_NAMESPACE:-prometheus}"
 export CERT_MANAGER_NAMESPACE="${CERT_MANAGER_NAMESPACE:-cert-manager}"
 # KWOK's upstream kwok.yaml is applied verbatim and hardcodes namespace
 # kube-system, so the controller can only ever land there; this just matches it.

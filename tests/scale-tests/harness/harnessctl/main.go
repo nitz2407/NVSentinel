@@ -47,7 +47,8 @@ func commands() []command {
 		{"inject", "fire every resident injector in the connector pool, attributing events to KWOK node names with correlation IDs (P0.3); -socket drives a single connector", runInject},
 		{"reconcile", "account every injected event for a run in-cluster via a resident injector (P0.3); -direct connects to MongoDB directly", runReconcile},
 		{"janitor-check", "create RebootNode + GPUReset CRs and verify completion (P0.4)", runJanitorCheck},
-		{"connector-pool", "stage a real connector pool + one resident injector per node (P0.5); injection is P0.3's inject/reconcile", runConnectorPool},
+		{"connector-pool", "stage a real connector pool + one resident injector per node (P0.5); or run -startup-burst / -connection-sweep experiments", runConnectorPool},
+		{"coldstart", "seed a MongoDB haystack (needles + STORE_ONLY noise), cold-start a consumer, and measure its initial scan time", runColdStart},
 		{"report", "auto-collect latency/throughput/resource/CR/mongo metrics into report.md + report.json", runReport},
 	}
 }
