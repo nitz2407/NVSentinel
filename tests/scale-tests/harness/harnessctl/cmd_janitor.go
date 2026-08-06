@@ -16,9 +16,12 @@ import (
 )
 
 func runJanitorCheck(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("janitor-check", flag.ExitOnError)
+	fs := flag.NewFlagSet("janitor check", flag.ExitOnError)
+	cfg := defaultConfig()
+	bindResultsFlag(fs, &cfg)
+	fs.IntVar(&cfg.ActionTimeout, "action-timeout", cfg.ActionTimeout, "seconds to wait for a janitor action (P0.4)")
+	fs.IntVar(&cfg.JobCompleteDelay, "job-complete-delay", cfg.JobCompleteDelay, "seconds before KWOK marks a Job complete")
 	_ = fs.Parse(args)
-	cfg := loadConfig()
 	c, err := newClients(cfg)
 	if err != nil {
 		return err

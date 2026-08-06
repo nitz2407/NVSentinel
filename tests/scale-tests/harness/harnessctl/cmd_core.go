@@ -8,7 +8,6 @@ you may not use this file except in compliance with the License.
 package main
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -23,15 +22,34 @@ import (
 
 // runInstallScript runs a single helm-install shell script from dir. Used by
 // P0.1 bring-up to install any missing components.
-func runInstallScript(ctx context.Context, dir, name string) error {
+func runInstallScript(ctx context.Context, dir, name string, extraEnv []string) error {
 	path := filepath.Join(dir, name)
 	infof("running install script: %s", path)
 	cmd := exec.CommandContext(ctx, "bash", path)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	// Carry the version targets so a version-triggered reinstall lands on the
+	// requested tag; empty targets are omitted so the script keeps its default.
+	cmd.Env = append(os.Environ(), extraEnv...)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	return nil
+}
+
+// versionEnv builds the KEY=VALUE overrides passed to the install scripts from
+// the non-empty version targets. Each script reads only its own variable.
+func versionEnv(cfg Config) []string {
+	var env []string
+	add := func(k, v string) {
+		if v != "" {
+			env = append(env, k+"="+v)
+		}
+	}
+	add("NVS_CHART_VERSION", cfg.NVSChartVersion)
+	add("KWOK_VERSION", cfg.KWOKVersion)
+	add("CERT_MANAGER_VERSION", cfg.CertManagerVersion)
+	add("METRICS_SERVER_VERSION", cfg.MetricsServerVersion)
+	return env
 }
 
 // component is one P0.1 building block: how to detect whether it is already
@@ -83,6 +101,10 @@ func (c *clients) dsPresent(ctx context.Context, ns string, names ...string) (bo
 	return false, ""
 }
 
+// detectMonitoring is presence-only. Unlike the other components it is NOT
+// version-gated: the harness pins kube-prometheus-stack by Helm CHART version
+// (KPS_CHART_VERSION, e.g. 65.5.0), which is unrelated to the operator's
+// container image tag — so an image-tag comparison would be meaningless.
 func detectMonitoring(ctx context.Context, c *clients, cfg Config) (bool, string) {
 	// With fullnameOverride=prometheus the operator Deployment is
 	// "prometheus-operator"; the other names cover a stock (no-override) install.
@@ -91,22 +113,37 @@ func detectMonitoring(ctx context.Context, c *clients, cfg Config) (bool, string
 }
 
 func detectKwok(ctx context.Context, c *clients, cfg Config) (bool, string) {
-	return c.deployPresent(ctx, cfg.KWOKNamespace, "kwok-controller")
+	present, detail := c.deployPresent(ctx, cfg.KWOKNamespace, "kwok-controller")
+	if !present {
+		return false, ""
+	}
+	return gateVersion("kwok", cfg.KWOKVersion,
+		c.deployImageTag(ctx, cfg.KWOKNamespace, "kwok-controller"), detail)
 }
 
 // detectMetricsServer checks for metrics-server (always in kube-system). It
 // powers P0.2's real-node CPU/mem guardrail; managed clusters ship it, Kind
 // does not.
 func detectMetricsServer(ctx context.Context, c *clients, cfg Config) (bool, string) {
-	return c.deployPresent(ctx, "kube-system", "metrics-server")
+	present, detail := c.deployPresent(ctx, "kube-system", "metrics-server")
+	if !present {
+		return false, ""
+	}
+	return gateVersion("metrics-server", cfg.MetricsServerVersion,
+		c.deployImageTag(ctx, "kube-system", "metrics-server"), detail)
 }
 
 func detectCertManager(ctx context.Context, c *clients, cfg Config) (bool, string) {
-	return c.deployPresent(ctx, cfg.CertManagerNamespace, "cert-manager-webhook", "cert-manager")
+	present, detail := c.deployPresent(ctx, cfg.CertManagerNamespace, "cert-manager-webhook", "cert-manager")
+	if !present {
+		return false, ""
+	}
+	return gateVersion("cert-manager", cfg.CertManagerVersion,
+		c.deployImageTag(ctx, cfg.CertManagerNamespace, "cert-manager", "cert-manager-controller", "cert-manager-webhook"), detail)
 }
 
 // detectNVSentinel is version-aware: if NVSentinel is present AND a target version
-// (NVS_CHART_VERSION) is set AND the installed image tag differs, it reports the
+// (-nvs-chart-version) is set AND the installed image tag differs, it reports the
 // component as MISSING so runBringup re-runs 30-install-nvsentinel.sh — which does
 // a `helm upgrade --install` to the target tag. When the versions already match
 // (or no target is set) it reports PRESENT and is left untouched.
@@ -121,23 +158,31 @@ func detectNVSentinel(ctx context.Context, c *clients, cfg Config) (bool, string
 	if !present {
 		return false, ""
 	}
-	installed := c.nvsentinelVersion(ctx, cfg)
-	target := cfg.NVSChartVersion
+	installed := c.deployImageTag(ctx, cfg.NVSNamespace,
+		"fault-quarantine", "health-events-analyzer", "node-drainer", "fault-remediation")
+	return gateVersion("nvsentinel", cfg.NVSChartVersion, installed, detail)
+}
+
+// gateVersion applies an optional version gate to an already-present component.
+// With no target, an undeterminable installed tag, or a matching tag it reports
+// PRESENT (appending the version to the detail line when known). On a real
+// mismatch it warns and reports MISSING so bringup reinstalls/upgrades to target.
+func gateVersion(id, target, installed, detail string) (bool, string) {
 	if target == "" || installed == "" || installed == target {
 		if installed != "" {
 			return true, detail + ", version " + installed
 		}
 		return true, detail
 	}
-	warnf("  nvsentinel present at %s but target is %s -> will upgrade", installed, target)
+	warnf("  %s present at %s but target is %s -> will upgrade", id, installed, target)
 	return false, ""
 }
 
-// nvsentinelVersion returns the running NVSentinel version (the container image
-// tag of a core Deployment), or "" if it cannot be determined.
-func (c *clients) nvsentinelVersion(ctx context.Context, cfg Config) string {
-	for _, name := range []string{"fault-quarantine", "health-events-analyzer", "node-drainer", "fault-remediation"} {
-		d, err := c.kube.AppsV1().Deployments(cfg.NVSNamespace).Get(ctx, name, metav1.GetOptions{})
+// deployImageTag returns the container image tag of the first of the named
+// Deployments that exists in namespace, or "" if none is found / all untagged.
+func (c *clients) deployImageTag(ctx context.Context, namespace string, names ...string) string {
+	for _, name := range names {
+		d, err := c.kube.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			continue
 		}
@@ -173,19 +218,26 @@ func detectJanitor(ctx context.Context, c *clients, cfg Config) (bool, string) {
 }
 
 // runBringup is the single P0.1 command. It (1) verifies cluster reachability,
-// (2) detects which of the harness components are already present, (3) installs
-// whatever is missing, (4) optionally reconciles already-present components to
-// harness defaults (prompting unless -yes/-no-override is given), and (5) prints
-// the final node inventory. Installs are thin `helm upgrade --install` shell
+// (2) detects which of the harness components are already present at the required
+// version, (3) installs whatever is missing or version-mismatched, and (4) prints
+// the final node inventory. It is fully declarative and non-interactive: a
+// component that is already present at the target version is skipped, everything
+// else is installed. NVSentinel version-awareness is handled in detectNVSentinel
+// (a version mismatch surfaces as MISSING, triggering a helm upgrade to the
+// target -nvs-chart-version). Installs are thin `helm upgrade --install` shell
 // scripts — transparent one-liners that Go orchestrates but does not replace.
 func runBringup(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("bringup", flag.ExitOnError)
+	fs := flag.NewFlagSet("stack bringup", flag.ExitOnError)
+	cfg := defaultConfig()
+	bindNvsNamespaceFlag(fs, &cfg)
+	bindMonitoringNamespaceFlag(fs, &cfg)
+	bindCertManagerNamespaceFlag(fs, &cfg)
+	bindKwokNamespaceFlag(fs, &cfg)
+	bindJanitorNamespaceFlag(fs, &cfg)
+	bindVersionFlags(fs, &cfg)
 	dir := fs.String("dir", defaultInstallDir(), "directory holding the 10|15|20|25|30-install-*.sh scripts")
-	assumeYes := fs.Bool("yes", false, "reinstall/override already-present components with harness defaults without prompting")
-	noOverride := fs.Bool("no-override", false, "never touch already-present components; install only what is missing")
 	_ = fs.Parse(args)
 
-	cfg := loadConfig()
 	c, err := newClients(cfg)
 	if err != nil {
 		return err
@@ -222,26 +274,12 @@ func runBringup(ctx context.Context, args []string) error {
 		}
 	}
 
-	// (3)+(4) Decide, per component, whether to run its install script.
-	//   missing              -> always install
-	//   present + -yes       -> reinstall (override to harness defaults)
-	//   present + -no-override -> skip
-	//   present, interactive -> prompt
+	// (3) Decide, per component, whether to run its install script: install what
+	// is missing (or version-mismatched, which detect surfaces as MISSING), skip
+	// what is already present at the target version. No prompting.
 	run := make([]bool, len(comps))
-	for i, comp := range comps {
-		switch {
-		case !present[i]:
-			run[i] = true
-		case *assumeYes:
-			run[i] = true
-		case *noOverride:
-			run[i] = false
-		case stdinIsTTY():
-			run[i] = promptYesNo(fmt.Sprintf("%s is already present. Override with harness defaults (%s)?", comp.id, comp.script))
-		default:
-			warnf("  %s already present; not overriding (non-interactive; use -yes to override)", comp.id)
-			run[i] = false
-		}
+	for i := range comps {
+		run[i] = !present[i]
 	}
 
 	// Build the ordered, de-duplicated task set, carrying each script's required
@@ -267,8 +305,9 @@ func runBringup(ctx context.Context, args []string) error {
 		infof("nothing to install; all P0.1 components already present")
 	} else {
 		stepf("P0.1 bring-up: installing %d script(s) from %s", len(tasks), *dir)
+		scriptEnv := versionEnv(cfg)
 		for _, t := range tasks {
-			if err := runInstallScript(ctx, *dir, t.script); err != nil {
+			if err := runInstallScript(ctx, *dir, t.script, scriptEnv); err != nil {
 				if t.required {
 					return err
 				}
@@ -309,28 +348,6 @@ func (c *clients) nodeInventory(ctx context.Context) (real, kwok int, err error)
 	return real, kwok, nil
 }
 
-// stdinIsTTY reports whether stdin is an interactive terminal, so bringup only
-// prompts when a human can actually answer.
-func stdinIsTTY() bool {
-	fi, err := os.Stdin.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
-}
-
-// promptYesNo asks a yes/no question on stdin, defaulting to no.
-func promptYesNo(question string) bool {
-	fmt.Fprintf(os.Stderr, "%s [y/N]: ", question)
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "y", "yes":
-		return true
-	default:
-		return false
-	}
-}
-
 // defaultInstallDir points at the sibling phase0/ dir whether harnessctl is run
 // from the harness root or from within harnessctl/.
 func defaultInstallDir() string {
@@ -343,12 +360,16 @@ func defaultInstallDir() string {
 }
 
 func runScaleNodes(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("scale-nodes", flag.ExitOnError)
-	cfg := loadConfig()
-	count := fs.Int("count", cfg.NodeCount, "target KWOK node count (required, e.g. -count 10000)")
+	fs := flag.NewFlagSet("nodes scale", flag.ExitOnError)
+	cfg := defaultConfig()
+	bindResultsFlag(fs, &cfg)
+	bindPromFlags(fs, &cfg)
+	bindNodeGuardrailFlags(fs, &cfg)
+	bindNodeShapeFlags(fs, &cfg)
+	count := fs.Int("count", cfg.NodeCount, "target KWOK node count (required, e.g. --count 10000)")
 	_ = fs.Parse(args)
 	if *count <= 0 {
-		return fmt.Errorf("-count is required: pass the target KWOK node count, e.g. -count 10000")
+		return fmt.Errorf("--count is required: pass the target KWOK node count, e.g. --count 10000")
 	}
 	cfg.NodeCount = *count
 

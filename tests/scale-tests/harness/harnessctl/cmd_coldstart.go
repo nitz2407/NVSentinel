@@ -43,8 +43,12 @@ type coldStartResult struct {
 }
 
 func runColdStart(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("coldstart", flag.ExitOnError)
-	cfg := loadConfig()
+	fs := flag.NewFlagSet("events coldstart", flag.ExitOnError)
+	cfg := defaultConfig()
+	bindNvsNamespaceFlag(fs, &cfg)
+	bindResultsFlag(fs, &cfg)
+	bindMongoFlags(fs, &cfg)
+	bindInjectorFlags(fs, &cfg)
 	count := fs.Int("count", 100000, "documents to seed into the haystack")
 	ratio := fs.Float64("remediation-ratio", 0.01, "fraction of seeded docs that are remediation-ready needles (rest are STORE_ONLY noise)")
 	component := fs.String("component", "node-drainer", "consumer to cold-start (e.g. node-drainer, fault-remediation, fault-quarantine)")

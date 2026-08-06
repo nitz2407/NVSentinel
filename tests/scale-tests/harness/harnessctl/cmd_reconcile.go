@@ -53,11 +53,19 @@ type ReconcileReport struct {
 // confirms every injected event id landed in the datastore. Reused by SYS-2 /
 // MB-5 / SYS-5 zero-loss checks.
 func runReconcile(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("reconcile", flag.ExitOnError)
+	fs := flag.NewFlagSet("events reconcile", flag.ExitOnError)
+	cfg := defaultConfig()
+	bindNvsNamespaceFlag(fs, &cfg)
+	bindResultsFlag(fs, &cfg)
+	bindMongoFlags(fs, &cfg)
+	bindInjectorFlags(fs, &cfg)
 	direct := fs.Bool("direct", false, "connect straight to MongoDB (default: run in-cluster via a resident injector, deriving the expected total from the live pool). Set automatically when invoked inside an injector.")
-	uri := fs.String("uri", env("MONGO_URI", "mongodb://localhost:27017"), "MongoDB connection URI")
-	db := fs.String("db", env("MONGO_DATABASE", "HealthEventsDatabase"), "database name")
-	coll := fs.String("collection", env("MONGO_COLLECTION", "HealthEvents"), "collection name")
+	// -uri default falls back to the MONGO_URI env var set by the in-cluster
+	// orchestrator (execShEnv) so mTLS credentials stay off the command line. This
+	// is an internal mechanism, not user config; empty env => local default.
+	uri := fs.String("uri", internalMongoURIDefault(), "MongoDB connection URI (defaults to $MONGO_URI when set by the in-cluster orchestrator)")
+	db := fs.String("db", "HealthEventsDatabase", "database name")
+	coll := fs.String("collection", "HealthEvents", "collection name")
 	fieldPfx := fs.String("field-prefix", "healthevent", "stored sub-document holding the health event")
 	runLabel := fs.String("run-label", "nvs_harness_run", "metadata key holding the run id")
 	idLabel := fs.String("id-label", "nvs_harness_id", "metadata key holding the per-event id")
@@ -70,20 +78,20 @@ func runReconcile(ctx context.Context, args []string) error {
 	timeout := fs.Duration("timeout", 60*time.Second, "datastore query timeout")
 	// TLS / X.509 knobs so reconcile works against a MongoDB with requireTLS +
 	// mTLS (the NVSentinel mongodb-store chart default) as well as plain installs.
-	tlsCertDir := fs.String("tls-cert-dir", env("MONGO_TLS_CERT_DIR", ""), "dir with ca.crt (+ tls.crt/tls.key for mTLS); empty = no TLS")
-	tlsInsecure := fs.Bool("tls-insecure", envBool("MONGO_TLS_INSECURE", false), "skip TLS server verification")
-	authMech := fs.String("auth-mechanism", env("MONGO_AUTH_MECHANISM", ""), "auth mechanism, e.g. MONGODB-X509")
-	authSource := fs.String("auth-source", env("MONGO_AUTH_SOURCE", ""), "auth source db, e.g. $external")
+	tlsCertDir := fs.String("tls-cert-dir", "", "dir with ca.crt (+ tls.crt/tls.key for mTLS); empty = no TLS")
+	tlsInsecure := fs.Bool("tls-insecure", false, "skip TLS server verification")
+	authMech := fs.String("auth-mechanism", "", "auth mechanism, e.g. MONGODB-X509")
+	authSource := fs.String("auth-source", "", "auth source db, e.g. $external")
 	_ = fs.Parse(args)
 
 	if *runID == "" {
-		return fmt.Errorf("-run-id is required")
+		return fmt.Errorf("--run-id is required")
 	}
 
 	// Distributed mode (default): account the run in-cluster via a resident
 	// injector — the operator counterpart to `inject` firing all injectors.
 	if !*direct {
-		return runReconcileDistributed(ctx, *runID)
+		return runReconcileDistributed(ctx, cfg, *runID)
 	}
 
 	rep, err := reconcile(ctx, reconcileParams{
@@ -117,8 +125,7 @@ func runReconcile(ctx context.Context, args []string) error {
 // query scoped to just those IDs, inheriting in-cluster MongoDB reachability +
 // mTLS), then aggregates the summaries into a fleet-wide verdict. This is the
 // operator counterpart to `inject` firing all injectors.
-func runReconcileDistributed(ctx context.Context, runID string) error {
-	cfg := loadConfig()
+func runReconcileDistributed(ctx context.Context, cfg Config, runID string) error {
 	c, err := newClients(cfg)
 	if err != nil {
 		return err

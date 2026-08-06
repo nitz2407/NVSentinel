@@ -7,9 +7,11 @@ unattended, per-release runs (requirements goal G7).
 
 The same binary runs in two roles:
 
-- **Operator CLI** — `preflight`, `scale-nodes`, `teardown-nodes`, `janitor-check`,
-  `sim-reboot`, `phase0`.
-- **In-cluster Job image** — `inject`, `reconcile` (launched as Jobs by `phase0`).
+- **Operator CLI** — `stack bringup/cleanup/report`, `nodes scale/ceiling`,
+  `janitor check`, `pool create/…`.
+- **In-cluster injector** — the operator stages this same binary onto resident
+  injector pods (via `kubectl cp`/`exec`, no image) and drives the primitive
+  `events inject` / `events reconcile` paths there.
 
 Helm installs stay as thin shell wrappers (`../phase0/10|20|30-install-*.sh`);
 rewriting `helm install` in Go buys no robustness.
@@ -29,46 +31,80 @@ docker push "$HARNESS_IMAGE"
 
 ## Commands
 
+AWS-CLI-style noun-verb: `harnessctl <group> <command> [--flags]`. Run
+`harnessctl`, `harnessctl <group>`, or `harnessctl <group> <command> -h` for help.
+
 | Command | Phase | What it does |
 |---------|-------|--------------|
-| `preflight` | P0.1 | verify cluster reachability + node inventory |
-| `bringup [-dir ...]` | P0.1 | run the helm install scripts (monitoring + KWOK + NVSentinel) |
-| `scale-nodes [-count N]` | P0.2 | create GPU-shaped KWOK nodes, informer-wait Ready, record ceiling (+ apiserver p99) |
-| `teardown-nodes` | — | delete all `type=kwok` nodes |
-| `inject [...]` | P0.3 | (in Job) attribute events to KWOK nodes, stamp correlation id, write ledger |
-| `reconcile [...]` | P0.3 | (in Job) account every injected id vs the datastore, emit report |
-| `janitor-check` | P0.4 | create RebootNode + GPUReset CRs, cycle bootID, verify completion |
-| `sim-reboot -node N` | — | simulate a reboot (NotReady → Ready + fresh bootID) |
-| `phase0 [--only ...] [--install-dir ...]` | all | run the full acceptance suite; structured results in `results/` |
+| `stack bringup [--nvs-chart-version … --kwok-version … --cert-manager-version … --metrics-server-version …]` | P0.1 | install only what is missing (or version-mismatched); non-interactive, version-aware |
+| `stack cleanup [--pool]` | — | delete `type=kwok` nodes + orphaned janitor CRs (+ optional pool) |
+| `stack report [--title … --window …]` | — | collect latency/throughput/resource/CR/mongo metrics → `report.md`/`report.json` |
+| `nodes scale --count N` | P0.2 | create GPU-shaped KWOK nodes, informer-wait Ready, record ceiling (+ apiserver p99) |
+| `nodes ceiling [--start --step --max]` | P0.2 | ramp node count until degradation and attribute it |
+| `events inject [--pattern --fatal-event --mechanism …]` | P0.3 | fire every resident injector, attribute events to KWOK nodes, stamp correlation id |
+| `events reconcile --run-id ID [--direct]` | P0.3 | account every injected id vs the datastore, emit report |
+| `events coldstart [--count --remediation-ratio …]` | — | seed a MongoDB haystack, cold-start a consumer, measure initial scan time |
+| `janitor check` | P0.4 | create RebootNode + GPUReset CRs, cycle bootID, verify completion |
+| `pool create \| teardown \| startup-burst \| connection-sweep` | P0.5 | stage the connector pool + resident injectors, or run the burst/sweep experiments |
+
+Legacy single-token names (`bringup`, `scale-nodes`, `inject`, …) still work as
+hidden aliases during the transition.
 
 ## Run
 
 ```bash
-# source the shared config so env-based defaults apply
-set -a; source ../config/harness.env; set +a
-export HARNESS_IMAGE=myregistry/nvsentinel-harness/harnessctl:v1
-export HARNESS_MONGO_URI='mongodb://root:PASS@mongodb-store-headless.nvsentinel.svc:27017/?replicaSet=rs0&authSource=admin'
+CGO_ENABLED=0 go build -o harnessctl .
+BIN=./harnessctl
 
-./harnessctl preflight
-./harnessctl bringup                # helm install monitoring + KWOK + NVSentinel
-./harnessctl scale-nodes --count 20000
-./harnessctl phase0                 # nodes + inject/reconcile + janitor
-./harnessctl phase0 --only inject
-./harnessctl phase0 --install-dir ../phase0   # also run the helm install scripts first
+# All inputs are flags — no env file. (config/harness.env is read only by the
+# install *scripts* that `stack bringup` wraps.)
+$BIN stack bringup --nvs-chart-version v1.16.0
+$BIN nodes scale   --count 20000 --provider-id-scheme kwok --results-dir ./results
+$BIN pool create   --per-node-pod-limit 10 --results-dir ./results
+$BIN janitor check --results-dir ./results
+RID=$($BIN events inject --fatal-fraction 0.08 --results-dir ./results | tail -1)
+$BIN events reconcile --run-id "$RID" --results-dir ./results
+$BIN stack report --title "scale 20k" --window 1h --results-dir ./results
 ```
 
 ## Configuration
 
-All defaults come from environment variables (same names as
-`../config/harness.env`); per-command flags override them. Key ones:
-`KWOK_NODE_COUNT`, `KWOK_NODE_PREFIX`, `HARNESS_IMAGE`, `HARNESS_MONGO_URI`,
-`P03_EVENT_COUNT`, `P03_EVENT_RATE`, `MAX_APISERVER_P99_SECONDS`,
-`NODE_READY_TIMEOUT`, `HARNESS_RESULTS_DIR`.
+**Flags only — `harnessctl` reads no config/env file.** Every input is a
+`--kebab-case` flag; `-h` on any command lists them. Flags are **scoped per
+command** — each subcommand registers only the flags it actually reads (via small
+composable binders in `config.go`), so e.g. `janitor check -h` shows just
+`--results-dir`/`--action-timeout`/`--job-complete-delay`, and the version-aware
+targets appear only on `stack bringup`. The rough grouping:
+
+| Group | Flags | Used by |
+|-------|-------|---------|
+| namespaces | `--nvs-namespace`, `--monitoring-namespace`, `--kwok-namespace`, `--janitor-namespace`, `--cert-manager-namespace` | whichever commands touch that namespace |
+| results | `--results-dir` | every command that writes artifacts (all except `stack bringup`/`stack cleanup`) |
+| prometheus | `--monitoring-namespace`, `--prom-service`, `--prom-port` | `nodes scale`/`nodes ceiling`, `stack report`, `pool` sweeps |
+| mongo | `--mongo-service`/`--mongo-replica-set`/`--mongo-port`/`--mongo-tls-secret`/`--mongo-root-secret` | `events inject`/`reconcile`/`coldstart` |
+| node guardrails | `--max-apiserver-p99`, `--node-ready-timeout`, `--max-cluster-cpu-pct`, `--max-cluster-mem-pct` | `nodes scale`/`nodes ceiling` |
+| node shape | `--node-prefix`, `--gpu-count`, `--node-cpu`, `--node-memory`, `--node-max-pods`, `--node-batch`, `--provider-id-scheme` | `nodes scale`/`nodes ceiling` |
+| version targets | `--nvs-chart-version`, `--kwok-version`, `--cert-manager-version`, `--metrics-server-version` | `stack bringup` only |
+| injector staging | `--harness-bin` | `events inject`/`reconcile`/`coldstart` |
+
+`stack bringup` is fully declarative and non-interactive: a component that is
+already present at the target version is skipped; anything missing (or, for
+NVSentinel/KWOK/cert-manager/metrics-server, running a different image tag than
+the `--*-version` target) is installed/upgraded. Leaving a version flag empty
+means "accept whatever is installed" and lets the install script use its own
+default. kube-prometheus-stack is presence-only (its `KPS_CHART_VERSION` is a
+Helm chart version, not an image tag, so it is not image-tag gated).
+
+Two internal-only exceptions still read an env var (never part of the flag surface,
+no `harness.env` entry): a few poll-interval tuning knobs (`P03_DRAIN_*`,
+`HARNESS_MONITOR_*`, `NODE_READY_STALL_SECONDS`) and `MONGO_URI`, which the
+distributed orchestrator sets inside injector pods so mTLS credentials stay off the
+command line.
 
 ## Notes / assumptions
 
 - Prometheus is queried through the **API server service proxy** (no
-  port-forward). Override `PROM_SERVICE` / `PROM_PORT` / `MONITORING_NAMESPACE`.
+  port-forward). Override `--prom-service` / `--prom-port` / `--monitoring-namespace`.
 - `scale-nodes` sets node capacity/allocatable via the status subresource; KWOK
   maintains the Ready condition and lease.
 - CRs are created via the **dynamic client** (`janitor.dgxc.nvidia.com/v1alpha1`),

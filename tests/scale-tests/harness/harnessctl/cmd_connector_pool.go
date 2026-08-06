@@ -113,9 +113,32 @@ func computePoolSizing(emulatedNodes, realNodes, perNodeLimit int) poolSizing {
 // injector per connector node, sized to represent the live KWOK fleet. It does
 // NOT inject events — firing events is P0.3's job (the `inject` + `reconcile`
 // commands, which drive the resident injectors this command deploys).
+// runPoolCreate stages the connector pool (default P0.5 action).
+func runPoolCreate(ctx context.Context, args []string) error { return runConnectorPool(ctx, args) }
+
+// runPoolTeardown deletes the connector pool + resident injectors.
+func runPoolTeardown(ctx context.Context, args []string) error {
+	return runConnectorPool(ctx, append([]string{"-teardown"}, args...))
+}
+
+// runPoolStartupBurst runs the client-go burst APF-saturation experiment.
+func runPoolStartupBurst(ctx context.Context, args []string) error {
+	return runConnectorPool(ctx, append([]string{"-startup-burst"}, args...))
+}
+
+// runPoolConnectionSweep runs the replica/connection sweep experiment.
+func runPoolConnectionSweep(ctx context.Context, args []string) error {
+	return runConnectorPool(ctx, append([]string{"-connection-sweep"}, args...))
+}
+
 func runConnectorPool(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("connector-pool", flag.ExitOnError)
-	cfg := loadConfig()
+	fs := flag.NewFlagSet("pool", flag.ExitOnError)
+	cfg := defaultConfig()
+	bindNvsNamespaceFlag(fs, &cfg)
+	bindResultsFlag(fs, &cfg)
+	bindPromFlags(fs, &cfg)
+	fs.StringVar(&cfg.ConnectorDaemonSet, "connector-daemonset", cfg.ConnectorDaemonSet, "DaemonSet whose pod template the pool clones")
+	bindMongoTLSSecretFlag(fs, &cfg)
 	perNodeLimit := fs.Int("per-node-pod-limit", cfg.ConnectorPoolPerNodeLimit, "connector pods/node density cap; connector count = min(live KWOK nodes, realNodes*this)")
 	teardown := fs.Bool("teardown", false, "delete the connector pool + resident injectors and exit")
 	startupBurst := fs.Bool("startup-burst", false, "experiment: recreate the pool with -replicas connectors started simultaneously across -burst-steps client-go burst values; measure APF saturation at startup")

@@ -32,33 +32,112 @@ import (
 	"syscall"
 )
 
-type command struct {
+// subcmd is a single verb within a group (e.g. `scale` under `nodes`). run has
+// the same signature as before, so existing run* functions are reused verbatim.
+type subcmd struct {
 	name string
 	desc string
 	run  func(ctx context.Context, args []string) error
 }
 
-func commands() []command {
-	return []command{
-		{"bringup", "detect + install missing P0.1 stack (monitoring, metrics-server, KWOK, cert-manager, NVSentinel/Janitor) + verify (P0.1)", runBringup},
-		{"scale-nodes", "register N GPU-shaped KWOK nodes and wait Ready + record ceiling (P0.2)", runScaleNodes},
-		{"ceiling", "ramp node count until degradation and attribute it: harness vs api/etcd (P0.2)", runCeiling},
-		{"cleanup", "clear prior-run debris: KWOK nodes + orphaned janitor CRs (+ optional pool)", runCleanup},
-		{"inject", "fire every resident injector in the connector pool, attributing events to KWOK node names with correlation IDs (P0.3); -socket drives a single connector", runInject},
-		{"reconcile", "account every injected event for a run in-cluster via a resident injector (P0.3); -direct connects to MongoDB directly", runReconcile},
-		{"janitor-check", "create RebootNode + GPUReset CRs and verify completion (P0.4)", runJanitorCheck},
-		{"connector-pool", "stage a real connector pool + one resident injector per node (P0.5); or run -startup-burst / -connection-sweep experiments", runConnectorPool},
-		{"coldstart", "seed a MongoDB haystack (needles + STORE_ONLY noise), cold-start a consumer, and measure its initial scan time", runColdStart},
-		{"report", "auto-collect latency/throughput/resource/CR/mongo metrics into report.md + report.json", runReport},
+// group is an AWS-CLI-style noun (e.g. `nodes`) holding one or more verbs. The
+// full command form is `harnessctl <group> <verb> [--flags]`.
+type group struct {
+	name string
+	desc string
+	subs []subcmd
+}
+
+func groups() []group {
+	return []group{
+		{"stack", "install / clean / report the NVSentinel scale stack (P0.1)", []subcmd{
+			{"bringup", "detect + install missing P0.1 stack (monitoring, metrics-server, KWOK, cert-manager, NVSentinel/Janitor) + verify", runBringup},
+			{"cleanup", "clear prior-run debris: KWOK nodes + orphaned janitor CRs (+ optional pool)", runCleanup},
+			{"report", "auto-collect latency/throughput/resource/CR/mongo metrics into report.md + report.json", runReport},
+		}},
+		{"nodes", "manage simulated KWOK nodes (P0.2)", []subcmd{
+			{"scale", "register N GPU-shaped KWOK nodes and wait Ready + record ceiling", runScaleNodes},
+			{"ceiling", "ramp node count until degradation and attribute it: harness vs api/etcd", runCeiling},
+		}},
+		{"events", "inject and account health events (P0.3)", []subcmd{
+			{"inject", "fire every resident injector in the connector pool, attributing events to KWOK node names with correlation IDs; --socket drives a single connector", runInject},
+			{"reconcile", "account every injected event for a run in-cluster via a resident injector; --direct connects to MongoDB directly", runReconcile},
+			{"coldstart", "seed a MongoDB haystack (needles + STORE_ONLY noise), cold-start a consumer, and measure its initial scan time", runColdStart},
+		}},
+		{"janitor", "remediation CR checks (P0.4)", []subcmd{
+			{"check", "create RebootNode + GPUReset CRs and verify completion", runJanitorCheck},
+		}},
+		{"pool", "platform-connector pool + startup/connection experiments (P0.5)", []subcmd{
+			{"create", "stage a real connector pool + one resident injector per node", runPoolCreate},
+			{"teardown", "delete the connector pool + resident injectors", runPoolTeardown},
+			{"startup-burst", "recreate the pool across client-go burst values; measure APF saturation at startup", runPoolStartupBurst},
+			{"connection-sweep", "scale the pool across replica counts; record MongoDB connections + mongod CPU/mem", runPoolConnectionSweep},
+		}},
+	}
+}
+
+// aliases maps the pre-noun-verb command names to their new "<group> <verb>" form
+// so older scripts keep working during the transition. Not shown in help.
+func aliases() map[string][2]string {
+	return map[string][2]string{
+		"bringup":        {"stack", "bringup"},
+		"cleanup":        {"stack", "cleanup"},
+		"report":         {"stack", "report"},
+		"scale-nodes":    {"nodes", "scale"},
+		"ceiling":        {"nodes", "ceiling"},
+		"inject":         {"events", "inject"},
+		"reconcile":      {"events", "reconcile"},
+		"coldstart":      {"events", "coldstart"},
+		"janitor-check":  {"janitor", "check"},
+		"connector-pool": {"pool", "create"},
 	}
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "harnessctl — NVSentinel scale-test harness controller\n\nUsage:\n  harnessctl <command> [flags]\n\nCommands:\n")
-	for _, c := range commands() {
-		fmt.Fprintf(os.Stderr, "  %-16s %s\n", c.name, c.desc)
+	fmt.Fprintf(os.Stderr, "harnessctl — NVSentinel scale-test harness controller\n\n")
+	fmt.Fprintf(os.Stderr, "All inputs are command-line flags (AWS-CLI style); no env file is required.\n\n")
+	fmt.Fprintf(os.Stderr, "Usage:\n  harnessctl <group> <command> [--flags]\n\nGroups:\n")
+	for _, g := range groups() {
+		fmt.Fprintf(os.Stderr, "  %-10s %s\n", g.name, g.desc)
 	}
-	fmt.Fprintf(os.Stderr, "\nRun 'harnessctl <command> -h' for command flags.\n")
+	fmt.Fprintf(os.Stderr, "\nRun 'harnessctl <group>' to list its commands, or\n")
+	fmt.Fprintf(os.Stderr, "'harnessctl <group> <command> -h' for a command's flags.\n")
+}
+
+func groupUsage(g group) {
+	fmt.Fprintf(os.Stderr, "harnessctl %s — %s\n\nCommands:\n", g.name, g.desc)
+	for _, s := range g.subs {
+		fmt.Fprintf(os.Stderr, "  harnessctl %s %-18s %s\n", g.name, s.name, s.desc)
+	}
+	fmt.Fprintf(os.Stderr, "\nRun 'harnessctl %s <command> -h' for a command's flags.\n", g.name)
+}
+
+// dispatch resolves a "<group> <verb>" pair to its run function.
+func dispatch(ctx context.Context, groupName, verb string, args []string) int {
+	for _, g := range groups() {
+		if g.name != groupName {
+			continue
+		}
+		if verb == "" || verb == "-h" || verb == "--help" || verb == "help" {
+			groupUsage(g)
+			return 0
+		}
+		for _, s := range g.subs {
+			if s.name == verb {
+				if err := s.run(ctx, args); err != nil {
+					errorf("%s %s: %v", groupName, verb, err)
+					return 1
+				}
+				return 0
+			}
+		}
+		errorf("unknown command: %s %s", groupName, verb)
+		groupUsage(g)
+		return 2
+	}
+	errorf("unknown group: %s", groupName)
+	usage()
+	return 2
 }
 
 func main() {
@@ -66,8 +145,8 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
-	name := os.Args[1]
-	if name == "-h" || name == "--help" || name == "help" {
+	first := os.Args[1]
+	if first == "-h" || first == "--help" || first == "help" {
 		usage()
 		return
 	}
@@ -75,16 +154,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	for _, c := range commands() {
-		if c.name == name {
-			if err := c.run(ctx, os.Args[2:]); err != nil {
-				errorf("%s: %v", name, err)
-				os.Exit(1)
-			}
-			return
-		}
+	// Backward-compat: a legacy single-token command (e.g. `harnessctl bringup`).
+	if gv, ok := aliases()[first]; ok {
+		os.Exit(dispatch(ctx, gv[0], gv[1], os.Args[2:]))
 	}
-	errorf("unknown command: %s", name)
-	usage()
-	os.Exit(2)
+
+	// Noun-verb form: `harnessctl <group> <verb> [flags]`.
+	verb := ""
+	rest := []string{}
+	if len(os.Args) >= 3 {
+		verb = os.Args[2]
+		rest = os.Args[3:]
+	}
+	os.Exit(dispatch(ctx, first, verb, rest))
 }

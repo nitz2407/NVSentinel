@@ -39,14 +39,23 @@ type ceilingStep struct {
 }
 
 func runCeiling(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("ceiling", flag.ExitOnError)
-	cfg := loadConfig()
+	fs := flag.NewFlagSet("nodes ceiling", flag.ExitOnError)
+	cfg := defaultConfig()
+	bindResultsFlag(fs, &cfg)
+	bindPromFlags(fs, &cfg)
+	bindNodeGuardrailFlags(fs, &cfg)
+	bindNodeShapeFlags(fs, &cfg)
 	start := fs.Int("start", cfg.CeilingStart, "first node count in the ramp")
 	step := fs.Int("step", cfg.CeilingStep, "increment between ramp steps")
 	maxN := fs.Int("max", cfg.CeilingMax, "final node count to attempt")
+	settle := fs.Int("settle-seconds", cfg.CeilingSettle, "seconds to probe/settle at each step before measuring")
+	listP99 := fs.Float64("list-nodes-p99", cfg.CeilingListP99, "LIST-nodes p99 guardrail (seconds) — the real-ceiling signal")
+	kwokCPU := fs.Float64("kwok-cpu-cores", cfg.CeilingKwokCPU, "KWOK controller CPU (cores) above which it's saturated")
+	window := fs.String("metrics-window", cfg.MetricsWindow, "PromQL rate window for per-step measurements")
 	_ = fs.Parse(args)
 
 	cfg.CeilingStart, cfg.CeilingStep, cfg.CeilingMax = *start, *step, *maxN
+	cfg.CeilingSettle, cfg.CeilingListP99, cfg.CeilingKwokCPU, cfg.MetricsWindow = *settle, *listP99, *kwokCPU, *window
 
 	c, err := newClients(cfg)
 	if err != nil {

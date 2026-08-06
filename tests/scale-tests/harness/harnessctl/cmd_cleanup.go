@@ -31,13 +31,16 @@ import (
 )
 
 func runCleanup(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("cleanup", flag.ExitOnError)
+	fs := flag.NewFlagSet("stack cleanup", flag.ExitOnError)
+	cfg := defaultConfig()
+	bindNvsNamespaceFlag(fs, &cfg)
+	bindKwokNamespaceFlag(fs, &cfg)
+	bindJanitorNamespaceFlag(fs, &cfg)
 	nodes := fs.Bool("nodes", true, "delete all simulated KWOK nodes")
 	crs := fs.Bool("crs", true, "garbage-collect orphaned janitor CRs (GPUReset/RebootNode referencing deleted nodes)")
-	pool := fs.Bool("pool", false, "also tear down the connector pool + resident injectors")
+	pool := fs.Bool("pool", true, "also tear down the connector pool + resident injectors (use --pool=false to keep it)")
 	_ = fs.Parse(args)
 
-	cfg := loadConfig()
 	c, err := newClients(cfg)
 	if err != nil {
 		return err

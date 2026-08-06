@@ -125,7 +125,12 @@ type ledgerEntry struct {
 // Both attribute events to KWOK node names and stamp a correlation id into
 // HealthEvent.id + metadata that the reconciler accounts.
 func runInject(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("inject", flag.ExitOnError)
+	fs := flag.NewFlagSet("events inject", flag.ExitOnError)
+	cfg := defaultConfig()
+	bindNvsNamespaceFlag(fs, &cfg)
+	bindResultsFlag(fs, &cfg)
+	bindMongoFlags(fs, &cfg)
+	bindInjectorFlags(fs, &cfg)
 	socket := fs.String("socket", "", "connector Unix socket; empty => distributed mode: fan out across every resident injector deployed by connector-pool")
 	nodePrefix := fs.String("node-prefix", "kwok-gpu", "simulated node name prefix")
 	nodeCount := fs.Int("nodes", 50000, "number of simulated node names to spread events across")
@@ -148,13 +153,17 @@ func runInject(ctx context.Context, args []string) error {
 	mBatch := fs.Int("mongo-batch", 500, "direct-mongo: InsertMany batch size")
 	coldstartRatio := fs.Float64("coldstart-ratio", 0, "direct-mongo: cold-start seed mix — fraction of docs that are remediation-ready needles (rest are STORE_ONLY noise); 0 disables (used by the `coldstart` command)")
 	// Direct-mongo connection knobs (shared defaults with reconcile).
-	mURI := fs.String("uri", env("MONGO_URI", "mongodb://localhost:27017"), "direct-mongo: MongoDB URI")
-	mDB := fs.String("db", env("MONGO_DATABASE", "HealthEventsDatabase"), "direct-mongo: database")
-	mColl := fs.String("collection", env("MONGO_COLLECTION", "HealthEvents"), "direct-mongo: collection")
-	mTLSDir := fs.String("tls-cert-dir", env("MONGO_TLS_CERT_DIR", ""), "direct-mongo: dir with ca.crt (+ tls.crt/tls.key for mTLS)")
-	mTLSInsecure := fs.Bool("tls-insecure", envBool("MONGO_TLS_INSECURE", false), "direct-mongo: skip TLS server verification")
-	mAuthMech := fs.String("auth-mechanism", env("MONGO_AUTH_MECHANISM", ""), "direct-mongo: auth mechanism, e.g. MONGODB-X509")
-	mAuthSrc := fs.String("auth-source", env("MONGO_AUTH_SOURCE", ""), "direct-mongo: auth source db, e.g. $external")
+	// -uri default falls back to the MONGO_URI env var. This is NOT user config:
+	// the distributed orchestrator discovers the mTLS URI and injects it into the
+	// resident-injector pod via env (execShEnv) so credentials never appear on the
+	// command line (argv is visible in `ps`/logs). Empty env => local default.
+	mURI := fs.String("uri", internalMongoURIDefault(), "direct-mongo: MongoDB URI (defaults to $MONGO_URI when set by the in-cluster orchestrator)")
+	mDB := fs.String("db", "HealthEventsDatabase", "direct-mongo: database")
+	mColl := fs.String("collection", "HealthEvents", "direct-mongo: collection")
+	mTLSDir := fs.String("tls-cert-dir", "", "direct-mongo: dir with ca.crt (+ tls.crt/tls.key for mTLS)")
+	mTLSInsecure := fs.Bool("tls-insecure", false, "direct-mongo: skip TLS server verification")
+	mAuthMech := fs.String("auth-mechanism", "", "direct-mongo: auth mechanism, e.g. MONGODB-X509")
+	mAuthSrc := fs.String("auth-source", "", "direct-mongo: auth source db, e.g. $external")
 	mTimeout := fs.Duration("mongo-timeout", 60*time.Second, "direct-mongo: MongoDB op timeout")
 	_ = fs.Parse(args)
 
@@ -184,8 +193,7 @@ func runInject(ctx context.Context, args []string) error {
 	// mechanism (grpc through the connectors vs mongo direct insert) comes from the
 	// -mechanism flag when set to mongo, else from config (HARNESS_INJECT_MECHANISM).
 	if *socket == "" {
-		cfg := loadConfig()
-		// CLI flags win over env-sourced config for this run.
+		// CLI flags fully determine this run (no env).
 		cfg.FatalEvent, cfg.Pattern, cfg.ProcessingStrategy = fe, pat, ps
 		c, err := newClients(cfg)
 		if err != nil {

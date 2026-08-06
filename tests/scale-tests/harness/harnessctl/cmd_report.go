@@ -18,7 +18,6 @@ import (
 	"strings"
 	"time"
 
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	corev1 "k8s.io/api/core/v1"
@@ -33,14 +32,22 @@ import (
 // attribution — and writes report.md + report.json. It replaces the ad-hoc
 // kubectl/PromQL commands previously run by hand.
 func runReport(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("report", flag.ExitOnError)
-	cfg := loadConfig()
-	out := fs.String("out", filepath.Join(cfg.ResultsDir, "report.md"), "Markdown report output path")
+	fs := flag.NewFlagSet("stack report", flag.ExitOnError)
+	cfg := defaultConfig()
+	bindNvsNamespaceFlag(fs, &cfg)
+	bindResultsFlag(fs, &cfg)
+	bindPromFlags(fs, &cfg)
+	bindJanitorNamespaceFlag(fs, &cfg)
+	bindMaxAPIServerP99Flag(fs, &cfg)
+	bindNodePrefixFlag(fs, &cfg)
+	out := fs.String("out", "", "Markdown report output path (default: <results-dir>/report.md)")
 	window := fs.String("window", cfg.ReportWindow, "PromQL lookback window for peak (max_over_time) queries")
-	mongoRunID := fs.String("mongo-run-id", "", "if set (and Mongo reachable), count stored docs for this run label")
 	title := fs.String("title", "NVSentinel scale run", "report title")
 	_ = fs.Parse(args)
 	cfg.ReportWindow = *window
+	if *out == "" {
+		*out = filepath.Join(cfg.ResultsDir, "report.md")
+	}
 
 	c, err := newClients(cfg)
 	if err != nil {
@@ -48,7 +55,7 @@ func runReport(ctx context.Context, args []string) error {
 	}
 
 	stepf("report: collecting metrics (window=%s)", cfg.ReportWindow)
-	data := c.collectReport(ctx, cfg, *title, *mongoRunID)
+	data := c.collectReport(ctx, cfg, *title)
 
 	writeArtifact(cfg.ResultsDir, "report.json", data)
 	md := renderReportMarkdown(data)
@@ -114,7 +121,6 @@ type crStats struct {
 type mongoStats struct {
 	OK        bool   `json:"ok"`
 	TotalDocs int64  `json:"total_docs"`
-	RunDocs   int64  `json:"run_docs"`
 	Note      string `json:"note,omitempty"`
 }
 
@@ -220,7 +226,7 @@ func loadReconcileReport(dir string) *ReconcileReport {
 
 // ---- collection -----------------------------------------------------------
 
-func (c *clients) collectReport(ctx context.Context, cfg Config, title, mongoRunID string) reportData {
+func (c *clients) collectReport(ctx context.Context, cfg Config, title string) reportData {
 	d := reportData{
 		Title:       title,
 		Cluster:     c.rest.Host,
@@ -305,7 +311,7 @@ func (c *clients) collectReport(ctx context.Context, cfg Config, title, mongoRun
 	d.Components = c.collectComponents(ctx, cfg)
 
 	// --- MongoDB (best-effort) ---
-	d.Mongo = mongoStatsBestEffort(ctx, cfg, mongoRunID)
+	d.Mongo = mongoStatsBestEffort(ctx, cfg)
 
 	// --- ceiling attribution ---
 	d.Ceiling = attributeReportCeiling(cfg, d)
@@ -573,7 +579,7 @@ func (c *clients) collectComponents(ctx context.Context, cfg Config) []component
 
 // ---- MongoDB (best-effort) -------------------------------------------------
 
-func mongoStatsBestEffort(ctx context.Context, cfg Config, runID string) mongoStats {
+func mongoStatsBestEffort(ctx context.Context, cfg Config) mongoStats {
 	var ms mongoStats
 	if cfg.MongoURI == "" {
 		ms.Note = "unavailable from CLI (mTLS store is cluster-internal); set HARNESS_MONGO_URI or reconcile in-cluster"
@@ -595,12 +601,6 @@ func mongoStatsBestEffort(ctx context.Context, cfg Config, runID string) mongoSt
 	}
 	ms.TotalDocs = n
 	ms.OK = true
-	if runID != "" {
-		runKey := fmt.Sprintf("%s.metadata.%s", cfg.FieldPrefix, cfg.RunLabel)
-		if rn, err := coll.CountDocuments(qctx, bson.M{runKey: runID}); err == nil {
-			ms.RunDocs = rn
-		}
-	}
 	return ms
 }
 
@@ -722,7 +722,7 @@ func renderSummary(b *strings.Builder, d reportData) {
 	if d.GPUReset.Total > 0 || d.Nodes.Cordoned > 0 {
 		scen = append(scen, "fault→cordon→drain→GPUReset remediation (P0.4)")
 	}
-	if d.Mongo.OK && d.Mongo.RunDocs > 0 {
+	if d.Reconcile != nil {
 		scen = append(scen, "event injection + reconciliation (P0.3/P0.5)")
 	}
 	if len(scen) == 0 {
@@ -976,9 +976,6 @@ func renderMongoBody(b *strings.Builder, d reportData) {
 	}
 	if d.Mongo.OK {
 		fmt.Fprintf(b, "Event store (MongoDB) accounting:\n\n| Metric | Value |\n|--------|-------|\n| documents (estimated) | %d |\n", d.Mongo.TotalDocs)
-		if d.Mongo.RunDocs > 0 {
-			fmt.Fprintf(b, "| documents for run | %d |\n", d.Mongo.RunDocs)
-		}
 		b.WriteString("\n")
 		return
 	}

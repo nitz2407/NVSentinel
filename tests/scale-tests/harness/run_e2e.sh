@@ -34,20 +34,43 @@ MECHANISM="${MECHANISM:-}"
 PATTERN="${PATTERN:-}"
 PROCESSING_STRATEGY="${PROCESSING_STRATEGY:-}"
 
+# harnessctl is now flags-only (AWS-CLI style: no env file). We still source
+# harness.env because the Helm *install* shell scripts read a few vars from it
+# (NVS_CHART, KWOK_VERSION, …) and because it carries the two behaviour-critical
+# values below — which we then pass to harnessctl explicitly as flags.
 set -a; source "$HARN/config/harness.env"; set +a
-export MONITORING_NAMESPACE=prometheus PROM_SERVICE=prometheus-prometheus PROM_PORT=9090
-# Apply the injection overrides AFTER sourcing harness.env so they win.
-[ -n "$FATAL_FRACTION" ] && export HARNESS_FATAL_FRACTION="$FATAL_FRACTION"
-[ -n "$FATAL_EVENT" ] && export HARNESS_FATAL_EVENT="$FATAL_EVENT"
-[ -n "$MECHANISM" ] && export HARNESS_INJECT_MECHANISM="$MECHANISM"
-[ -n "$PATTERN" ] && export HARNESS_INJECT_PATTERN="$PATTERN"
-[ -n "$PROCESSING_STRATEGY" ] && export HARNESS_PROCESSING_STRATEGY="$PROCESSING_STRATEGY"
+
 # Results are grouped by run date, then node count: results/<YYYY-MM-DD>/<N>/.
 # Override the date with RUN_DATE (e.g. to append to an earlier day's set).
 RUN_DATE="${RUN_DATE:-$(date +%F)}"
-export HARNESS_RESULTS_DIR="$HARN/results/$RUN_DATE/$N"
-mkdir -p "$HARNESS_RESULTS_DIR"
-LOG="$HARNESS_RESULTS_DIR/run.log"
+RESULTS_DIR="$HARN/results/$RUN_DATE/$N"
+mkdir -p "$RESULTS_DIR"
+LOG="$RESULTS_DIR/run.log"
+
+# --- harnessctl flag sets (replace the old env-var config surface) ------------
+# Flags are scoped per command (each subcommand only accepts the flags it reads),
+# so we build focused arrays rather than one blanket set:
+#   RESULTS - artifact dir; accepted by every command that writes results
+#             (scale/pool/janitor/inject/reconcile/report) but NOT stack cleanup.
+#   MON     - monitoring-namespace override; only for PromQL commands
+#             (scale/pool/report). Defaults (prometheus/prometheus-prometheus/9090)
+#             are baked into harnessctl, so pass an override only when it differs.
+RESULTS=(--results-dir "$RESULTS_DIR")
+MON=()
+[ "${MONITORING_NAMESPACE:-prometheus}" != "prometheus" ] && MON+=(--monitoring-namespace "$MONITORING_NAMESPACE")
+
+# P0.2 node creation. --provider-id-scheme is REQUIRED on managed clusters
+# (AKS/EKS/GKE) or KWOK nodes are reaped by the cloud node-lifecycle controller.
+SCALE_FLAGS=()
+[ -n "${KWOK_PROVIDER_ID_SCHEME:-}" ] && SCALE_FLAGS+=(--provider-id-scheme "$KWOK_PROVIDER_ID_SCHEME")
+
+# P0.3 injection strategy (only pass overrides; harnessctl carries the defaults).
+INJECT_FLAGS=()
+[ -n "$FATAL_FRACTION" ] && INJECT_FLAGS+=(--fatal-fraction "$FATAL_FRACTION")
+[ -n "$FATAL_EVENT" ] && INJECT_FLAGS+=(--fatal-event "$FATAL_EVENT")
+[ -n "$MECHANISM" ] && INJECT_FLAGS+=(--mechanism "$MECHANISM")
+[ -n "$PATTERN" ] && INJECT_FLAGS+=(--pattern "$PATTERN")
+[ -n "$PROCESSING_STRATEGY" ] && INJECT_FLAGS+=(--processing-strategy "$PROCESSING_STRATEGY")
 
 log() { echo "[$(date +%T)] $*" | tee -a "$LOG"; }
 run() { # phase-label command...
@@ -60,25 +83,25 @@ log "######## Phase 0 E2E for $N nodes -> results/$RUN_DATE/$N/ ########"
 
 # Clean slate: delete prior nodes (+restart kwok-controller to clear stale lease
 # cache), gc orphaned janitor CRs, and tear down the previous connector pool.
-run "cleanup" "$BIN" cleanup -pool || exit 1
+run "cleanup" "$BIN" stack cleanup --pool || exit 1
 
-# P0.2: scale to N nodes (scale-nodes, NOT ceiling).
-run "P0.2 scale-nodes -count $N" "$BIN" scale-nodes -count "$N" || exit 1
+# P0.2: scale to N nodes (nodes scale, NOT nodes ceiling).
+run "P0.2 nodes scale --count $N" "$BIN" nodes scale --count "$N" "${SCALE_FLAGS[@]}" "${RESULTS[@]}" "${MON[@]}" || exit 1
 
 # P0.5: deploy connector pool (+ resident injectors), PER_NODE_POD_LIMIT/real-node.
-run "P0.5 connector-pool (per-node-pod-limit=$PER_NODE_POD_LIMIT)" "$BIN" connector-pool -per-node-pod-limit "$PER_NODE_POD_LIMIT" || exit 1
+run "P0.5 pool create (per-node-pod-limit=$PER_NODE_POD_LIMIT)" "$BIN" pool create --per-node-pod-limit "$PER_NODE_POD_LIMIT" "${RESULTS[@]}" "${MON[@]}" || exit 1
 
-# P0.4: janitor reboot + GPU reset on a KWOK node — BEFORE inject, so janitor-check
+# P0.4: janitor reboot + GPU reset on a KWOK node — BEFORE inject, so janitor check
 # targets a quiet fleet. Under a fatal storm (e.g. FATAL_FRACTION=1.0) its target
 # node could already be mid-remediation and the check would time out.
-run "P0.4 janitor-check" "$BIN" janitor-check || exit 1
+run "P0.4 janitor check" "$BIN" janitor check "${RESULTS[@]}" || exit 1
 
 # P0.3: fire all injectors (distributed), capture run-id, then reconcile.
-log "===== P0.3 inject ====="
-RID="$("$BIN" inject 2>>"$LOG" | tail -1)"
+log "===== P0.3 events inject ====="
+RID="$("$BIN" events inject "${INJECT_FLAGS[@]}" "${RESULTS[@]}" 2>>"$LOG" | tail -1)"
 log "P0.3 inject run-id=$RID"
 if [ -z "$RID" ]; then log "P0.3 inject produced no run-id"; exit 1; fi
-run "P0.3 reconcile -run-id $RID" "$BIN" reconcile -run-id "$RID" || exit 1
+run "P0.3 events reconcile --run-id $RID" "$BIN" events reconcile --run-id "$RID" "${RESULTS[@]}" || exit 1
 
 # Report.
 FF_TITLE=""
@@ -86,6 +109,6 @@ FF_TITLE=""
 [ -n "$FATAL_EVENT" ] && FF_TITLE="$FF_TITLE, fatal-event=$FATAL_EVENT"
 [ -n "$MECHANISM" ] && FF_TITLE="$FF_TITLE, mechanism=$MECHANISM"
 [ -n "$PATTERN" ] && FF_TITLE="$FF_TITLE, pattern=$PATTERN"
-run "report" "$BIN" report -title "Phase 0 Harness E2E — Azure ($N nodes$FF_TITLE)" -window 1h || exit 1
+run "report" "$BIN" stack report --title "Phase 0 Harness E2E — Azure ($N nodes$FF_TITLE)" --window 1h "${RESULTS[@]}" "${MON[@]}" || exit 1
 
-log "######## DONE $N -> $HARNESS_RESULTS_DIR/report.md (run-id=$RID) ########"
+log "######## DONE $N -> $RESULTS_DIR/report.md (run-id=$RID) ########"
