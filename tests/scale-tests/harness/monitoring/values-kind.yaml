@@ -1,0 +1,48 @@
+# Kind-local slim overlay for kube-prometheus-stack. Layer it after the embedded
+# monitoring defaults (pair with --nvsentinel-values for the NVSentinel chart):
+#   harnessctl stack bringup \
+#     --nvsentinel-values ../nvsentinel/values-harness-kind.yaml \
+#     --monitoring-values ../monitoring/values-kind.yaml
+#
+# The embedded values are sized for the real harness fleet (Prometheus alone asks
+# for 2 CPU / 8Gi and kube-state-metrics for 1 CPU). A Kind node advertises the
+# whole Docker VM's CPU, so those requests leave Prometheus Pending forever and
+# starve NVSentinel of the capacity it needs. Everything below is functional-test
+# sizing only — never use it to judge scale behaviour.
+
+prometheus:
+  prometheusSpec:
+    retention: 2h
+    retentionSize: "1GB"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 2Gi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+# Nothing in the Kind smoke test reads dashboards, and Grafana is the largest
+# remaining request in the stack.
+grafana:
+  enabled: false

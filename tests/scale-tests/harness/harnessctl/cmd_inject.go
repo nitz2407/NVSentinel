@@ -189,28 +189,16 @@ func runInject(ctx context.Context, args []string) error {
 				coldstartRatio: *coldstartRatio})
 	}
 
-	// Distributed mode: one command fires every resident injector in the pool. The
-	// mechanism (grpc through the connectors vs mongo direct insert) comes from the
-	// -mechanism flag when set to mongo, else from config (HARNESS_INJECT_MECHANISM).
+	// Distributed mode (operator CLI only): one command fires every resident
+	// injector in the pool. The in-cluster harness-inject binary stubs this path.
 	if *socket == "" {
-		// CLI flags fully determine this run (no env).
 		cfg.FatalEvent, cfg.Pattern, cfg.ProcessingStrategy = fe, pat, ps
-		c, err := newClients(cfg)
-		if err != nil {
-			return err
-		}
-		mech := normalizeMechanism(cfg.Mechanism)
-		if normalizeMechanism(*mechanism) == mechanismMongo {
-			mech = mechanismMongo // explicit CLI override
-		}
-		if mech == mechanismMongo {
-			return c.injectMongoAcrossPool(ctx, cfg, mongoDistOptions{
-				total: *total, workers: *mWorkers, batch: *mBatch,
-				nodeCount: *nodeCount, nodeOffset: *nodeOffset, runID: *runID,
-				coldstartRatio: *coldstartRatio,
-			})
-		}
-		return c.injectAcrossPool(ctx, cfg, *rate, *runID)
+		return dispatchInjectDistributed(ctx, cfg, injectDispatchOpts{
+			mechanism: *mechanism, rate: *rate, runID: *runID,
+			total: *total, workers: *mWorkers, batch: *mBatch,
+			nodeCount: *nodeCount, nodeOffset: *nodeOffset,
+			coldstartRatio: *coldstartRatio,
+		})
 	}
 
 	infof("injector run-id=%s socket=%s nodes=%d count=%d rate=%.1f/s pattern=%s fatal-event=%s proc-strategy=%s",

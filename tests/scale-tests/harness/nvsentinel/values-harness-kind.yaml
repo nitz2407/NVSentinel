@@ -1,16 +1,20 @@
 # Kind-local slim overlay. Layer this AFTER values-harness.yaml:
-#   helm upgrade --install ... -f values-harness.yaml -f values-harness-kind.yaml
+#   ./harnessctl stack bringup \
+#     --nvsentinel-values ../nvsentinel/values-harness-kind.yaml \
+#     --monitoring-values ../monitoring/values-kind.yaml
 #
-# Purpose: make the full NVSentinel stack fit on a single small kind node
-# (~2 vCPU / ~5-6 GiB Docker VM) for a functional Phase 0 smoke test.
+# Purpose: make the full NVSentinel stack fit on a small Kind cluster
+# (~2–4 vCPU Docker VM) for a functional Phase 0 smoke test.
 #
 # What it changes vs values-harness.yaml:
-#   - Disables Prometheus-operator CRs (PodMonitor / ServiceMonitor) because the
-#     kind profile does NOT install kube-prometheus-stack (no CRDs present).
-#   - MongoDB -> single replica, no arbiter, no metrics exporter, small PVC,
-#     modest CPU/memory (production sizing is irrelevant for a functional test).
-#   - Every component trimmed to small CPU/memory requests so the scheduler can
-#     fit them all on one node. These are NOT production sizings.
+#   - Disables PodMonitor / ServiceMonitor CRDs on NVSentinel (optional nicety).
+#   - MongoDB: Percona Operator path (useBitnami=false, usePerconaOperator=true).
+#     Upstream guidance for linux/arm64 Kind/Apple Silicon — Bitnami's pinned
+#     bitnamilegacy/* images are amd64-only; Percona is the supported ARM path
+#     (NVIDIA/NVSentinel#1328, values-tilt-mongodb-percona.yaml). Real amd64
+#     scale clusters keep the embedded Bitnami defaults and do NOT load this file.
+#   - Single-member Percona replset + slim resources so Kind can schedule.
+#   - Every NVSentinel component trimmed to small CPU/memory requests.
 
 podMonitor:
   enabled: false
@@ -20,12 +24,27 @@ podMonitor:
 global:
   janitorProvider:
     enabled: true
+  # Required for cert-manager MongoDB resources on a non-CSP Kind cluster
+  # (same as values-tilt-mongodb-percona.yaml).
+  clusterType: standalone
   # The local chart defaults component images to the `main` tag, which is not
   # published for every component on ghcr.io. Pin to a released tag so a
   # from-source kind smoke test can pull all images. (The real-cluster path uses
   # the public OCI chart, whose images track the chart version instead.)
   image:
     tag: "v1.15.0"
+  # Percona publishes Service mongodb-rs0 (not Bitnami's mongodb-headless).
+  datastore:
+    provider: "mongodb"
+    connection:
+      host: "mongodb-rs0.nvsentinel.svc.cluster.local"
+      port: 27017
+      database: "HealthEventsDatabase"
+      collection: "HealthEvents"
+      tokenCollection: "ResumeTokens"
+      extraParams:
+        replicaSet: "rs0"
+        tls: "true"
 
 janitor-provider:
   resources:
@@ -81,29 +100,46 @@ node-drainer:
       cpu: 500m
       memory: 512Mi
 
+labeler:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# Upstream ARM64 / Kind path (values-tilt-mongodb-percona.yaml). Both flags must
+# be set explicitly when switching backends.
 mongodb-store:
-  mongodb:
-    replicaCount: 1
-    # existingSecrets length MUST equal replicaCount (bitnami validation); the
-    # mongodb-store cert-manager template only mints mongo-server-cert-0 when
-    # replicaCount=1, so the default 3-entry list must be trimmed to match.
-    tls:
-      replicaset:
-        existingSecrets:
-          - "mongo-server-cert-0"
-    arbiter:
-      enabled: false
-    resources:
-      requests:
-        cpu: 250m
-        memory: 512Mi
-      limits:
-        cpu: "1"
-        memory: 1Gi
-    persistence:
-      enabled: true
-      size: 2Gi
-    metrics:
-      enabled: false
-      serviceMonitor:
-        enabled: false
+  useBitnami: false
+  usePerconaOperator: true
+  # Bitnami keys below are ignored when usePerconaOperator=true; left empty so a
+  # mistaken merge of replicaCount/image from values-harness.yaml does not matter.
+  psmdb-db:
+    # The operator rejects a replset smaller than 3 members unless this is set
+    # ("check safe defaults: replset size must be at least 3").
+    unsafeFlags:
+      replsetSize: true
+    replsets:
+      rs0:
+        # Kind smoke: one member. Chart default is size 3 @ 1 CPU each.
+        size: 1
+        replsetOverrides:
+          mongodb-rs0-0:
+            priority: 3
+        resources:
+          requests:
+            cpu: 100m
+            memory: 384Mi
+          limits:
+            cpu: 500m
+            memory: 768Mi
+        volumeSpec:
+          pvc:
+            resources:
+              requests:
+                storage: 2Gi
+        # Drop the exporter sidecar — Kind has no capacity budget for it, and
+        # values-harness-kind already disables NVSentinel PodMonitors.
+        sidecars: []

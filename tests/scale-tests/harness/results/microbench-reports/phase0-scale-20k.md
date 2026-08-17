@@ -137,6 +137,40 @@ Peaks are sampled by `harnessctl report` as `max_over_time((<query>)[<window>:1m
 
 ---
 
+---
+
+## Dashboard snapshots (run window)
+
+Cluster: `nvs-dgxc-k8s-azr-scus-dev1` · PromQL reference: [`DASHBOARD_QUERIES.md`](./DASHBOARD_QUERIES.md)
+
+**Selected time range for this rung:** `2026-07-31T11:30:00Z` → `2026-07-31T14:00:00Z`
+
+- **E2E run.log (UTC):** `2026-07-31T11:42:58Z → 12:01:44Z`
+- **GPUReset create span:** `2026-07-31T11:48:14Z → 12:40:49Z`
+- **harnessctl report Prom peak window:** `1h ending 2026-07-31T14:54:13Z (late re-report)`
+- **Notes:** Grafana shows ~20k residual cordon plateau into Aug 2.
+
+> In-cluster Prometheus no longer returns samples for these historical windows (pod currently flapping / short live retention). Long-term series live in Grafana/Promxy (`cluster="nvs-dgxc-k8s-azr-scus-dev1"`). Open Explore with the range above for LIST-nodes / all-verb / req-rate / 5xx / in-flight panels. Cordon chart below is reconstructed from harness `converge.log` (or day-scale Grafana crop for early rungs).
+
+### Cordoned nodes (this rung)
+
+![cordoned](graphs/20k/cordoned.png)
+
+```promql
+sum(kube_node_spec_unschedulable{cluster="nvs-dgxc-k8s-azr-scus-dev1"})
+```
+
+### Grafana Explore — absolute range
+
+Paste into Grafana Explore time picker (UTC):
+
+| | |
+| --- | --- |
+| From | `2026-07-31T11:30:00Z` |
+| To | `2026-07-31T14:00:00Z` |
+| Query | panels in [`DASHBOARD_QUERIES.md`](./DASHBOARD_QUERIES.md) |
+
+
 ## Relevant code locations
 
 - `tests/scale-tests/harness/harnessctl/` — CLI (bringup, scale-nodes, connector-pool, inject, reconcile, janitor-check, report)

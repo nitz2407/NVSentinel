@@ -5,79 +5,47 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
 
+
+//go:build !injector
+
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// runInstallScript runs a single helm-install shell script from dir. Used by
-// P0.1 bring-up to install any missing components.
-func runInstallScript(ctx context.Context, dir, name string, extraEnv []string) error {
-	path := filepath.Join(dir, name)
-	infof("running install script: %s", path)
-	cmd := exec.CommandContext(ctx, "bash", path)
-	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
-	// Carry the version targets so a version-triggered reinstall lands on the
-	// requested tag; empty targets are omitted so the script keeps its default.
-	cmd.Env = append(os.Environ(), extraEnv...)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: %w", name, err)
-	}
-	return nil
-}
-
-// versionEnv builds the KEY=VALUE overrides passed to the install scripts from
-// the non-empty version targets. Each script reads only its own variable.
-func versionEnv(cfg Config) []string {
-	var env []string
-	add := func(k, v string) {
-		if v != "" {
-			env = append(env, k+"="+v)
-		}
-	}
-	add("NVS_CHART_VERSION", cfg.NVSChartVersion)
-	add("KWOK_VERSION", cfg.KWOKVersion)
-	add("CERT_MANAGER_VERSION", cfg.CertManagerVersion)
-	add("METRICS_SERVER_VERSION", cfg.MetricsServerVersion)
-	return env
-}
-
 // component is one P0.1 building block: how to detect whether it is already
-// present, and which install script brings it up (or reconciles it to harness
-// defaults).
+// present, and which Go installer brings it up (or reconciles it to harness
+// defaults). Installs use the Helm Go SDK and client-go with embedded values — no
+// phase0/*.sh dependency.
 type component struct {
-	id     string
-	script string
+	id string
 	// required marks whether a failed install aborts bring-up. Observability
 	// niceties (monitoring, metrics-server) are optional: a failure there is
 	// warned-and-skipped so it never blocks the critical NVSentinel path.
 	required bool
 	detect   func(ctx context.Context, c *clients, cfg Config) (present bool, detail string)
+	install  func(ctx context.Context, c *clients, cfg Config) error
 }
 
-// p01Components lists the P0.1 stack in install order (numeric script prefixes
-// sort naturally: 10 → 15 → 20 → 25 → 30). The janitor is NOT a separate entry:
-// it ships inside the NVSentinel chart (30-install-nvsentinel.sh), so its status
-// is reported as an informational sub-line under nvsentinel in runBringup.
+// p01Components lists the P0.1 stack in install order. The janitor is NOT a
+// separate entry: it ships inside the NVSentinel chart, so its status is
+// reported as an informational sub-line under nvsentinel in runBringup.
 // monitoring + metrics-server are optional (observability niceties); kwok,
 // cert-manager and nvsentinel are required.
 func p01Components() []component {
 	return []component{
-		{"kube-prometheus-stack", "10-install-monitoring.sh", false, detectMonitoring},
-		{"metrics-server", "15-install-metrics-server.sh", false, detectMetricsServer},
-		{"kwok", "20-install-kwok.sh", true, detectKwok},
-		{"cert-manager", "25-install-cert-manager.sh", true, detectCertManager},
-		{"nvsentinel", "30-install-nvsentinel.sh", true, detectNVSentinel},
+		{"kube-prometheus-stack", false, detectMonitoring, installMonitoring},
+		{"metrics-server", false, detectMetricsServer, installMetricsServer},
+		{"kwok", true, detectKwok, installKWOK},
+		{"cert-manager", true, detectCertManager, installCertManager},
+		{"nvsentinel", true, detectNVSentinel, installNVSentinel},
 	}
 }
 
@@ -144,8 +112,8 @@ func detectCertManager(ctx context.Context, c *clients, cfg Config) (bool, strin
 
 // detectNVSentinel is version-aware: if NVSentinel is present AND a target version
 // (-nvs-chart-version) is set AND the installed image tag differs, it reports the
-// component as MISSING so runBringup re-runs 30-install-nvsentinel.sh — which does
-// a `helm upgrade --install` to the target tag. When the versions already match
+// component as MISSING so runBringup re-runs installNVSentinel — which does a
+// `helm upgrade --install` to the target tag. When the versions already match
 // (or no target is set) it reports PRESENT and is left untouched.
 func detectNVSentinel(ctx context.Context, c *clients, cfg Config) (bool, string) {
 	present, detail := c.deployPresent(ctx, cfg.NVSNamespace,
@@ -219,13 +187,9 @@ func detectJanitor(ctx context.Context, c *clients, cfg Config) (bool, string) {
 
 // runBringup is the single P0.1 command. It (1) verifies cluster reachability,
 // (2) detects which of the harness components are already present at the required
-// version, (3) installs whatever is missing or version-mismatched, and (4) prints
-// the final node inventory. It is fully declarative and non-interactive: a
-// component that is already present at the target version is skipped, everything
-// else is installed. NVSentinel version-awareness is handled in detectNVSentinel
-// (a version mismatch surfaces as MISSING, triggering a helm upgrade to the
-// target -nvs-chart-version). Installs are thin `helm upgrade --install` shell
-// scripts — transparent one-liners that Go orchestrates but does not replace.
+// version, (3) installs whatever is missing or version-mismatched via the Helm Go
+// SDK and client-go with embedded values (no phase0/*.sh), and (4) prints the
+// final node inventory. Fully declarative and non-interactive.
 func runBringup(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("stack bringup", flag.ExitOnError)
 	cfg := defaultConfig()
@@ -235,7 +199,7 @@ func runBringup(ctx context.Context, args []string) error {
 	bindKwokNamespaceFlag(fs, &cfg)
 	bindJanitorNamespaceFlag(fs, &cfg)
 	bindVersionFlags(fs, &cfg)
-	dir := fs.String("dir", defaultInstallDir(), "directory holding the 10|15|20|25|30-install-*.sh scripts")
+	bindValuesFilesFlag(fs, &cfg)
 	_ = fs.Parse(args)
 
 	c, err := newClients(cfg)
@@ -274,51 +238,28 @@ func runBringup(ctx context.Context, args []string) error {
 		}
 	}
 
-	// (3) Decide, per component, whether to run its install script: install what
-	// is missing (or version-mismatched, which detect surfaces as MISSING), skip
-	// what is already present at the target version. No prompting.
-	run := make([]bool, len(comps))
-	for i := range comps {
-		run[i] = !present[i]
-	}
-
-	// Build the ordered, de-duplicated task set, carrying each script's required
-	// flag (a script is required if ANY component mapping to it is required).
-	type installTask struct {
-		script   string
-		required bool
-	}
-	var tasks []installTask
-	idxOf := map[string]int{}
+	// (3) Install missing / version-mismatched components.
+	var todo []component
 	for i, comp := range comps {
-		if !run[i] {
-			continue
+		if !present[i] {
+			todo = append(todo, comp)
 		}
-		if j, ok := idxOf[comp.script]; ok {
-			tasks[j].required = tasks[j].required || comp.required
-			continue
-		}
-		idxOf[comp.script] = len(tasks)
-		tasks = append(tasks, installTask{script: comp.script, required: comp.required})
 	}
-	if len(tasks) == 0 {
+	if len(todo) == 0 {
 		infof("nothing to install; all P0.1 components already present")
 	} else {
-		stepf("P0.1 bring-up: installing %d script(s) from %s", len(tasks), *dir)
-		scriptEnv := versionEnv(cfg)
-		for _, t := range tasks {
-			if err := runInstallScript(ctx, *dir, t.script, scriptEnv); err != nil {
-				if t.required {
-					return err
+		stepf("P0.1 bring-up: installing %d component(s)", len(todo))
+		for _, comp := range todo {
+			if err := comp.install(ctx, c, cfg); err != nil {
+				if comp.required {
+					return fmt.Errorf("%s: %w", comp.id, err)
 				}
-				// Optional component (observability niceties): don't let it block
-				// the critical NVSentinel path — warn and continue.
-				warnf("optional component %s failed to install: %v — continuing", t.script, err)
+				warnf("optional component %s failed to install: %v — continuing", comp.id, err)
 			}
 		}
 	}
 
-	// (5) Verify reachability + node inventory.
+	// (4) Verify node inventory.
 	stepf("P0.1 bring-up: verifying nodes")
 	real, kwok, err := c.nodeInventory(ctx)
 	if err != nil {
@@ -346,17 +287,6 @@ func (c *clients) nodeInventory(ctx context.Context) (real, kwok int, err error)
 		}
 	}
 	return real, kwok, nil
-}
-
-// defaultInstallDir points at the sibling phase0/ dir whether harnessctl is run
-// from the harness root or from within harnessctl/.
-func defaultInstallDir() string {
-	for _, cand := range []string{"phase0", "../phase0"} {
-		if fi, err := os.Stat(cand); err == nil && fi.IsDir() {
-			return cand
-		}
-	}
-	return "phase0"
 }
 
 func runScaleNodes(ctx context.Context, args []string) error {

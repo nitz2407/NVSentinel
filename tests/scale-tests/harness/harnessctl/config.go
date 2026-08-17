@@ -11,6 +11,7 @@ import (
 	"flag"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config is the fully-resolved harness configuration. Every value is set from a
@@ -34,24 +35,35 @@ type Config struct {
 	// NVSChartVersion is the TARGET NVSentinel version for version-aware bringup:
 	// the container image tag (e.g. v1.16.0). When set, `bringup` compares it
 	// against the running NVSentinel and helm-upgrades on mismatch; empty leaves
-	// whatever is installed untouched. Sourced from NVS_CHART_VERSION so the Go
-	// CLI and 30-install-nvsentinel.sh share one target.
+	// whatever is installed untouched. When bringup must install a missing
+	// release, an empty flag falls back to the baked-in default (v1.16.0).
 	NVSChartVersion string
+	// NVSChart is the Helm chart reference (OCI or repo/chart).
+	NVSChart string
+
+	// NVSentinelValuesFiles are optional Helm values YAML paths
+	// (--nvsentinel-values), merged on top of the embedded
+	// nvsentinel/values-harness.yaml (Helm-style overlay).
+	NVSentinelValuesFiles []string
+
+	// MonitoringValuesFiles are the same idea for the kube-prometheus-stack
+	// release (--monitoring-values). Separate from NVSentinelValuesFiles because
+	// the two charts share no values schema.
+	MonitoringValuesFiles []string
 
 	// KWOKVersion, CertManagerVersion and MetricsServerVersion are TARGET versions
 	// for version-aware bringup of the supporting components. Like NVSChartVersion
 	// they are compared against the running container image tag: when set and the
 	// installed tag differs, `bringup` reports the component MISSING and re-runs
-	// its install script (passing the target down via KWOK_VERSION /
-	// CERT_MANAGER_VERSION / METRICS_SERVER_VERSION). Empty leaves whatever is
-	// installed untouched and lets the install script use its own default.
+	// its Go installer. Empty leaves whatever is installed untouched; when an
+	// install is required, baked-in defaults matching config/harness.env are used.
 	//
-	// NOTE: kube-prometheus-stack is intentionally NOT version-gated here — its
-	// knob (KPS_CHART_VERSION) is a Helm CHART version, not the operator image
-	// tag, so an image-tag comparison would be meaningless.
+	// NOTE: kube-prometheus-stack is intentionally NOT image-tag gated — its
+	// knob (KPSChartVersion) is a Helm CHART version, not the operator image tag.
 	KWOKVersion          string
 	CertManagerVersion   string
 	MetricsServerVersion string
+	KPSChartVersion      string
 
 	// NodeCount is the KWOK scale target. It has NO config-file default: pass it
 	// per run on the CLI (`scale-nodes -count` or `connector-pool -emulated-nodes`).
@@ -128,16 +140,17 @@ type Config struct {
 	JobCompleteDelay int
 	ActionTimeout    int
 
-	// HarnessBin, when set, is the local linux/amd64 harnessctl binary staged into
-	// the resident injectors for the image-free path (default: the running binary).
-	HarnessBin string
+	// InjectorImage is the multi-arch slim harness-inject image for resident
+	// injectors (default ghcr.io/nvidia/nvsentinel/harness-inject:latest).
+	// Nodes pull the matching linux/amd64 or linux/arm64 variant automatically.
+	InjectorImage string
 
 	// P0.5 platform-connector pool simulation. In production the connector is a
 	// per-node DaemonSet; KWOK nodes have no kubelet, so the harness emulates the
 	// connector plane by packing many *real* connector pods (cloned from the live
 	// DaemonSet) onto real nodes, then covering the emulated remainder with a
 	// per-connector event-rate multiplier.
-	ConnectorDaemonSet        string // DaemonSet whose pod template the pool clones
+	ConnectorDaemonSet        string // read-only template DS (never deleted/scaled); default platform-connectors
 	ConnectorPoolPerNodeLimit int    // connector pods/node density cap; count auto-sizes to min(emulated, realNodes*this)
 
 	ResultsDir string
@@ -153,9 +166,11 @@ func defaultConfig() Config {
 		CertManagerNamespace: "cert-manager",
 		KWOKNamespace:        "kube-system",
 		NVSChartVersion:      "",
+		NVSChart:             "oci://ghcr.io/nvidia/nvsentinel",
 		KWOKVersion:          "",
 		CertManagerVersion:   "",
 		MetricsServerVersion: "",
+		KPSChartVersion:      "",
 		ReportWindow:         "3h",
 
 		NodeCount:   0,
@@ -210,7 +225,7 @@ func defaultConfig() Config {
 		JobCompleteDelay: 30,
 		ActionTimeout:    300,
 
-		HarnessBin: "",
+		InjectorImage: defaultInjectorImage,
 
 		ConnectorDaemonSet:        "platform-connectors",
 		ConnectorPoolPerNodeLimit: 50,
@@ -295,19 +310,51 @@ func bindNodeGuardrailFlags(fs *flag.FlagSet, c *Config) {
 	fs.Float64Var(&c.MaxClusterMemPct, "max-cluster-mem-pct", c.MaxClusterMemPct, "real-node memory utilization guardrail (fraction)")
 }
 
-// bindInjectorFlags registers the flags for commands that stage this binary into
-// resident injector pods (events inject/reconcile/coldstart).
+// bindInjectorFlags registers the slim multi-arch harness-inject image used by
+// pool create and events inject/reconcile/coldstart.
 func bindInjectorFlags(fs *flag.FlagSet, c *Config) {
-	fs.StringVar(&c.HarnessBin, "harness-bin", c.HarnessBin, "local linux/amd64 harnessctl staged into injectors (default: running binary)")
+	fs.StringVar(&c.InjectorImage, "injector-image", c.InjectorImage, "multi-arch harness-inject image for resident injectors (node pulls matching arch)")
+}
+
+// injectorBinPath is where inject/reconcile exec the slim binary inside the injector pod.
+func (c Config) injectorBinPath() string {
+	return binInImage
+}
+
+// injectorPodImage is the container image for the injector DaemonSet.
+func (c Config) injectorPodImage() string {
+	if img := strings.TrimSpace(c.InjectorImage); img != "" {
+		return img
+	}
+	return defaultInjectorImage
 }
 
 // bindVersionFlags registers the version-aware bringup targets (bringup only):
-// empty = leave installed / use install-script default.
+// empty = leave installed; when an install is required, baked-in defaults apply.
 func bindVersionFlags(fs *flag.FlagSet, c *Config) {
-	fs.StringVar(&c.NVSChartVersion, "nvs-chart-version", c.NVSChartVersion, "target NVSentinel version for version-aware bringup (empty = leave installed)")
-	fs.StringVar(&c.KWOKVersion, "kwok-version", c.KWOKVersion, "target KWOK version for version-aware bringup (empty = leave installed)")
-	fs.StringVar(&c.CertManagerVersion, "cert-manager-version", c.CertManagerVersion, "target cert-manager version for version-aware bringup (empty = leave installed)")
-	fs.StringVar(&c.MetricsServerVersion, "metrics-server-version", c.MetricsServerVersion, "target metrics-server version for version-aware bringup (empty = leave installed)")
+	fs.StringVar(&c.NVSChart, "nvs-chart", c.NVSChart, "NVSentinel Helm chart reference (OCI or repo/chart)")
+	fs.StringVar(&c.NVSChartVersion, "nvs-chart-version", c.NVSChartVersion, "target NVSentinel version for version-aware bringup (empty = leave installed; install fallback v1.16.0)")
+	fs.StringVar(&c.KWOKVersion, "kwok-version", c.KWOKVersion, "target KWOK version for version-aware bringup (empty = leave installed; install fallback v0.6.1)")
+	fs.StringVar(&c.CertManagerVersion, "cert-manager-version", c.CertManagerVersion, "target cert-manager version for version-aware bringup (empty = leave installed; install fallback v1.16.2)")
+	fs.StringVar(&c.MetricsServerVersion, "metrics-server-version", c.MetricsServerVersion, "target metrics-server version for version-aware bringup (empty = leave installed; install fallback v0.7.2)")
+	fs.StringVar(&c.KPSChartVersion, "kps-chart-version", c.KPSChartVersion, "kube-prometheus-stack Helm chart version when installing (empty = 65.5.0)")
+}
+
+// valuesFilesFlag accumulates repeated --nvsentinel-values / --monitoring-values paths.
+type valuesFilesFlag []string
+
+func (v *valuesFilesFlag) String() string { return strings.Join(*v, ",") }
+func (v *valuesFilesFlag) Set(s string) error {
+	*v = append(*v, s)
+	return nil
+}
+
+// bindValuesFilesFlag registers the two chart-specific values overlays used by
+// stack bringup. They are intentionally separate flags: nvsentinel and
+// kube-prometheus-stack are different Helm releases with different schemas.
+func bindValuesFilesFlag(fs *flag.FlagSet, c *Config) {
+	fs.Var((*valuesFilesFlag)(&c.NVSentinelValuesFiles), "nvsentinel-values", "NVSentinel Helm values YAML overlay on embedded defaults (repeatable)")
+	fs.Var((*valuesFilesFlag)(&c.MonitoringValuesFiles), "monitoring-values", "kube-prometheus-stack Helm values YAML overlay on embedded defaults (repeatable)")
 }
 
 // bindNodeShapeFlags registers KWOK node-shaping flags. Commands that create or

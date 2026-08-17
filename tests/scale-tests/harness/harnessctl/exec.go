@@ -5,69 +5,92 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
 
+
+//go:build !injector
+
 package main
 
-// Image-free in-cluster execution. Everything the harness needs to run inside
-// the cluster (stage the binary, inject, reconcile) is driven by exec-ing the
-// resident injector DaemonSet pods (stock alpine) and running the LOCALLY BUILT
-// harnessctl binary staged onto the node hostPath. This replaces the manual
-// `kubectl cp` / `kubectl exec` / port-forward steps and the harnessctl image:
-// the operator runs one command per phase and the harness reaches into the
-// cluster itself. It shells out to kubectl (already required by the install
-// scripts and always present operator-side) honoring the configured context, so
-// no extra client-go transport dependencies are pulled in.
+// In-cluster execution via the Kubernetes API (client-go remotecommand) — no
+// kubectl CLI. Resident injectors run the slim multi-arch harness-inject image;
+// inject and reconcile exec the in-image binary at binInImage.
 
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
+	"net/url"
 	"strings"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/remotecommand"
 )
 
-// binOnNode is where the staged harnessctl binary lives on each connector node's
-// hostPath (mounted into the injector pod at /pool-sockets). It survives injector
-// pod restarts and is reused by every later inject/reconcile.
-const binOnNode = "/pool-sockets/bin/harnessctl"
+// podExec runs a command inside a pod via the API server exec subresource.
+func (c *clients) podExec(ctx context.Context, ns, pod string, stdin io.Reader, command ...string) (string, error) {
+	opts := &corev1.PodExecOptions{
+		Command: command,
+		Stdin:   stdin != nil,
+		Stdout:  true,
+		Stderr:  true,
+	}
+	req := c.kube.CoreV1().RESTClient().Post().
+		Resource("pods").
+		Name(pod).
+		Namespace(ns).
+		SubResource("exec").
+		VersionedParams(opts, scheme.ParameterCodec)
 
-// kubectl runs kubectl against the caller's current context and returns combined
-// output. The context is caller-managed; the harness never passes --context.
-func (c *clients) kubectl(ctx context.Context, stdin io.Reader, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
-	if stdin != nil {
-		cmd.Stdin = stdin
-	}
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	err := cmd.Run()
+	executor, err := newPodExecutor(c, req.URL().String())
 	if err != nil {
-		return out.String(), fmt.Errorf("kubectl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(out.String()))
+		return "", err
 	}
-	return out.String(), nil
+	var stdout, stderr bytes.Buffer
+	streamErr := executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdin:  stdin,
+		Stdout: &stdout,
+		Stderr: &stderr,
+	})
+	out := stdout.String() + stderr.String()
+	if streamErr != nil {
+		return out, fmt.Errorf("pod exec %s/%s %v: %w: %s", ns, pod, command, streamErr, strings.TrimSpace(out))
+	}
+	return out, nil
 }
 
-// execSh runs a /bin/sh -c script inside a pod (image-free node work).
+// newPodExecutor prefers WebSocket with SPDY fallback (same strategy as kubectl).
+func newPodExecutor(c *clients, rawURL string) (remotecommand.Executor, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	spdy, err := remotecommand.NewSPDYExecutor(c.rest, "POST", u)
+	if err != nil {
+		return nil, fmt.Errorf("spdy executor: %w", err)
+	}
+	ws, err := remotecommand.NewWebSocketExecutor(c.rest, "GET", rawURL)
+	if err != nil {
+		// Older clusters: SPDY only.
+		return spdy, nil
+	}
+	return remotecommand.NewFallbackExecutor(ws, spdy, func(error) bool { return true })
+}
+
+// execSh runs a /bin/sh -c script inside a pod.
 func (c *clients) execSh(ctx context.Context, ns, pod, script string) (string, error) {
-	return c.kubectl(ctx, nil, "-n", ns, "exec", pod, "--", "/bin/sh", "-c", script)
+	return c.podExec(ctx, ns, pod, nil, "/bin/sh", "-c", script)
 }
 
 // execShEnv runs a /bin/sh -c script inside a pod with extra env vars set.
 func (c *clients) execShEnv(ctx context.Context, ns, pod string, env map[string]string, script string) (string, error) {
-	args := []string{"-n", ns, "exec", pod, "--", "env"}
+	args := []string{"env"}
 	for k, v := range env {
 		args = append(args, k+"="+v)
 	}
 	args = append(args, "/bin/sh", "-c", script)
-	return c.kubectl(ctx, nil, args...)
+	return c.podExec(ctx, ns, pod, nil, args...)
 }
 
 // injectorPodsByNode maps each connector node to its resident injector pod (the
@@ -99,72 +122,4 @@ func podReady(p *corev1.Pod) bool {
 		}
 	}
 	return false
-}
-
-// localBinarySum returns the sha256 of the local binary path.
-func localBinarySum(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// stageBinaryToInjector copies the local harnessctl binary into one injector pod's
-// node hostPath (binOnNode), idempotently: it first checks the on-node sha256 and
-// skips the copy when already current. The copy goes to a .tmp path then does an
-// atomic chmod+mv so a torn binary is never left behind, and the staged sum is
-// re-verified to catch a truncated transfer.
-func (c *clients) stageBinaryToInjector(ctx context.Context, ns, pod, localBin, wantSum string, force bool) error {
-	if !force {
-		have, _ := c.execSh(ctx, ns, pod, "sha256sum "+binOnNode+" 2>/dev/null | awk '{print $1}'")
-		if strings.TrimSpace(have) == wantSum {
-			return nil
-		}
-	}
-	var lastErr error
-	for attempt := 1; attempt <= 4; attempt++ {
-		if _, err := c.execSh(ctx, ns, pod, "mkdir -p /pool-sockets/bin"); err != nil {
-			lastErr = err
-		} else if _, err := c.kubectl(ctx, nil, "-n", ns, "cp", localBin, pod+":"+binOnNode+".tmp"); err != nil {
-			lastErr = err
-		} else if _, err := c.execSh(ctx, ns, pod,
-			fmt.Sprintf("chmod +x %s.tmp && mv -f %s.tmp %s && test -x %s", binOnNode, binOnNode, binOnNode, binOnNode)); err != nil {
-			lastErr = err
-		} else {
-			got, _ := c.execSh(ctx, ns, pod, "sha256sum "+binOnNode+" 2>/dev/null | awk '{print $1}'")
-			if strings.TrimSpace(got) == wantSum {
-				return nil
-			}
-			lastErr = fmt.Errorf("staged sum mismatch on %s (got %q want %q)", pod, strings.TrimSpace(got), wantSum)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(attempt*5) * time.Second):
-		}
-	}
-	return fmt.Errorf("stage binary to %s failed after retries: %w", pod, lastErr)
-}
-
-// resolveLocalBinary finds the linux/amd64 harnessctl binary to stage into the
-// injectors. Preference: explicit override, else the running executable (the
-// operator builds harnessctl for linux/amd64, which the alpine injector can run).
-func resolveLocalBinary(override string) (string, error) {
-	if override != "" {
-		if _, err := os.Stat(override); err != nil {
-			return "", fmt.Errorf("harness binary %q: %w", override, err)
-		}
-		return override, nil
-	}
-	self, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("locate self binary: %w", err)
-	}
-	return self, nil
 }

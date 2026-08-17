@@ -5,25 +5,34 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
 
+
+//go:build !injector
+
 package main
 
 // Cold-start replay orchestration. Seed MongoDB with a large haystack of
 // documents (a configurable mix of remediation-ready "needles" and STORE_ONLY
-// "noise"), then cold-start a consumer (node-drainer / fault-remediation /
-// fault-quarantine) and measure how long its initial pre-change-stream scan/
-// replay takes to reach Ready — the metric that exposes replay/scan cost at
-// datastore scale. Seeding reuses the direct-Mongo injector (`inject
-// -mechanism mongo -coldstart-ratio`), so no separate seeding path exists.
+// "noise"), CountDocuments to verify the seed actually landed, then cold-start a
+// consumer (node-drainer / fault-remediation / fault-quarantine) and measure how
+// long its initial pre-change-stream scan/replay takes to reach Ready — the
+// metric that exposes replay/scan cost at datastore scale. Seeding reuses the
+// direct-Mongo injector (`inject -mechanism mongo -coldstart-ratio`), so no
+// separate seeding path exists.
 
 import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"regexp"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 type coldStartResult struct {
@@ -31,6 +40,7 @@ type coldStartResult struct {
 	Kind        string  `json:"kind"`
 	RunID       string  `json:"run_id"`
 	Seeded      int     `json:"seeded"`
+	Stored      int     `json:"stored"` // MongoDB CountDocuments for the run label (verified after seed)
 	Needles     int     `json:"needles"`
 	Noise       int     `json:"noise"`
 	ReadyDurSec float64 `json:"ready_duration_seconds"`
@@ -75,13 +85,16 @@ func runColdStart(ctx context.Context, args []string) error {
 
 	nodeCount := *nodes
 	if nodeCount <= 0 {
-		nodeCount = c.countKwokNodes(ctx)
+		nodeCount = c.countKwokNodesOrZero(ctx)
 	}
 	if nodeCount <= 0 {
 		nodeCount = 1
 	}
 
-	// 1) Seed the haystack via the direct-Mongo injector (one resident injector).
+	// 1) Seed the haystack via the direct-Mongo injector (one resident injector),
+	// then CountDocuments in MongoDB for the run label so "seeded" is not just
+	// InsertMany acks.
+	stored := 0
 	if !*skipSeed {
 		if err := c.injectMongoAcrossPool(ctx, cfg, mongoDistOptions{
 			total: *count, workers: *workers, batch: *batch,
@@ -89,17 +102,29 @@ func runColdStart(ctx context.Context, args []string) error {
 		}); err != nil {
 			return fmt.Errorf("seed: %w", err)
 		}
+		var verr error
+		stored, verr = c.verifyColdStartSeed(ctx, cfg, *runID, *count)
+		if verr != nil {
+			return fmt.Errorf("verify seed: %w", verr)
+		}
 	} else {
 		infof("cold-start: -skip-seed set; using docs already present in MongoDB")
 	}
 	if *seedOnly {
-		infof("cold-start: -seed-only set; haystack seeded, not restarting %s/%s", *kind, *component)
+		infof("cold-start: -seed-only set; haystack seeded+verified stored=%d/%d, not restarting %s/%s",
+			stored, *count, *kind, *component)
+		writeArtifact(cfg.ResultsDir, "coldstart-"+*component+".json", coldStartResult{
+			Component: *component, Kind: *kind, RunID: *runID,
+			Seeded: *count, Stored: stored, Needles: needles, Noise: *count - needles,
+			Verdict: "PASS", Message: fmt.Sprintf("seed-only: verified MongoDB stored=%d/%d", stored, *count),
+			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		})
 		return nil
 	}
 
 	// 2) Cold-start the target and time its initial scan.
 	res := coldStartResult{Component: *component, Kind: *kind, RunID: *runID,
-		Seeded: *count, Needles: needles, Noise: *count - needles,
+		Seeded: *count, Stored: stored, Needles: needles, Noise: *count - needles,
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339)}
 
 	t0, err := c.rolloutRestart(ctx, cfg.NVSNamespace, *kind, *component)
@@ -132,7 +157,8 @@ func runColdStart(ctx context.Context, args []string) error {
 
 	if ok {
 		res.Verdict = "PASS"
-		res.Message = fmt.Sprintf("cold-started in %.1fs (scan over %d docs, %d needles)", res.ReadyDurSec, res.Seeded, res.Needles)
+		res.Message = fmt.Sprintf("cold-started in %.1fs (scan over %d docs stored=%d, %d needles)",
+			res.ReadyDurSec, res.Seeded, res.Stored, res.Needles)
 	} else {
 		res.Verdict = "FAIL"
 		res.Message = fmt.Sprintf("did not become Ready within %s — initial scan/replay may be stuck at this seed size", *restartTO)
@@ -146,9 +172,33 @@ func runColdStart(ctx context.Context, args []string) error {
 	return nil
 }
 
+// verifyColdStartSeed CountDocuments in MongoDB for the seed run label (via one
+// resident injector) and fails unless stored == expect. This is the automatic
+// check that InsertMany acks actually landed in the datastore.
+func (c *clients) verifyColdStartSeed(ctx context.Context, cfg Config, runID string, expect int) (int, error) {
+	stepf("cold-start: verify seeded docs in MongoDB (run-id=%s expect=%d)", runID, expect)
+	geo, err := c.resolvePoolGeometry(ctx, cfg)
+	if err != nil {
+		return 0, err
+	}
+	conn, err := c.deriveMongoConn(ctx, cfg)
+	if err != nil {
+		return 0, err
+	}
+	rep, err := c.reconcileByCountPool(ctx, cfg, geo, conn, runID, expect)
+	if err != nil {
+		return 0, err
+	}
+	if rep.StoredForRun != expect {
+		return rep.StoredForRun, fmt.Errorf("mongo stored_for_run=%d want=%d", rep.StoredForRun, expect)
+	}
+	infof("cold-start: verified MongoDB stored=%d/%d for run %s", rep.StoredForRun, expect, runID)
+	return rep.StoredForRun, nil
+}
+
 func printColdStartSummary(r coldStartResult) {
 	stepf("cold-start summary: %s (%s)", r.Component, r.Verdict)
-	infof("  seeded=%d needles=%d noise=%d", r.Seeded, r.Needles, r.Noise)
+	infof("  seeded=%d stored=%d needles=%d noise=%d", r.Seeded, r.Stored, r.Needles, r.Noise)
 	infof("  ready=%v in %.1fs", r.Ready, r.ReadyDurSec)
 	if r.LogMatched || r.LogMatchSec > 0 {
 		infof("  ready-log matched=%v in %.1fs", r.LogMatched, r.LogMatchSec)
@@ -160,8 +210,20 @@ func printColdStartSummary(r coldStartResult) {
 // thing `kubectl rollout restart` does) and returns the restart instant.
 func (c *clients) rolloutRestart(ctx context.Context, ns, kind, name string) (time.Time, error) {
 	t0 := time.Now()
-	_, err := c.kubectl(ctx, nil, "-n", ns, "rollout", "restart", kind+"/"+name)
-	return t0, err
+	patch := fmt.Sprintf(
+		`{"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":%q}}}}}`,
+		t0.UTC().Format(time.RFC3339),
+	)
+	var err error
+	if isStatefulKind(kind) {
+		_, err = c.kube.AppsV1().StatefulSets(ns).Patch(ctx, name, types.StrategicMergePatchType, []byte(patch), metav1.PatchOptions{})
+	} else {
+		_, err = c.kube.AppsV1().Deployments(ns).Patch(ctx, name, types.StrategicMergePatchType, []byte(patch), metav1.PatchOptions{})
+	}
+	if err != nil {
+		return t0, fmt.Errorf("rollout restart %s/%s: %w", kind, name, err)
+	}
+	return t0, nil
 }
 
 // waitRolloutComplete polls until the workload's updated generation is fully
@@ -219,9 +281,8 @@ func statefulRolled(s *appsv1.StatefulSet) bool {
 // marker regex, returning how long it took and whether it matched.
 func (c *clients) waitPodLogRegex(ctx context.Context, ns, kind, name string, re *regexp.Regexp, since time.Time, timeout time.Duration) (time.Duration, bool) {
 	deadline := time.Now().Add(timeout)
-	sinceArg := "--since-time=" + since.UTC().Format(time.RFC3339)
 	for {
-		out, _ := c.kubectl(ctx, nil, "-n", ns, "logs", kind+"/"+name, sinceArg, "--tail=-1")
+		out, _ := c.workloadLogs(ctx, ns, kind, name, since)
 		if re.MatchString(out) {
 			return time.Since(since), true
 		}
@@ -234,6 +295,47 @@ func (c *clients) waitPodLogRegex(ctx context.Context, ns, kind, name string, re
 		case <-time.After(5 * time.Second):
 		}
 	}
+}
+
+// workloadLogs concatenates logs from pods owned by a Deployment or StatefulSet
+// (equivalent to `kubectl logs deploy/name --since-time=…`).
+func (c *clients) workloadLogs(ctx context.Context, ns, kind, name string, since time.Time) (string, error) {
+	sel, err := c.workloadSelector(ctx, ns, kind, name)
+	if err != nil {
+		return "", err
+	}
+	pods, err := c.kube.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: sel})
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	opts := &corev1.PodLogOptions{SinceTime: &metav1.Time{Time: since}}
+	for i := range pods.Items {
+		req := c.kube.CoreV1().Pods(ns).GetLogs(pods.Items[i].Name, opts)
+		stream, err := req.Stream(ctx)
+		if err != nil {
+			continue
+		}
+		data, _ := io.ReadAll(stream)
+		stream.Close()
+		b.Write(data)
+	}
+	return b.String(), nil
+}
+
+func (c *clients) workloadSelector(ctx context.Context, ns, kind, name string) (string, error) {
+	if isStatefulKind(kind) {
+		s, err := c.kube.AppsV1().StatefulSets(ns).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return "", err
+		}
+		return labels.Set(s.Spec.Selector.MatchLabels).String(), nil
+	}
+	d, err := c.kube.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	return labels.Set(d.Spec.Selector.MatchLabels).String(), nil
 }
 
 func isStatefulKind(kind string) bool {

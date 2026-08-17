@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
 
+
+//go:build !injector
+
 package main
 
 import (
@@ -43,8 +46,8 @@ type clients struct {
 // newClients builds a REST config from in-cluster config (when staged onto an
 // in-cluster injector pod) or the caller's current kubeconfig context. Selecting
 // the right context is the operator's responsibility — the harness never
-// overrides it, so the typed clients and the kubectl shell-outs (image-free
-// exec/cp) always target the same cluster the caller has selected.
+// overrides it, so the typed clients always target the same cluster the caller
+// has selected.
 func newClients(cfg Config) (*clients, error) {
 	var restCfg *rest.Config
 	var err error
@@ -298,12 +301,41 @@ func (c *clients) createOneNode(ctx context.Context, cfg Config, idx int) error 
 	return nil
 }
 
-func (c *clients) countKwokNodes(ctx context.Context) int {
-	list, err := c.kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: kwokNodeLabel})
+// kwokListPageSize keeps each node LIST response small. Fetching a 5k-node fleet
+// in one call is a multi-megabyte compressed body, and that is precisely the
+// payload a proxied API server intermittently corrupts (see
+// isRetryableTeardownErr).
+const kwokListPageSize = 500
+
+// countKwokNodes counts simulated nodes, paging through the fleet. It reports
+// list failures rather than hiding them, because a caller that reads a failed
+// LIST as "zero nodes" draws the opposite conclusion from the truth.
+func (c *clients) countKwokNodes(ctx context.Context) (int, error) {
+	total := 0
+	opts := metav1.ListOptions{LabelSelector: kwokNodeLabel, Limit: kwokListPageSize}
+	for {
+		list, err := c.kube.CoreV1().Nodes().List(ctx, opts)
+		if err != nil {
+			return 0, err
+		}
+		total += len(list.Items)
+		if list.Continue == "" {
+			return total, nil
+		}
+		opts.Continue = list.Continue
+	}
+}
+
+// countKwokNodesOrZero is countKwokNodes for callers that only need a sizing
+// hint and already handle a zero count (by falling back to a default or telling
+// the operator to run `nodes scale` first).
+func (c *clients) countKwokNodesOrZero(ctx context.Context) int {
+	n, err := c.countKwokNodes(ctx)
 	if err != nil {
+		warnf("count kwok nodes: %v", err)
 		return 0
 	}
-	return len(list.Items)
+	return n
 }
 
 // waitNodesReady uses a label-scoped node informer (single LIST + WATCH) and
@@ -399,11 +431,92 @@ func countReady(lister interface {
 	return ready
 }
 
-func (c *clients) teardownNodes(ctx context.Context) error {
-	return c.kube.CoreV1().Nodes().DeleteCollection(ctx,
-		metav1.DeleteOptions{},
-		metav1.ListOptions{LabelSelector: kwokNodeLabel},
-	)
+const (
+	// kwokDeleteBatch is how many simulated nodes one teardown pass lists and
+	// removes. Bounding the batch is what keeps every request short: a single
+	// DeleteCollection over a whole fleet runs for minutes server-side, long
+	// enough for an intermediate proxy to abandon it and answer with its own
+	// error body (see isRetryableTeardownErr).
+	kwokDeleteBatch = 500
+	// kwokDeleteConcurrency bounds in-flight DELETEs. Each one is a small,
+	// sub-second request, so the fleet still drains quickly without handing the
+	// API server a single unbounded unit of work.
+	kwokDeleteConcurrency = 50
+)
+
+// nodeDeleteBackoff retries one node DELETE through transient throttling. A
+// teardown storm trips APF the same way a create storm does, and a dropped
+// delete would leave the node behind for the next run to trip over.
+var nodeDeleteBackoff = wait.Backoff{
+	Duration: 200 * time.Millisecond,
+	Factor:   2.0,
+	Jitter:   0.2,
+	Steps:    5,
+	Cap:      5 * time.Second,
+}
+
+// listKwokNodeNamesBatch returns at most `limit` simulated node names. Teardown
+// re-lists from the start on every pass rather than following a continue token:
+// nodes are disappearing underneath the walk, which is exactly what expires such
+// a token (410 Gone).
+func (c *clients) listKwokNodeNamesBatch(ctx context.Context, limit int64) ([]string, error) {
+	list, err := c.kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{
+		LabelSelector: kwokNodeLabel,
+		Limit:         limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(list.Items))
+	for i := range list.Items {
+		names = append(names, list.Items[i].Name)
+	}
+	return names, nil
+}
+
+// deleteNodes removes the named nodes with bounded concurrency, returning
+// (deleted, failed). A node that is already gone counts as deleted: teardown only
+// cares that it is absent.
+func (c *clients) deleteNodes(ctx context.Context, names []string, conc int) (int64, int64) {
+	if conc < 1 {
+		conc = kwokDeleteConcurrency
+	}
+	sem := make(chan struct{}, conc)
+	var wg sync.WaitGroup
+	var deleted, failed int64
+
+	for _, n := range names {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return deleted, failed
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := c.deleteOneNode(ctx, name); err != nil {
+				if n := atomic.AddInt64(&failed, 1); n <= 10 {
+					warnf("delete node %s: %v", name, err)
+				}
+				return
+			}
+			atomic.AddInt64(&deleted, 1)
+		}(n)
+	}
+	wg.Wait()
+	return deleted, failed
+}
+
+func (c *clients) deleteOneNode(ctx context.Context, name string) error {
+	err := retry.OnError(nodeDeleteBackoff, isRetryableTeardownErr, func() error {
+		return c.kube.CoreV1().Nodes().Delete(ctx, name, metav1.DeleteOptions{})
+	})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 // simulateReboot flips a node NotReady, waits, then Ready with a fresh bootID —
@@ -474,9 +587,17 @@ type mongoConn struct {
 //
 // HARNESS_MONGO_URI, when set, is used verbatim (TLS still auto-attaches if the
 // client secret is present, so a creds-less override URI works).
+//
+// Service name: Bitnami publishes mongodb-headless; Percona publishes mongodb-rs0
+// (values-tilt-mongodb-percona.yaml). When MongoService is still the Bitnami
+// default, prefer whichever Service actually exists in the namespace.
 func (c *clients) deriveMongoConn(ctx context.Context, cfg Config) (mongoConn, error) {
 	var mc mongoConn
-	fqdn := fmt.Sprintf("%s.%s.svc.cluster.local", cfg.MongoService, cfg.NVSNamespace)
+	svc := cfg.MongoService
+	if svc == "" || svc == "mongodb-headless" {
+		svc = c.resolveMongoService(ctx, cfg.NVSNamespace, svc)
+	}
+	fqdn := fmt.Sprintf("%s.%s.svc.cluster.local", svc, cfg.NVSNamespace)
 	rsParam := ""
 	if cfg.MongoReplicaSet != "" {
 		rsParam = "&replicaSet=" + cfg.MongoReplicaSet
@@ -508,6 +629,25 @@ func (c *clients) deriveMongoConn(ctx context.Context, cfg Config) (mongoConn, e
 	}
 	mc.uri = fmt.Sprintf("mongodb://root:%s@%s:%s/?authSource=admin%s", pw, fqdn, cfg.MongoPort, rsParam)
 	return mc, nil
+}
+
+// resolveMongoService picks the live MongoDB Service for Bitnami vs Percona.
+func (c *clients) resolveMongoService(ctx context.Context, ns, preferred string) string {
+	for _, name := range []string{preferred, "mongodb-rs0", "mongodb-headless"} {
+		if name == "" {
+			continue
+		}
+		if _, err := c.kube.CoreV1().Services(ns).Get(ctx, name, metav1.GetOptions{}); err == nil {
+			if name != preferred && preferred != "" {
+				infof("mongo service: using %s (preferred %s not found)", name, preferred)
+			}
+			return name
+		}
+	}
+	if preferred != "" {
+		return preferred
+	}
+	return "mongodb-headless"
 }
 
 // mongoRootPassword reads a root password from the datastore secret for non-TLS

@@ -1,0 +1,225 @@
+# NVSentinel Helm values for the KWOK-scale harness (Phase 0 baseline).
+#
+# Differences from the production defaults that matter at KWOK scale:
+#   - platform-connector DaemonSet is pinned OFF fake KWOK nodes via node
+#     affinity (type != kwok). On 50k fake nodes we do NOT want 50k connector
+#     pods that can never actually run; injection ingresses through the
+#     connectors on the ~10 REAL nodes and is attributed to KWOK node names.
+#   - janitor enabled so the reboot / GPU-reset action path (P0.4) exists.
+#   - MongoDB metrics + ServiceMonitor enabled with the release=prometheus label
+#     so kube-prometheus-stack discovers them (O1).
+#
+# Reference this with `helm upgrade --install ... -f values-harness.yaml`.
+
+global:
+  dryRun: false
+  metricsPort: 2112
+
+  # Do NOT tolerate the fake-node taint here; affinity below is the hard guard.
+  tolerations: []
+  nodeSelector: {}
+  # Central singletons (fault-quarantine, node-drainer, fault-remediation,
+  # health-events-analyzer, janitor, labeler, …) tolerate all taints so they can
+  # run on real GPU nodes — which means they would ALSO schedule onto fake KWOK
+  # nodes, where KWOK fakes them Ready while they do nothing. Components honor
+  # `global.affinity` (`.Values.global.affinity | default .Values.affinity`), so
+  # pin every component off KWOK nodes here. (`NotIn [kwok]` still matches real
+  # nodes that have no `type` label.)
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: type
+                operator: NotIn
+                values: ["kwok"]
+
+  gpuHealthMonitor:
+    enabled: false        # no real GPUs; fatal events are injected instead
+  healthEventsAnalyzer:
+    enabled: true
+  faultQuarantine:
+    enabled: true
+  nodeDrainer:
+    enabled: true
+  faultRemediation:
+    enabled: true
+  janitor:
+    enabled: true         # required for P0.4 action path
+  janitorProvider:
+    enabled: true         # RebootNode delegates to janitor-provider; required for the P0.4 reboot Job
+  cspHealthMonitor:
+    enabled: false
+  syslogHealthMonitor:
+    enabled: false
+  labeler:
+    enabled: true
+  metadataCollector:
+    enabled: false
+  inclusterFileServer:
+    enabled: false
+  mongodbStore:
+    enabled: true
+
+podMonitor:
+  enabled: true
+  interval: 15s
+
+platformConnector:
+  image:
+    repository: ghcr.io/nvidia/nvsentinel/platform-connectors
+    pullPolicy: IfNotPresent
+    tag: ""
+  resources:
+    limits:
+      cpu: "1"
+      memory: 1Gi
+    requests:
+      cpu: 200m
+      memory: 512Mi
+  k8sConnector:
+    enabled: true
+    qps: 5.0
+    burst: 10
+  mongodbStore:
+    enabled: true
+  nodeMetadata:
+    enabled: false
+  # Keep connectors off fake nodes: they must run on real kubelets only.
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: type
+                operator: NotIn
+                values: ["kwok"]
+
+# Scale resource overrides. NVSentinel component defaults are sized for real
+# fleets; at tens of thousands of KWOK nodes several controllers cache the whole
+# node/pod population and OOM at the stock limits. These ceilings were raised as
+# each was observed OOMKilled during the 40k/50k/100k runs (see findings/). Lower
+# them for small runs if the cluster is memory-constrained.
+#
+# node-drainer caches Pods cluster-wide; the heaviest memory user under a drain storm.
+node-drainer:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 12Gi
+  # Drive drains with the built-in node-drainer only. nvcf-drainer (the custom
+  # drain integration) is disabled so RebootNode/GPUReset flow straight through the
+  # node-drainer -> janitor path on the harness cluster (no NVCF backend here).
+  customDrain:
+    enabled: false
+
+# labeler lists+watches every node; its cache dominates memory at fleet scale.
+labeler:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 4Gi
+    limits:
+      cpu: "2"
+      memory: 16Gi
+
+# fault-remediation holds the remediation queue; OOM'd at the stock limit at 20k+.
+fault-remediation:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 6Gi
+
+# fault-quarantine caches nodes for the circuit breaker; OOM'd during cordon storms.
+fault-quarantine:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 6Gi
+
+# kubernetes-object-monitor mirrors cluster objects; cache is large at fleet scale.
+kubernetes-object-monitor:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 8Gi
+
+janitor:
+  ttl:
+    # Keep completed CRs within the validating-webhook LIST budget (H4). Short
+    # for the harness; production sizing is a separate decision.
+    defaultTTL: "24h"
+  config:
+    controllers:
+      rebootNode:
+        # KWOK cycles the node quickly; no real CSP cooldown to wait out.
+        timeout: "5m"
+      gpuReset:
+        timeout: "5m"
+        # After the reset Job succeeds, the gpu-reset controller normally tears
+        # down and then RESTORES the node's gpu-operator "managed services"
+        # (device-plugin, dcgm, …) and blocks on those pods becoming Ready
+        # (RestoreTimeout 10m in the built-in "gpu-operator" registry). On a fake
+        # KWOK node there is no gpu-operator, so restore can never succeed and the
+        # GPUReset CR would hang in InProgress until it fails. An empty
+        # serviceManager name selects the no-op manager (gpuservices.NewManager
+        # returns Manager{Name:""}), so the controller skips teardown/restore
+        # (ServicesRestored=Skipped) and the CR reaches Succeeded once the reset
+        # Job completes — which is exactly what P0.4 asserts.
+        serviceManager:
+          name: ""
+
+# P0.4 reboot path. The harness runs entirely on simulated KWOK nodes (no real
+# CSP, no kubelet), so use the built-in `kind` CSP provider — the janitor-provider
+# default. Its SendRebootSignal simulates the CSP round-trip (short sleep) and
+# IsNodeReady reports the node back within seconds, so the RebootNode CR completes
+# without any real node restart or privileged reboot Job. harnessctl still cycles
+# the target node's bootID (NotReady -> Ready) during P0.4, so the reboot is
+# observably reflected on the Node object even though the provider is simulated.
+janitor-provider:
+  csp:
+    provider: "kind"
+
+mongodb-store:
+  mongodb:
+    auth:
+      enabled: true
+      rootUser: root
+    architecture: replicaset
+    replicaCount: 3
+    replicaSetName: rs0
+    # Sized for the connector-pool write plane at high density. At ~1600+ mTLS
+    # connections a 1.5–2 core mongod loses its primary and the remediation
+    # pipeline crash-loops (findings/2026-07-30-mongodb-saturation-under-connector-pool.md);
+    # 6 cores / 12Gi carried ~3200 connectors through the 100k run without saturation.
+    resources:
+      requests:
+        memory: 12Gi
+        cpu: "6"
+      limits:
+        memory: 12Gi
+        cpu: "6"
+    persistence:
+      enabled: true
+      size: 40Gi
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+        interval: 15s
+        labels:
+          release: prometheus
+
+socketPath: "/var/run/nvsentinel.sock"

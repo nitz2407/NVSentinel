@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
 
+
+//go:build !injector
+
 package main
 
 import (
@@ -33,14 +36,10 @@ const (
 	poolSocketRoot         = "/var/run/nvs-harness-pool"
 	poolEmulatedAnnotation = "nvs-harness/emulated-nodes"
 
-	// Persistent per-node injector. A DaemonSet co-deployed with the pool keeps
-	// ONE injector pod sitting on every connector-hosting node, always ready to
-	// fire — so triggering injection is a plain `exec` with no per-run pod
-	// creation. It is pinned (via poolNodeLabel) to exactly the nodes the pool
-	// packed onto, and torn down together with the pool.
+	// Persistent per-node injector: slim multi-arch harness-inject image
+	// (node kubelet pulls linux/amd64 or linux/arm64 automatically).
 	poolInjectorDaemonSet = "nvs-harness-pool-injector"
 	poolInjectorLabel     = "nvs-harness/pool-injector"
-	poolInjectorImage     = "alpine:3.20"
 	// poolNodeLabel marks the real nodes hosting pool connectors, so the injector
 	// DaemonSet lands exactly there (one injector per connector node) instead of
 	// on every non-kwok node in a shared cluster.
@@ -116,7 +115,8 @@ func computePoolSizing(emulatedNodes, realNodes, perNodeLimit int) poolSizing {
 // runPoolCreate stages the connector pool (default P0.5 action).
 func runPoolCreate(ctx context.Context, args []string) error { return runConnectorPool(ctx, args) }
 
-// runPoolTeardown deletes the connector pool + resident injectors.
+// runPoolTeardown deletes the harness-owned connector pool + resident injectors
+// only (nvs-harness-*); never the live platform-connectors DaemonSet.
 func runPoolTeardown(ctx context.Context, args []string) error {
 	return runConnectorPool(ctx, append([]string{"-teardown"}, args...))
 }
@@ -137,15 +137,16 @@ func runConnectorPool(ctx context.Context, args []string) error {
 	bindNvsNamespaceFlag(fs, &cfg)
 	bindResultsFlag(fs, &cfg)
 	bindPromFlags(fs, &cfg)
-	fs.StringVar(&cfg.ConnectorDaemonSet, "connector-daemonset", cfg.ConnectorDaemonSet, "DaemonSet whose pod template the pool clones")
+	fs.StringVar(&cfg.ConnectorDaemonSet, "connector-daemonset", cfg.ConnectorDaemonSet, "read-only: DaemonSet whose pod template the pool clones (never deleted/scaled by harnessctl)")
 	bindMongoTLSSecretFlag(fs, &cfg)
+	bindInjectorFlags(fs, &cfg)
 	perNodeLimit := fs.Int("per-node-pod-limit", cfg.ConnectorPoolPerNodeLimit, "connector pods/node density cap; connector count = min(live KWOK nodes, realNodes*this)")
-	teardown := fs.Bool("teardown", false, "delete the connector pool + resident injectors and exit")
+	teardown := fs.Bool("teardown", false, "delete harness-owned pool (nvs-harness-*) + injectors only; never touches platform-connectors")
 	startupBurst := fs.Bool("startup-burst", false, "experiment: recreate the pool with -replicas connectors started simultaneously across -burst-steps client-go burst values; measure APF saturation at startup")
 	burstSteps := fs.String("burst-steps", "10,15,40", "startup-burst: comma-separated client-go burst values to sweep")
 	burstReplicas := fs.Int("replicas", 0, "startup-burst: fixed connector replica count (0 => current live pool size)")
-	connSweep := fs.Bool("connection-sweep", false, "experiment: scale the pool across -replica-steps and record MongoDB connections + mongod CPU/memory at each step")
-	replicaSteps := fs.String("replica-steps", "5,10,50,100,200", "connection-sweep: comma-separated replica counts to sweep")
+	connSweep := fs.Bool("connection-sweep", false, "experiment: create pool → scale across -replica-steps (Mongo conns/CPU/mem) → teardown")
+	replicaSteps := fs.String("replica-steps", "5,10,50,100,200", "connection-sweep: comma-separated replica counts to sweep (create starts at the first value)")
 	settle := fs.Int("settle-seconds", 30, "connection-sweep: seconds to wait for connections to stabilize before measuring each step")
 	window := fs.String("window", cfg.MetricsWindow, "PromQL rate window for sweep measurements")
 	_ = fs.Parse(args)
@@ -182,7 +183,7 @@ func runConnectorPool(ctx context.Context, args []string) error {
 
 	// The emulated fleet the pool must represent IS the live KWOK fleet — derive
 	// it instead of taking a flag, so it always matches what `scale-nodes` created.
-	emulated := c.countKwokNodes(ctx)
+	emulated := c.countKwokNodesOrZero(ctx)
 	if emulated <= 0 {
 		return fmt.Errorf("no live KWOK nodes found: run `scale-nodes -count N` first so the pool can size to the emulated fleet")
 	}
@@ -222,7 +223,8 @@ func (c *clients) schedulableRealNodes(ctx context.Context) (int, error) {
 }
 
 // buildConnectorPool clones the live platform-connectors DaemonSet pod template
-// into a StatefulSet packed onto real nodes. The socket-backing volume becomes a
+// (Get only — the template DaemonSet is never modified or deleted) into a
+// StatefulSet packed onto real nodes. The socket-backing volume becomes a
 // node hostPath rooted at poolSocketRoot, mounted per-pod via
 // subPathExpr=$(POD_NAME) (kubelet expands it — no shell needed, works with the
 // distroless connector) so packed connectors on one node land in private subdirs
@@ -366,10 +368,30 @@ func setPerPodSocketSubPath(podSpec *corev1.PodSpec, socketVol string) {
 }
 
 // applyConnectorPool (re)creates the pool StatefulSet + headless Service.
+//
+// A startup-burst writes the override ConfigMap (poolConfigConfigMap) immediately
+// before calling this, and retargets the STS volume at it. Teardown used to delete
+// that ConfigMap, so the recreated pods stuck in Init with
+// "configmap nvs-harness-connector-pool-config not found". Preserve any existing
+// override ConfigMap across the recreate.
 func (c *clients) applyConnectorPool(ctx context.Context, cfg Config, sts *appsv1.StatefulSet, svc *corev1.Service) error {
+	var savedCM *corev1.ConfigMap
+	if cm, err := c.kube.CoreV1().ConfigMaps(cfg.NVSNamespace).Get(ctx, poolConfigConfigMap, metav1.GetOptions{}); err == nil {
+		savedCM = cm.DeepCopy()
+		savedCM.ResourceVersion = ""
+		savedCM.UID = ""
+		savedCM.CreationTimestamp = metav1.Time{}
+	}
+
 	_ = c.teardownConnectorPool(ctx, cfg)
 	// Wait for a prior StatefulSet to fully clear so the recreate doesn't conflict.
 	c.waitStatefulSetGone(ctx, cfg.NVSNamespace, connectorPoolName, 90*time.Second)
+
+	if savedCM != nil {
+		if _, err := c.kube.CoreV1().ConfigMaps(cfg.NVSNamespace).Create(ctx, savedCM, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("restore pool config ConfigMap: %w", err)
+		}
+	}
 
 	if _, err := c.kube.CoreV1().Services(cfg.NVSNamespace).Create(ctx, svc, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create headless service: %w", err)
@@ -381,18 +403,30 @@ func (c *clients) applyConnectorPool(ctx context.Context, cfg Config, sts *appsv
 	return nil
 }
 
+// teardownConnectorPool removes only harness-owned pool objects (names under
+// harnessOwnedPrefix). The live platform-connectors DaemonSet and its pods are
+// never deleted, scaled, or patched here — used by pool teardown, stack
+// cleanup --pool, applyConnectorPool recreate, and connection-sweep.
 func (c *clients) teardownConnectorPool(ctx context.Context, cfg Config) error {
 	ns := cfg.NVSNamespace
-	pol := metav1.DeletePropagationForeground
+	pol := metav1.DeletionPropagation(metav1.DeletePropagationForeground)
 	// Tear down the co-located injector DaemonSet first, then clear the node
 	// labels that pinned it, so injectors don't outlive the pool.
-	_ = c.kube.AppsV1().DaemonSets(ns).Delete(ctx, poolInjectorDaemonSet, metav1.DeleteOptions{PropagationPolicy: &pol})
+	if err := c.deleteHarnessDaemonSet(ctx, ns, poolInjectorDaemonSet, cfg.ConnectorDaemonSet, pol); err != nil {
+		return err
+	}
 	c.unlabelPoolNodes(ctx)
-	_ = c.kube.AppsV1().StatefulSets(ns).Delete(ctx, connectorPoolName, metav1.DeleteOptions{PropagationPolicy: &pol})
-	_ = c.kube.CoreV1().Services(ns).Delete(ctx, connectorPoolName, metav1.DeleteOptions{})
+	if err := c.deleteHarnessStatefulSet(ctx, ns, connectorPoolName, pol); err != nil {
+		return err
+	}
+	if err := c.deleteHarnessService(ctx, ns, connectorPoolName); err != nil {
+		return err
+	}
 	// Drop the burst-override ConfigMap left by a startup-burst experiment (if any).
-	_ = c.kube.CoreV1().ConfigMaps(ns).Delete(ctx, poolConfigConfigMap, metav1.DeleteOptions{})
-	infof("connector pool torn down (statefulset + service + injector DaemonSet %s)", connectorPoolName)
+	if err := c.deleteHarnessConfigMap(ctx, ns, poolConfigConfigMap); err != nil {
+		return err
+	}
+	infof("connector pool torn down (harness-owned statefulset + service + injector only; platform-connectors untouched)")
 	return nil
 }
 
@@ -578,8 +612,8 @@ func (c *clients) checkConnectorPool(ctx context.Context, cfg Config, emulated i
 	}
 
 	res.Verdict = "PASS"
-	res.Message = fmt.Sprintf("staged %d connectors (%.1f/node) + %d persistent node injectors; sockets under %s/<pod>; fire events with the P0.3 inject/reconcile flow (drives these resident injectors)",
-		ready, sizing.PerNodeDensity, injReady, poolSocketRoot)
+	res.Message = fmt.Sprintf("staged %d connectors (%.1f/node) + %d persistent node injectors (image %s); sockets under %s/<pod>; fire events with the P0.3 inject/reconcile flow",
+		ready, sizing.PerNodeDensity, injReady, cfg.injectorPodImage(), poolSocketRoot)
 	return res
 }
 
@@ -607,8 +641,10 @@ func (c *clients) deployPoolInjectors(ctx context.Context, cfg Config) (int, err
 		}
 	}
 	ds := buildInjectorDaemonSet(cfg)
-	pol := metav1.DeletePropagationForeground
-	_ = c.kube.AppsV1().DaemonSets(cfg.NVSNamespace).Delete(ctx, poolInjectorDaemonSet, metav1.DeleteOptions{PropagationPolicy: &pol})
+	pol := metav1.DeletionPropagation(metav1.DeletePropagationForeground)
+	if err := c.deleteHarnessDaemonSet(ctx, cfg.NVSNamespace, poolInjectorDaemonSet, cfg.ConnectorDaemonSet, pol); err != nil {
+		return 0, err
+	}
 	c.waitDaemonSetGone(ctx, cfg.NVSNamespace, poolInjectorDaemonSet, 60*time.Second)
 	if _, err := c.kube.AppsV1().DaemonSets(cfg.NVSNamespace).Create(ctx, ds, metav1.CreateOptions{}); err != nil {
 		return 0, fmt.Errorf("create injector DaemonSet: %w", err)
@@ -617,10 +653,8 @@ func (c *clients) deployPoolInjectors(ctx context.Context, cfg Config) (int, err
 	return len(nodes), nil
 }
 
-// buildInjectorDaemonSet builds the persistent per-node injector: a stock alpine
-// pod (no harness image) that sleeps forever, mounts the node's poolSocketRoot,
-// and execs the harnessctl binary staged once to poolSocketRoot/bin. It is pinned
-// to poolNodeLabel nodes and tolerates all taints so it lands on GPU nodes.
+// buildInjectorDaemonSet builds the persistent per-node injector using the
+// multi-arch harnessctl image (arch chosen by the node kubelet).
 func buildInjectorDaemonSet(cfg Config) *appsv1.DaemonSet {
 	labels := map[string]string{"app": poolInjectorDaemonSet, poolInjectorLabel: "true"}
 	mounts := []corev1.VolumeMount{{Name: "pool-sockets", MountPath: "/pool-sockets"}}
@@ -647,12 +681,13 @@ func buildInjectorDaemonSet(cfg Config) *appsv1.DaemonSet {
 				Spec: corev1.PodSpec{
 					NodeSelector: map[string]string{poolNodeLabel: "true"},
 					Tolerations:  []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
+					// Cluster already carries ghcr-secret for private nvidia/* packages.
+					ImagePullSecrets: []corev1.LocalObjectReference{{Name: "ghcr-secret"}},
 					Containers: []corev1.Container{{
 						Name:            "injector",
-						Image:           poolInjectorImage,
-						ImagePullPolicy: corev1.PullIfNotPresent,
-						// Ensure the shared bin dir exists on the node, then idle.
-						Command:         []string{"/bin/sh", "-c", "mkdir -p /pool-sockets/bin && exec sleep 315360000"},
+						Image:           cfg.injectorPodImage(),
+						ImagePullPolicy: corev1.PullAlways,
+						Command:         []string{"sleep", "infinity"},
 						VolumeMounts:    mounts,
 						SecurityContext: &corev1.SecurityContext{RunAsUser: ptr(int64(0))},
 					}},

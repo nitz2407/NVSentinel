@@ -46,3 +46,45 @@ xychart-beta
 - **all-verb p99 stayed within the 1.0s guardrail** at every rung (0.22s–0.98s), rising to the edge only at 100k.
 - **Binding constraint = control-plane large-collection reads** (LIST-nodes / read p99), not kwok-controller and not general APF saturation (in-flight peaks stayed ≤143).
 - **etcd + KSM node metrics unavailable** at scale (managed control plane; KSM scrape too large at 100k) — see per-run notes.
+
+---
+
+## Dashboard snapshots (per-rung time ranges)
+
+Derived from `run.log` / `converge.log` / report timestamps. Full PromQL: [`DASHBOARD_QUERIES.md`](./DASHBOARD_QUERIES.md).
+
+| Rung | Dashboard window (UTC) | Cordon source | Peak cordoned |
+| --- | --- | --- | --- |
+| 5k | 2026-07-30T13:30Z → 14:00Z | Grafana day crop (Jul 30) | 427 |
+| 10k | 2026-07-31T07:20Z → 11:00Z | Grafana day crop (Jul 31) | 10,001 |
+| 20k | 2026-07-31T11:30Z → 14:00Z | Grafana day crop (Jul 31–Aug 1) | 20,001 |
+| 30k | 2026-08-02T19:00Z → 2026-08-03T10:30Z | `converge.log` | 30,000 |
+| 40k | 2026-08-03T11:45Z → 22:00Z | `converge.log` | 39,997 |
+| 50k | 2026-08-04T06:20Z → 16:40Z | `converge.log` | 50,000 |
+| 100k | 2026-08-04T17:20Z → 2026-08-05T07:30Z | `converge.log` | 99,999 |
+
+> In-cluster Prometheus does not currently return these historical windows; use Grafana/Promxy Explore with the ranges above for LIST-nodes / latency / rate panels. Per-rung cordon charts:
+
+### 30k cordon
+
+![30k cordoned](graphs/30k/cordoned.png)
+
+### 40k cordon
+
+![40k cordoned](graphs/40k/cordoned.png)
+
+### 50k cordon
+
+![50k cordoned](graphs/50k/cordoned.png)
+
+### 100k cordon
+
+![100k cordoned](graphs/100k/cordoned.png)
+
+### Grafana · last 7 days (campaign overview)
+
+![cordoned 7d](graphs/grafana_cordoned_7d.png)
+
+```promql
+sum(kube_node_spec_unschedulable{cluster="nvs-dgxc-k8s-azr-scus-dev1"})
+```

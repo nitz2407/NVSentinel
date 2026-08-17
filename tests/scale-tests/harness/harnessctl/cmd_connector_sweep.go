@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
 
+
+//go:build !injector
+
 package main
 
 // connector-pool experiment sub-modes:
@@ -14,9 +17,11 @@ package main
 //     (APF) saturation at startup (rejected requests, inqueue peak, wait p99). This
 //     reproduces the "connection storm" a large connector DaemonSet inflicts on the
 //     API server the moment a cluster (re)starts.
-//   - connection-sweep: scale the pool across a sweep of replica counts and record
-//     MongoDB connection count + mongod CPU/memory at each step, mapping the
-//     connector-density -> datastore-pressure curve (the MongoDB saturation ceiling).
+//   - connection-sweep: self-contained create → sweep → teardown. Stages a
+//     connector pool, scales it across a sweep of replica counts while recording
+//     MongoDB connection count + mongod CPU/memory at each step, then tears the
+//     pool down. Maps the connector-density → datastore-pressure curve (the
+//     MongoDB saturation ceiling). Does not require a prior `pool create`.
 
 import (
 	"context"
@@ -99,7 +104,7 @@ type burstRow struct {
 }
 
 func (c *clients) startupBurstSweep(ctx context.Context, cfg Config, replicas int, burstSteps []int, window string) error {
-	emulated := c.countKwokNodes(ctx)
+	emulated := c.countKwokNodesOrZero(ctx)
 	if emulated <= 0 {
 		return fmt.Errorf("no live KWOK nodes; run `scale-nodes -count N` first")
 	}
@@ -181,14 +186,17 @@ func (c *clients) overrideConnectorBurst(ctx context.Context, cfg Config, sts *a
 	if err != nil {
 		return fmt.Errorf("get connector config %s: %w", cmName, err)
 	}
-	burstRe := regexp.MustCompile(`(?mi)(k8sconnectorburst|burst)(\s*[:=]\s*)[0-9]+`)
+	// Match JSON ("K8sConnectorBurst": 10) and looser forms (burst: 10 / burst = 10).
+	// Quotes around the key are required in config.json and were previously missed,
+	// which made every startup-burst trial a no-op on the real chart.
+	burstRe := regexp.MustCompile(`(?i)("?)(k8sconnectorburst|burst)("?)(\s*[:=]\s*)[0-9]+`)
 	data := map[string]string{}
 	replaced := false
 	for k, v := range src.Data {
 		data[k] = burstRe.ReplaceAllStringFunc(v, func(m string) string {
 			replaced = true
 			sub := burstRe.FindStringSubmatch(m)
-			return fmt.Sprintf("%s%s%d", sub[1], sub[2], burst)
+			return fmt.Sprintf("%s%s%s%s%d", sub[1], sub[2], sub[3], sub[4], burst)
 		})
 	}
 	if !replaced {
@@ -233,11 +241,43 @@ type connRow struct {
 }
 
 func (c *clients) connectionSweep(ctx context.Context, cfg Config, replicaSteps []int, settle int, window string) error {
-	if c.currentPoolReplicas(ctx, cfg) < 0 {
-		return fmt.Errorf("no connector pool deployed; run `connector-pool` first")
+	emulated := c.countKwokNodesOrZero(ctx)
+	if emulated <= 0 {
+		return fmt.Errorf("no live KWOK nodes; run `nodes scale --count N` first")
 	}
+	realNodes, err := c.schedulableRealNodes(ctx)
+	if err != nil {
+		return err
+	}
+	ceiling := computePoolSizing(emulated, realNodes, cfg.ConnectorPoolPerNodeLimit).PodCeiling
+
+	// Always leave the cluster clean, even if a mid-sweep scale/wait fails.
+	defer func() {
+		stepf("connection-sweep: teardown")
+		if err := c.teardownConnectorPool(ctx, cfg); err != nil {
+			warnf("connection-sweep teardown: %v", err)
+		}
+	}()
+
+	// Create at the first step so an ascending sweep only grows (no shrink-then-
+	// grow waste). Injectors are skipped: this experiment only needs connectors
+	// holding Mongo connections.
+	first := replicaSteps[0]
+	if first > ceiling {
+		warnf("connection-sweep: clamping first step %d to pod ceiling %d", first, ceiling)
+		first = ceiling
+	}
+	stepf("connection-sweep: create pool at %d replicas (ceiling %d)", first, ceiling)
+	if err := c.deployPoolForSweep(ctx, cfg, emulated, realNodes, first); err != nil {
+		return fmt.Errorf("create pool: %w", err)
+	}
+
 	var rows []connRow
 	for _, n := range replicaSteps {
+		if n > ceiling {
+			warnf("connection-sweep: clamping step %d to pod ceiling %d", n, ceiling)
+			n = ceiling
+		}
 		if err := c.scalePoolReplicas(ctx, cfg, n); err != nil {
 			return fmt.Errorf("scale to %d: %w", n, err)
 		}
@@ -253,7 +293,31 @@ func (c *clients) connectionSweep(ctx context.Context, cfg Config, replicaSteps 
 		rows = append(rows, row)
 	}
 	printConnTable(rows)
-	writeArtifact(cfg.ResultsDir, "connector-connection-sweep.json", map[string]any{"window": window, "settle_seconds": settle, "steps": rows})
+	writeArtifact(cfg.ResultsDir, "connector-connection-sweep.json", map[string]any{
+		"window": window, "settle_seconds": settle, "steps": rows, "pod_ceiling": ceiling,
+	})
+	return nil
+}
+
+// deployPoolForSweep stages only the connector StatefulSet at the requested
+// replica count (no resident injectors). Used by connection-sweep so the
+// experiment owns its own create/teardown lifecycle.
+func (c *clients) deployPoolForSweep(ctx context.Context, cfg Config, emulated, realNodes, replicas int) error {
+	sizing := computePoolSizing(emulated, realNodes, cfg.ConnectorPoolPerNodeLimit)
+	sts, svc, err := c.buildConnectorPool(ctx, cfg, sizing)
+	if err != nil {
+		return err
+	}
+	r := int32(replicas)
+	sts.Spec.Replicas = &r
+	if err := c.applyConnectorPool(ctx, cfg, sts, svc); err != nil {
+		return err
+	}
+	readyTO := time.Duration(replicas*3+120) * time.Second
+	ready, ok := c.waitStatefulSetReady(ctx, cfg.NVSNamespace, connectorPoolName, replicas, readyTO)
+	if !ok {
+		return fmt.Errorf("only %d/%d connector pods Ready within %s", ready, replicas, readyTO)
+	}
 	return nil
 }
 
@@ -266,6 +330,10 @@ func printConnTable(rows []connRow) {
 }
 
 func (c *clients) scalePoolReplicas(ctx context.Context, cfg Config, n int) error {
+	// Only the harness-owned pool STS is ever scaled — never platform-connectors.
+	if err := refuseIfNotHarnessManaged("StatefulSet", connectorPoolName); err != nil {
+		return err
+	}
 	sts, err := c.kube.AppsV1().StatefulSets(cfg.NVSNamespace).Get(ctx, connectorPoolName, metav1.GetOptions{})
 	if err != nil {
 		return err

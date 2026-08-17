@@ -1,0 +1,40 @@
+# Kind cluster for a local NVSentinel harness smoke test:
+#   kind create cluster --config kind/nvs-harness-kind.yaml
+#
+# Two things here exist so `harnessctl stack bringup` needs no hand-patching:
+#
+#  1. The control-plane taint is dropped. Kind nodes each report the whole Docker
+#     VM's CPU count, so a 1-worker cluster on a 2 vCPU VM cannot fit the stack;
+#     making the control-plane schedulable roughly doubles usable capacity.
+#  2. Both nodes carry the GPU labels fault-quarantine's startup circuit breaker
+#     counts (nvidia.com/gpu.present). With zero such nodes it exits fatally and
+#     crashloops (see harness/README.md).
+#
+# Only labels outside the kubernetes.io/k8s.io namespaces belong here: kubelet
+# refuses to start when --node-labels carries a restricted key such as
+# node-role.kubernetes.io/worker.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: nvs-harness-kind
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          taints: []
+    labels:
+      nvidia.com/gpu.present: "true"
+      nvidia.com/gpu.count: "8"
+      nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+      nvidia.com/gpu.deploy.driver: "true"
+      nvidia.com/gpu.deploy.dcgm: "true"
+      nvidia.com/gpu.deploy.device-plugin: "true"
+  - role: worker
+    labels:
+      nvidia.com/gpu.present: "true"
+      nvidia.com/gpu.count: "8"
+      nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+      nvidia.com/gpu.deploy.driver: "true"
+      nvidia.com/gpu.deploy.dcgm: "true"
+      nvidia.com/gpu.deploy.device-plugin: "true"

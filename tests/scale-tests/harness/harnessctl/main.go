@@ -14,14 +14,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// harnessctl is the NVSentinel scale-test harness controller: a single,
-// image-free Go binary (bringup, scale-nodes, connector-pool, …). It
-// replaces the fragile bash orchestration with client-go, giving typed API
-// access, informer-based waits, and structured (JSON/JUnit) results suitable
-// for unattended, per-release runs (requirements goal G7). In-cluster work
-// (inject/reconcile) is done by staging this same binary onto resident injector
-// pods over `kubectl cp`/`exec` — no container image to build or push. Helm
-// installs stay as thin shell wrappers.
+
+//go:build !injector
+
+// harnessctl is the NVSentinel scale-test harness controller: a single Go binary
+// for the operator laptop (bringup, scale-nodes, connector-pool, …). It replaces
+// fragile bash orchestration with client-go, giving typed API access,
+// informer-based waits, and structured (JSON/JUnit) results suitable for
+// unattended, per-release runs (requirements goal G7). In-cluster inject/reconcile
+// runs inside multi-arch resident injector pods (slim harness-inject image); the
+// host CLI execs that binary over the Kubernetes API (remotecommand). Helm installs
+// use the Helm Go SDK; cluster mutations use client-go.
 package main
 
 import (
@@ -69,9 +72,9 @@ func groups() []group {
 		}},
 		{"pool", "platform-connector pool + startup/connection experiments (P0.5)", []subcmd{
 			{"create", "stage a real connector pool + one resident injector per node", runPoolCreate},
-			{"teardown", "delete the connector pool + resident injectors", runPoolTeardown},
+			{"teardown", "delete harness-owned pool (nvs-harness-*) + injectors; never platform-connectors", runPoolTeardown},
 			{"startup-burst", "recreate the pool across client-go burst values; measure APF saturation at startup", runPoolStartupBurst},
-			{"connection-sweep", "scale the pool across replica counts; record MongoDB connections + mongod CPU/mem", runPoolConnectionSweep},
+			{"connection-sweep", "create pool → scale across replica counts (Mongo conns/CPU/mem) → teardown harness pool only", runPoolConnectionSweep},
 		}},
 	}
 }

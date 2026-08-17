@@ -5,17 +5,22 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
 
+
+//go:build !injector
+
 package main
 
 // Self-contained cleanup. Prior runs leave two kinds of debris that used to be
 // cleared by hand: simulated KWOK nodes, and orphaned janitor CRs (GPUReset /
 // RebootNode) that reference now-deleted nodes and get wedged in Terminating by
 // the janitor's validating webhook. `harnessctl cleanup` clears both (and,
-// optionally, the connector pool) with no manual kubectl patching, so every
-// phase command starts from a clean slate.
+// optionally, the harness-owned connector pool under nvs-harness-* only — never
+// the live platform-connectors DaemonSet) so every phase command starts from a
+// clean slate.
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"sync"
@@ -38,7 +43,7 @@ func runCleanup(ctx context.Context, args []string) error {
 	bindJanitorNamespaceFlag(fs, &cfg)
 	nodes := fs.Bool("nodes", true, "delete all simulated KWOK nodes")
 	crs := fs.Bool("crs", true, "garbage-collect orphaned janitor CRs (GPUReset/RebootNode referencing deleted nodes)")
-	pool := fs.Bool("pool", true, "also tear down the connector pool + resident injectors (use --pool=false to keep it)")
+	pool := fs.Bool("pool", true, "also tear down harness-owned pool (nvs-harness-*) + injectors; never touches platform-connectors (use --pool=false to keep the pool)")
 	_ = fs.Parse(args)
 
 	c, err := newClients(cfg)
@@ -72,37 +77,107 @@ func runCleanup(ctx context.Context, args []string) error {
 	return nil
 }
 
-// deleteAllKwokNodes deletes every simulated node and blocks until none remain
-// (or timeout). A single DeleteCollection only clears the batch it processes
-// before the apiserver request timeout (tens of thousands of nodes never fit in
-// one request), so this re-issues the collection delete until the fleet is
-// actually gone — each pass returns a server timeout after clearing a batch,
-// which is expected and non-fatal.
+const (
+	// kwokTeardownStallLimit bounds consecutive passes that remove nothing (a
+	// failed list, or deletes that all failed). Riding out transient faults is
+	// what makes teardown reliable, but a permanent one must surface instead of
+	// spinning until the timeout.
+	kwokTeardownStallLimit = 5
+	// kwokRetryDelay paces retries so a struggling API server is not hammered.
+	kwokRetryDelay = 3 * time.Second
+)
+
+// isRetryableTeardownErr reports whether a node LIST or DELETE failure is worth
+// another attempt. Bounded batches (see deleteAllKwokNodes) are what keep these
+// failures rare; this decides what to do when one happens anyway.
+//
+// Failures the API server described with a Status are retried only for the
+// transient reasons below: request timeout, throttling, momentary unavailability,
+// or 410 Gone (a list's continue token expired because nodes were being deleted
+// underneath it). Any other Status — Forbidden, say — is a real rejection that
+// must fail fast.
+//
+// Failures carrying no Status never got that far: the request or its response body
+// broke in transit. Go's transport transparently gunzips responses, so when
+// something upstream declares "Content-Encoding: gzip" and then writes a plaintext
+// error body instead, the decode fails with "gzip: invalid header" and client-go
+// reports it as a plain wrapped error rather than a Status. Retrying is safe
+// because deleting an absent node is a no-op.
+func isRetryableTeardownErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if apierrors.IsTimeout(err) || apierrors.IsServerTimeout(err) ||
+		apierrors.IsTooManyRequests(err) || apierrors.IsInternalError(err) ||
+		apierrors.IsServiceUnavailable(err) || apierrors.IsResourceExpired(err) {
+		return true
+	}
+	var status apierrors.APIStatus
+	return !errors.As(err, &status)
+}
+
+// deleteAllKwokNodes removes every simulated node and blocks until none remain
+// (or timeout).
+//
+// It works in bounded batches — list at most kwokDeleteBatch names, delete them
+// individually with bounded concurrency, repeat — rather than handing the API
+// server one DeleteCollection over the entire fleet. That single call is what used
+// to make teardown unreliable: deleting thousands of nodes kept one request open
+// for well over a minute, and a request that long through a proxy gets abandoned
+// mid-flight. Short requests cannot be abandoned that way, and each pass reports
+// real progress.
 func (c *clients) deleteAllKwokNodes(ctx context.Context, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	var removed int64
+	stalled := 0
+
 	for {
-		n := c.countKwokNodes(ctx)
-		if n == 0 {
-			infof("all kwok nodes deleted")
-			return nil
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out deleting kwok nodes: %d remain", n)
+			return fmt.Errorf("timed out deleting kwok nodes after removing %d", removed)
 		}
-		infof("deleting %d kwok nodes (delete-collection; cascades fake pods)", n)
-		if err := c.teardownNodes(ctx); err != nil {
-			// Expected mid-delete conditions at scale, all safe to retry with a
-			// fresh list: request timeout (batch cleared, ran out of time),
-			// service unavailable, or 410 Gone (paginated list's continue token
-			// expired due to concurrent node deletion).
-			if apierrors.IsTimeout(err) || apierrors.IsServerTimeout(err) ||
-				apierrors.IsServiceUnavailable(err) || apierrors.IsResourceExpired(err) {
-				warnf("delete-collection cleared a batch but did not complete (%s) — retrying remaining",
-					apierrors.ReasonForError(err))
-			} else {
-				return fmt.Errorf("teardown nodes: %w", err)
+
+		names, err := c.listKwokNodeNamesBatch(ctx, kwokDeleteBatch)
+		if err != nil {
+			// A failed LIST must never be read as "nothing remains" — that would
+			// report a clean teardown with the fleet still running.
+			if !isRetryableTeardownErr(err) {
+				return fmt.Errorf("list kwok nodes: %w", err)
 			}
+			stalled++
+			if stalled >= kwokTeardownStallLimit {
+				return fmt.Errorf("list kwok nodes: %w", err)
+			}
+			warnf("listing kwok nodes failed (%v) — retrying", err)
+			time.Sleep(kwokRetryDelay)
+			continue
 		}
+		if len(names) == 0 {
+			infof("all kwok nodes deleted (%d removed)", removed)
+			return nil
+		}
+
+		deleted, failed := c.deleteNodes(ctx, names, kwokDeleteConcurrency)
+		removed += deleted
+		infof("deleted %d kwok nodes (%d total; cascades fake pods)", deleted, removed)
+
+		// Progress is measured in nodes actually removed, not in whether a pass
+		// reported errors. A pass that removes nothing means something is wedged.
+		if deleted > 0 {
+			stalled = 0
+			continue
+		}
+		stalled++
+		if stalled >= kwokTeardownStallLimit {
+			return fmt.Errorf("kwok node teardown stalled: %d nodes still listed, %d delete failures in the last pass",
+				len(names), failed)
+		}
+		time.Sleep(kwokRetryDelay)
 	}
 }
 

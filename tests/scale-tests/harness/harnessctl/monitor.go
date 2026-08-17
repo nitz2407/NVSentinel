@@ -5,6 +5,9 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
 
+
+//go:build !injector
+
 package main
 
 // Live SUT health monitor for long P0.3 operations. While `harnessctl reconcile`
@@ -546,24 +549,25 @@ func (m *healthMonitor) bumpRestarts(comp string, n int) {
 	}
 }
 
-// topByPod runs `kubectl top pod` once for the namespace and returns per-pod
+// topByPod queries metrics.k8s.io once for the namespace and returns per-pod
 // usage keyed by pod name. Best-effort: empty if metrics-server is unavailable.
 func (m *healthMonitor) topByPod(ctx context.Context, ns string) map[string]podUsage {
-	out, err := m.c.kubectl(ctx, nil, "top", "pod", "-n", ns, "-l", notHarnessSelector, "--no-headers")
+	list, err := m.c.podMetrics(ctx, ns, notHarnessSelector)
 	if err != nil {
 		if !m.metricsWarn {
 			m.metricsWarn = true
-			warnf("[monitor] kubectl top unavailable (metrics-server saturated?): %v — skipping resource-saturation checks", err)
+			warnf("[monitor] pod metrics unavailable (metrics-server saturated?): %v — skipping resource-saturation checks", err)
 		}
 		return nil
 	}
 	res := map[string]podUsage{}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		f := strings.Fields(line)
-		if len(f) < 3 {
-			continue
+	for _, item := range list {
+		var cpuMilli, memBytes int64
+		for _, c := range item.Containers {
+			cpuMilli += c.Usage.Cpu().MilliValue()
+			memBytes += c.Usage.Memory().Value()
 		}
-		res[f[0]] = podUsage{cpuMilli: parseMilliCPU(f[1]), memBytes: parseBytes(f[2])}
+		res[item.Name] = podUsage{cpuMilli: cpuMilli, memBytes: memBytes}
 	}
 	return res
 }

@@ -5,15 +5,17 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
 
+
+//go:build !injector
+
 package main
 
-// Image-free distributed injection + reconciliation, driven entirely from Go via
-// the resident per-node injector DaemonSet. This is the self-contained engine
-// behind the P0.3 / P0.5 commands: no harness image, no manual `kubectl exec`,
-// `kubectl cp`, or port-forward. It ports phase0/40-parallel-inject.sh into the
-// controller so a single `harnessctl` invocation stages the binary, fans out the
-// injection across every connector node in parallel, and reconciles — with the
-// operator doing nothing by hand.
+// Distributed injection + reconciliation via the resident per-node injector
+// DaemonSet (slim multi-arch harness-inject image). This is the self-contained
+// engine behind the P0.3 / P0.5 commands: no manual `kubectl exec`, `kubectl cp`,
+// or port-forward. It ports phase0/40-parallel-inject.sh into the controller so a
+// single `harnessctl` invocation fans out injection across every connector node
+// in parallel and reconciles — with the operator doing nothing by hand.
 
 import (
 	"context"
@@ -66,7 +68,6 @@ type injectOptions struct {
 	rate      float64
 	fatalFrac float64
 	runID     string
-	force     bool // re-stage the binary even if the on-node sum matches
 	// Event-generation knobs threaded to each resident injector so a distributed
 	// gRPC run honors the operator's -pattern / -fatal-event / -processing-strategy
 	// (or their HARNESS_* config defaults), not just fatal-fraction.
@@ -78,26 +79,14 @@ type injectOptions struct {
 var ackedRe = regexp.MustCompile(`acked=([0-9]+)`)
 
 // injectAcrossPool is the operator-facing distributed injector behind
-// `harnessctl inject` (no -socket): one invocation stages the binary onto every
-// connector node, then fans injection out through the resident injectors in
-// parallel — each connector injects one event per emulated node it represents
-// (count/connector = nodes-per-connector). Injection only; accounting is the
-// separate `reconcile` command.
+// `harnessctl inject` (no -socket): one invocation fans injection out through
+// the resident injectors in parallel — each connector injects one event per
+// emulated node it represents (count/connector = nodes-per-connector).
+// Injection only; accounting is the separate `reconcile` command.
 func (c *clients) injectAcrossPool(ctx context.Context, cfg Config, rate float64, runID string) error {
-	stepf("P0.3 distributed inject across the connector pool (image-free)")
+	stepf("P0.3 distributed inject across the connector pool")
 	geo, err := c.resolvePoolGeometry(ctx, cfg)
 	if err != nil {
-		return err
-	}
-	localBin, err := resolveLocalBinary(cfg.HarnessBin)
-	if err != nil {
-		return err
-	}
-	wantSum, err := localBinarySum(localBin)
-	if err != nil {
-		return err
-	}
-	if _, err := c.stageBinaryToAllInjectors(ctx, cfg, geo, localBin, wantSum, false); err != nil {
 		return err
 	}
 	expect := geo.totalConn * geo.npc
@@ -165,44 +154,6 @@ func (c *clients) resolvePoolGeometry(ctx context.Context, cfg Config) (poolGeom
 	return g, nil
 }
 
-// stageBinaryToAllInjectors stages the local binary onto every connector node's
-// hostPath (idempotent via sha256), concurrently. Returns the number staged.
-func (c *clients) stageBinaryToAllInjectors(ctx context.Context, cfg Config, g poolGeometry, localBin, wantSum string, force bool) (int, error) {
-	type res struct {
-		node string
-		err  error
-	}
-	ch := make(chan res, len(g.injByNode))
-	sem := make(chan struct{}, 10)
-	var wg sync.WaitGroup
-	for node, pod := range g.injByNode {
-		wg.Add(1)
-		go func(node, pod string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			ch <- res{node, c.stageBinaryToInjector(ctx, cfg.NVSNamespace, pod, localBin, wantSum, force)}
-		}(node, pod)
-	}
-	wg.Wait()
-	close(ch)
-	staged, firstErr := 0, error(nil)
-	for r := range ch {
-		if r.err != nil {
-			warnf("stage binary on %s: %v", r.node, r.err)
-			if firstErr == nil {
-				firstErr = r.err
-			}
-			continue
-		}
-		staged++
-	}
-	if staged == 0 {
-		return 0, fmt.Errorf("failed to stage binary on any injector: %w", firstErr)
-	}
-	return staged, nil
-}
-
 // injectViaInjectors fans out injection across every connector node in parallel:
 // each node's resident injector drives a disjoint node shard into every connector
 // socket present on that node. Returns the total acknowledged events.
@@ -236,7 +187,7 @@ func (c *clients) injectViaInjectors(ctx context.Context, cfg Config, g poolGeom
 				"PREFIX": cfg.NodePrefix, "COUNT": strconv.Itoa(opt.count),
 				"RATE": strconv.FormatFloat(opt.rate, 'g', -1, 64), "FATAL": strconv.FormatFloat(opt.fatalFrac, 'g', -1, 64),
 				"RUNID": opt.runID, "RUNLABEL": cfg.RunLabel, "IDLABEL": cfg.IDLabel,
-				"BIN": binOnNode, "POOL": connectorPoolName, "LEDGERS": poolLedgerDir,
+				"BIN": cfg.injectorBinPath(), "POOL": connectorPoolName, "LEDGERS": poolLedgerDir,
 				"FATALEVENT": defStr(opt.fatalEvent, fatalEventNodeReboot),
 				"PATTERN":    defStr(opt.pattern, patternFleetStorm),
 				"PROCSTRAT":  defStr(opt.procStrategy, procStrategyDefault),
@@ -349,7 +300,7 @@ func (c *clients) reconcilePerNode(ctx context.Context, cfg Config, g poolGeomet
 		fmt.Sprintf("-node-sample=%d", cfg.NodeSample),
 		"-report=/tmp/reconcile-shard.json",
 	)
-	script := nodeReconcileShell(shellQuoteRun(args))
+	script := nodeReconcileShell(shellQuoteRun(cfg.injectorBinPath(), args))
 
 	type res struct {
 		node string
@@ -459,7 +410,7 @@ func (c *clients) reconcileByCountPool(ctx context.Context, cfg Config, g poolGe
 	args := reconcileArgs(cfg, conn, runID)
 	// Empty -ledger + -expect-injected selects the primitive's count-only mode.
 	args = append(args, "-ledger=", fmt.Sprintf("-expect-injected=%d", expected), "-report=/tmp/reconcile-count.json")
-	out, err := c.execShEnv(ctx, cfg.NVSNamespace, pod, map[string]string{"MONGO_URI": conn.uri}, shellQuoteRun(args)+" 2>/dev/null")
+	out, err := c.execShEnv(ctx, cfg.NVSNamespace, pod, map[string]string{"MONGO_URI": conn.uri}, shellQuoteRun(cfg.injectorBinPath(), args)+" 2>/dev/null")
 	rep := extractReport(out)
 	if rep == nil {
 		if err != nil {
@@ -539,7 +490,7 @@ func (c *clients) poolStoredCount(ctx context.Context, cfg Config, pod string, c
 	}
 	args := reconcileArgs(cfg, conn, runID)
 	args = append(args, "-ledger=", fmt.Sprintf("-expect-injected=%d", expect), "-report=/tmp/reconcile-poll.json")
-	out, err := c.execShEnv(ctx, cfg.NVSNamespace, pod, map[string]string{"MONGO_URI": conn.uri}, shellQuoteRun(args)+" 2>/dev/null")
+	out, err := c.execShEnv(ctx, cfg.NVSNamespace, pod, map[string]string{"MONGO_URI": conn.uri}, shellQuoteRun(cfg.injectorBinPath(), args)+" 2>/dev/null")
 	rep := extractReport(out)
 	if rep == nil {
 		if err != nil {
@@ -588,11 +539,10 @@ func appendCapped(dst, src []string, max int) []string {
 	return dst
 }
 
-// shellQuoteRun renders `<binOnNode> <args...>` as a single shell command line
-// safe for `sh -c`, quoting each argument.
-func shellQuoteRun(args []string) string {
+// shellQuoteRun renders `<bin> <args...>` as a single shell command line safe for `sh -c`.
+func shellQuoteRun(bin string, args []string) string {
 	parts := make([]string, 0, len(args)+1)
-	parts = append(parts, binOnNode)
+	parts = append(parts, bin)
 	for _, a := range args {
 		parts = append(parts, shellQuote(a))
 	}

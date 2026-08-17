@@ -26,20 +26,19 @@ QoS/pinning of the component under test (V4). These are expected to land as new
 `harnessctl` subcommands (e.g. `mb`, `sys`) on top of a shared `internal/measure`
 package that reuses the Phase 0 injector, node scaler, and Prometheus helper.
 
-## Design: one Go binary + thin helm shell
+## Design: one self-contained Go binary
 
-Orchestration, node scaling, waiters, CR handling, event injection and
-reconciliation all live in a single Go CLI, **`harnessctl`** (`./harnessctl/`),
-built on `client-go`. This gives typed API access, informer-based waits, and
-structured JSON/JUnit results suitable for unattended, per-release runs
-(requirements goal G7) — instead of bash parsing `kubectl` output.
+Orchestration, **Helm/kubectl bring-up**, node scaling, waiters, CR handling,
+event injection and reconciliation all live in a single Go CLI, **`harnessctl`**
+(`./harnessctl/`), built on `client-go`. Bring-up calls `helm`/`kubectl` from Go
+with values and KWOK stages **embedded** in the binary (`harnessctl/assets/`), so
+`stack bringup` needs no checkout of `phase0/*.sh`.
 
-Only the **helm installs stay as shell** (`phase0/10|20|30-install-*.sh`), since
-`helm upgrade --install` is simpler and more transparent as a one-liner and
-rewriting it in Go buys no robustness.
+The sibling `phase0/10|15|20|25|30-install-*.sh` scripts remain as a manual/
+reference path; `harnessctl stack bringup` no longer invokes them.
 
-The same `harnessctl` image is used two ways: as the operator CLI, and as the
-in-cluster Job image for `inject` / `reconcile` (launched by `phase0`).
+The same `harnessctl` binary is used two ways: as the operator CLI, and staged
+into in-cluster injector pods for `inject` / `reconcile` (no container image).
 
 ## Layout
 
@@ -50,14 +49,14 @@ harness/
 ├── monitoring/                 # kube-prometheus-stack values (KWOK-scale)
 ├── kwok/stages-custom.yaml      # custom KWOK stages (graceful delete, janitor Job complete)
 ├── nvsentinel/values-harness.yaml
-├── phase0/                      # helm install scripts (P0.1 bring-up only)
+├── phase0/                      # legacy/manual helm install scripts (optional; bringup is in Go)
 │   ├── 10-install-monitoring.sh
 │   ├── 20-install-kwok.sh
 │   └── 30-install-nvsentinel.sh
 ├── harnessctl/                  # the Go CLI (see harnessctl/README.md)
-│   ├── main.go, config.go, common.go, kube.go, prom.go, jobs.go
-│   ├── cmd_core.go, cmd_inject.go, cmd_reconcile.go, cmd_janitor.go, cmd_phase0.go
-│   ├── Dockerfile, README.md, go.mod
+│   ├── assets/                  # embedded Helm values + KWOK stages for bringup
+│   ├── install_*.go             # pure-Go stack bringup (helm/kubectl)
+│   ├── main.go, config.go, …
 └── results/                     # generated artifacts (git-ignored)
 ```
 
@@ -65,7 +64,7 @@ harness/
 
 | Check | Requirement | Command |
 |-------|-------------|---------|
-| **P0.1** | Scripted, idempotent bring-up (monitoring + KWOK + NVSentinel) | `harnessctl bringup` (wraps `phase0/10│20│30-install-*.sh`) |
+| **P0.1** | Scripted, idempotent bring-up (monitoring + KWOK + NVSentinel) | `harnessctl stack bringup` (Go helm/kubectl + embedded values) |
 | **P0.2** | `KWOK_NODE_COUNT` GPU-shaped nodes Ready; API server within bounds; ceiling recorded | `harnessctl scale-nodes` |
 | **P0.3** | Events attributed to KWOK node names, every event ID reconciled | `harnessctl phase0 --only inject` |
 | **P0.4** | RebootNode Job completes + node cycles bootID; GPUReset Job completes | `harnessctl janitor-check` |

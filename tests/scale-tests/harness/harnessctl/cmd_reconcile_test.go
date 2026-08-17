@@ -81,20 +81,3 @@ func TestVerifyNodeAttribution(t *testing.T) {
 		})
 	}
 }
-
-func TestClusterUtilBreaches(t *testing.T) {
-	cfg := Config{MaxClusterCPUPct: 0.85, MaxClusterMemPct: 0.85}
-
-	if over, _ := (clusterUtil{OK: false}).breaches(cfg); over {
-		t.Error("unavailable metrics must not breach")
-	}
-	if over, _ := (clusterUtil{OK: true, CPUPct: 0.5, MemPct: 0.5}).breaches(cfg); over {
-		t.Error("within-bounds util must not breach")
-	}
-	if over, _ := (clusterUtil{OK: true, CPUPct: 0.9, MemPct: 0.5}).breaches(cfg); !over {
-		t.Error("cpu over guardrail must breach")
-	}
-	if over, _ := (clusterUtil{OK: true, CPUPct: 0.5, MemPct: 0.95}).breaches(cfg); !over {
-		t.Error("mem over guardrail must breach")
-	}
-}
