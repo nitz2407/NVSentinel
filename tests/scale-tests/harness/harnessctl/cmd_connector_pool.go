@@ -1,12 +1,11 @@
+//go:build !injector
+
 /*
 Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
-
-
-//go:build !injector
 
 package main
 
@@ -145,10 +144,10 @@ func runConnectorPool(ctx context.Context, args []string) error {
 	startupBurst := fs.Bool("startup-burst", false, "experiment: recreate the pool with -replicas connectors started simultaneously across -burst-steps client-go burst values; measure APF saturation at startup")
 	burstSteps := fs.String("burst-steps", "10,15,40", "startup-burst: comma-separated client-go burst values to sweep")
 	burstReplicas := fs.Int("replicas", 0, "startup-burst: fixed connector replica count (0 => current live pool size)")
-	connSweep := fs.Bool("connection-sweep", false, "experiment: create pool → scale across -replica-steps (Mongo conns/CPU/mem) → teardown")
+	connSweep := fs.Bool("connection-sweep", false, "experiment: create pool → scale across -replica-steps (Mongo via metrics-server + mongod logs) → teardown")
 	replicaSteps := fs.String("replica-steps", "5,10,50,100,200", "connection-sweep: comma-separated replica counts to sweep (create starts at the first value)")
 	settle := fs.Int("settle-seconds", 30, "connection-sweep: seconds to wait for connections to stabilize before measuring each step")
-	window := fs.String("window", cfg.MetricsWindow, "PromQL rate window for sweep measurements")
+	window := fs.String("window", cfg.MetricsWindow, "startup-burst: PromQL rate window; connection-sweep: mongod log lookback for connectionCount")
 	_ = fs.Parse(args)
 
 	cfg.ConnectorPoolPerNodeLimit = *perNodeLimit
@@ -482,7 +481,7 @@ func (c *clients) waitDaemonSetReady(ctx context.Context, ns, name string, timeo
 		if err == nil {
 			desired := int(ds.Status.DesiredNumberScheduled)
 			ready := int(ds.Status.NumberReady)
-			if ready != last {
+			if ready != last || (desired > 0 && last <= 0) {
 				infof("injector DaemonSet: %d/%d ready", ready, desired)
 				last = ready
 			}
@@ -681,12 +680,12 @@ func buildInjectorDaemonSet(cfg Config) *appsv1.DaemonSet {
 				Spec: corev1.PodSpec{
 					NodeSelector: map[string]string{poolNodeLabel: "true"},
 					Tolerations:  []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
-					// Cluster already carries ghcr-secret for private nvidia/* packages.
-					ImagePullSecrets: []corev1.LocalObjectReference{{Name: "ghcr-secret"}},
+					// PullIfNotPresent lets Kind-loaded images work; PullAlways would
+					// ignore kind load and try ghcr.io (401 on the unpublished default tag).
 					Containers: []corev1.Container{{
 						Name:            "injector",
 						Image:           cfg.injectorPodImage(),
-						ImagePullPolicy: corev1.PullAlways,
+						ImagePullPolicy: corev1.PullIfNotPresent,
 						Command:         []string{"sleep", "infinity"},
 						VolumeMounts:    mounts,
 						SecurityContext: &corev1.SecurityContext{RunAsUser: ptr(int64(0))},

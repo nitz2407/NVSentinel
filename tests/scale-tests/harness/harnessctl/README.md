@@ -29,17 +29,25 @@ overlays are passed.
 ## Build
 
 ```bash
-# Operator CLI (full binary)
+# Operator CLI (full binary) — run from this directory
 go mod tidy
 CGO_ENABLED=0 go build -o harnessctl .
 
-# Slim in-cluster injector (inject + reconcile only)
+# Slim in-cluster injector binary (optional; pool create deploys the image, not this file)
 CGO_ENABLED=0 go build -tags injector -o harness-inject .
 
-# Injector image (run from NVSentinel repo root)
+# Injector image — from the NVSentinel repo root (Dockerfile copies data-models/).
+# Real cluster (multi-arch + push):
 docker buildx build -f tests/scale-tests/harness/harnessctl/Dockerfile \
   --platform linux/amd64,linux/arm64 -t "$HARNESS_INJECT_IMAGE" --push .
+# Kind (single-arch into local Docker, then kind load):
+docker buildx build -f tests/scale-tests/harness/harnessctl/Dockerfile \
+  --platform linux/amd64 -t harness-inject:dev --load .
+kind load docker-image harness-inject:dev --name nvs-harness-kind
 ```
+
+Step-by-step Kind walkthrough (cluster create, overlays, tiny-scale inject):
+[`../README.md`](../README.md#kind-smoke-test).
 
 ## Commands
 
@@ -49,7 +57,7 @@ AWS-CLI-style noun-verb: `harnessctl <group> <command> [--flags]`. Run
 | Command | Phase | What it does |
 |---------|-------|--------------|
 | `stack bringup [--nvsentinel-values … --monitoring-values … --nvs-chart-version … --kwok-version … --cert-manager-version … --metrics-server-version … --kps-chart-version …]` | P0.1 | install only what is missing (or version-mismatched); embedded values + optional per-chart overlays; non-interactive |
-| `stack cleanup [--pool]` | — | delete `type=kwok` nodes + orphaned janitor CRs (+ optional harness-owned pool only; never `platform-connectors`) |
+| `stack cleanup [--pool=false]` | — | delete `type=kwok` nodes + orphaned janitor CRs + (default on) harness-owned pool only; never `platform-connectors` |
 | `stack report [--title … --window …]` | — | collect latency/throughput/resource/CR/mongo metrics → `report.md`/`report.json` |
 | `nodes scale --count N` | P0.2 | create GPU-shaped KWOK nodes, informer-wait Ready, record ceiling (+ apiserver p99) |
 | `nodes ceiling [--start --step --max]` | P0.2 | ramp node count until degradation and attribute it |
@@ -57,7 +65,10 @@ AWS-CLI-style noun-verb: `harnessctl <group> <command> [--flags]`. Run
 | `events reconcile --run-id ID [--direct]` | P0.3 | account every injected id vs the datastore, emit report |
 | `events coldstart [--count --remediation-ratio …]` | — | seed a MongoDB haystack, cold-start a consumer, measure initial scan time |
 | `janitor check` | P0.4 | create RebootNode + GPUReset CRs, cycle bootID, verify completion |
-| `pool create \| teardown \| startup-burst \| connection-sweep` | P0.5 | stage harness pool (`nvs-harness-*`) + injectors; teardown/cleanup never touch live platform connectors |
+| `pool create` | P0.5 | stage harness connector StatefulSet (`nvs-harness-*`) + one resident injector per real node; leaves the pool up |
+| `pool teardown` | P0.5 | delete harness-owned pool + injectors only; never touches live `platform-connectors` |
+| `pool startup-burst [--replicas --burst-steps --window]` | P0.5 | recreate N connectors starting in parallel; measure API-server APF via Prometheus |
+| `pool connection-sweep [--replica-steps --settle-seconds]` | P0.5 | scale replica counts; measure Mongo via mongod logs + metrics-server (kubelet summary fallback); teardown when done |
 
 Legacy single-token names (`bringup`, `scale-nodes`, `inject`, …) still work as
 hidden aliases during the transition.
@@ -68,11 +79,14 @@ hidden aliases during the transition.
 CGO_ENABLED=0 go build -o harnessctl .
 BIN=./harnessctl
 
-# All inputs are flags — no env file. (config/harness.env is read only by the
-# install *scripts* that `stack bringup` wraps.)
+# All inputs are flags — no env file. (config/harness.env is for phase0/*.sh
+# only; stack bringup does not read it or invoke those scripts.)
 $BIN stack bringup --nvs-chart-version v1.16.0
 $BIN nodes scale   --count 20000 --provider-id-scheme kwok --results-dir ./results
 $BIN pool create   --per-node-pod-limit 10 --results-dir ./results
+# Optional experiments (need KWOK nodes; connection-sweep teardowns its own pool):
+# $BIN pool startup-burst --replicas 200 --burst-steps 10,15,40 --results-dir ./results
+# $BIN pool connection-sweep --replica-steps 5,10,50,100,200 --results-dir ./results
 $BIN janitor check --results-dir ./results
 RID=$($BIN events inject --fatal-fraction 0.08 --results-dir ./results | tail -1)
 $BIN events reconcile --run-id "$RID" --results-dir ./results
@@ -92,7 +106,7 @@ targets appear only on `stack bringup`. The rough grouping:
 |-------|-------|---------|
 | namespaces | `--nvs-namespace`, `--monitoring-namespace`, `--kwok-namespace`, `--janitor-namespace`, `--cert-manager-namespace` | whichever commands touch that namespace |
 | results | `--results-dir` | every command that writes artifacts (all except `stack bringup`/`stack cleanup`) |
-| prometheus | `--monitoring-namespace`, `--prom-service`, `--prom-port` | `nodes scale`/`nodes ceiling`, `stack report`, `pool` sweeps |
+| prometheus | `--monitoring-namespace`, `--prom-service`, `--prom-port` | `nodes scale`/`nodes ceiling`, `stack report`, `pool startup-burst` (not `connection-sweep`) |
 | mongo | `--mongo-service`/`--mongo-replica-set`/`--mongo-port`/`--mongo-tls-secret`/`--mongo-root-secret` | `events inject`/`reconcile`/`coldstart` |
 | node guardrails | `--max-apiserver-p99`, `--node-ready-timeout`, `--max-cluster-cpu-pct`, `--max-cluster-mem-pct` | `nodes scale`/`nodes ceiling` |
 | node shape | `--node-prefix`, `--gpu-count`, `--node-cpu`, `--node-memory`, `--node-max-pods`, `--node-batch`, `--provider-id-scheme` | `nodes scale`/`nodes ceiling` |

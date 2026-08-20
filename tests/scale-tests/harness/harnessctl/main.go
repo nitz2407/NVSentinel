@@ -1,3 +1,5 @@
+//go:build !injector
+
 /*
 Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 
@@ -13,9 +15,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
-
-//go:build !injector
 
 // harnessctl is the NVSentinel scale-test harness controller: a single Go binary
 // for the operator laptop (bringup, scale-nodes, connector-pool, …). It replaces
@@ -74,7 +73,7 @@ func groups() []group {
 			{"create", "stage a real connector pool + one resident injector per node", runPoolCreate},
 			{"teardown", "delete harness-owned pool (nvs-harness-*) + injectors; never platform-connectors", runPoolTeardown},
 			{"startup-burst", "recreate the pool across client-go burst values; measure APF saturation at startup", runPoolStartupBurst},
-			{"connection-sweep", "create pool → scale across replica counts (Mongo conns/CPU/mem) → teardown harness pool only", runPoolConnectionSweep},
+			{"connection-sweep", "create pool → scale replicas; measure Mongo via metrics-server + mongod logs → teardown", runPoolConnectionSweep},
 		}},
 	}
 }

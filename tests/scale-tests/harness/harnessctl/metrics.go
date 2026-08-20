@@ -1,12 +1,11 @@
+//go:build !injector
+
 /*
 Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
-
-
-//go:build !injector
 
 package main
 
@@ -30,6 +29,24 @@ func (c *clients) podMetrics(ctx context.Context, ns, labelSelector string) ([]m
 		return nil, err
 	}
 	return list.Items, nil
+}
+
+func (c *clients) podMetric(ctx context.Context, ns, name string) (*metricsv1beta1.PodMetrics, error) {
+	mc, err := metricsclient.NewForConfig(c.rest)
+	if err != nil {
+		return nil, err
+	}
+	pm, err := mc.MetricsV1beta1().PodMetricses(ns).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return pm, nil
+}
+
+func (c *clients) kubeletStatsSummaryRaw(ctx context.Context, node string) ([]byte, error) {
+	return c.kube.CoreV1().RESTClient().Get().
+		Resource("nodes").Name(node).SubResource("proxy").Suffix("stats/summary").
+		Do(ctx).Raw()
 }
 
 // nodeMetricsAvailable returns nil when metrics.k8s.io can serve node metrics.

@@ -1,12 +1,11 @@
+//go:build !injector
+
 /*
 Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
-
-
-//go:build !injector
 
 package main
 
@@ -19,13 +18,17 @@ package main
 //     API server the moment a cluster (re)starts.
 //   - connection-sweep: self-contained create → sweep → teardown. Stages a
 //     connector pool, scales it across a sweep of replica counts while recording
-//     MongoDB connection count + mongod CPU/memory at each step, then tears the
-//     pool down. Maps the connector-density → datastore-pressure curve (the
-//     MongoDB saturation ceiling). Does not require a prior `pool create`.
+//     MongoDB pressure the same way the 2026-07-30 saturation finding did:
+//     mongod logs for connectionCount, metrics-server (kubectl top) for CPU/mem
+//     with kubelet stats/summary as fallback when metrics-server is down, and
+//     pod Ready/restart health. Prometheus is not required. Tears the pool
+//     down at the end. Does not require a prior `pool create`.
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"strconv"
 	"strings"
@@ -51,16 +54,6 @@ func flowInqueueQuery(w string) string {
 }
 func flowWaitP99Query(w string) string {
 	return fmt.Sprintf(`histogram_quantile(0.99, sum(rate(apiserver_flowcontrol_request_wait_duration_seconds_bucket[%s])) by (le))`, w)
-}
-func mongoConnQuery() string {
-	// Best-effort across exporters; "n/a" when no mongodb exporter is scraped.
-	return `max(mongodb_ss_connections{conn_type="current"} or mongodb_connections{state="current"})`
-}
-
-func (c *clients) mongodTop(ctx context.Context, cfg Config, window string) (cpu, memMi string) {
-	cpuQ := fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total{namespace=%q,pod=~"mongodb.*",container!="",container!="POD"}[%s]))`, cfg.NVSNamespace, window)
-	memQ := fmt.Sprintf(`sum(container_memory_working_set_bytes{namespace=%q,pod=~"mongodb.*",container!="",container!="POD"})/1024/1024`, cfg.NVSNamespace)
-	return c.promStr(ctx, cfg, cpuQ), c.promStr(ctx, cfg, memQ)
 }
 
 func (c *clients) promStr(ctx context.Context, cfg Config, q string) string {
@@ -233,11 +226,17 @@ func connectorConfigMount(podSpec *corev1.PodSpec) (volName, cmName string) {
 // ---- connection-sweep ----
 
 type connRow struct {
-	Replicas    int    `json:"replicas"`
-	Ready       bool   `json:"ready"`
-	MongoConns  string `json:"mongo_connections"`
-	MongodCPU   string `json:"mongod_cpu_cores"`
-	MongodMemMi string `json:"mongod_mem_mi"`
+	Replicas        int    `json:"replicas"`
+	Ready           bool   `json:"ready"`
+	MongoConns      string `json:"mongo_connections"`
+	MongodCPU       string `json:"mongod_cpu_cores"`
+	MongodMemMi     string `json:"mongod_mem_mi"`
+	MongodReady     string `json:"mongod_ready"`
+	MongodRestarts  int    `json:"mongod_restarts"`
+	CPULimitHit     bool   `json:"cpu_limit_hit"`
+	FQRestarts      int    `json:"fault_quarantine_restarts"`
+	DrainerRestarts int    `json:"node_drainer_restarts"`
+	CPUSource       string `json:"cpu_source,omitempty"`
 }
 
 func (c *clients) connectionSweep(ctx context.Context, cfg Config, replicaSteps []int, settle int, window string) error {
@@ -287,14 +286,17 @@ func (c *clients) connectionSweep(ctx context.Context, cfg Config, replicaSteps 
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		cpu, mem := c.mongodTop(ctx, cfg, window)
-		row := connRow{Replicas: n, Ready: ok, MongoConns: c.promStr(ctx, cfg, mongoConnQuery()), MongodCPU: cpu, MongodMemMi: mem}
-		infof("  replicas=%d ready=%v mongoConns=%s mongodCPU=%s mongodMem=%sMi", n, ok, row.MongoConns, cpu, mem)
+		row := c.sampleMongoPressure(ctx, cfg, parseLookback(window, settle))
+		row.Replicas = n
+		row.Ready = ok
+		infof("  replicas=%d ready=%v mongoConns=%s mongodCPU=%s mongodMem=%sMi mongodReady=%s restarts=%d limitHit=%v source=%s",
+			n, ok, row.MongoConns, row.MongodCPU, row.MongodMemMi, row.MongodReady, row.MongodRestarts, row.CPULimitHit, row.CPUSource)
 		rows = append(rows, row)
 	}
 	printConnTable(rows)
 	writeArtifact(cfg.ResultsDir, "connector-connection-sweep.json", map[string]any{
-		"window": window, "settle_seconds": settle, "steps": rows, "pod_ceiling": ceiling,
+		"source": "mongod-logs+metrics-server|kubelet-summary", "window": window, "settle_seconds": settle,
+		"steps": rows, "pod_ceiling": ceiling,
 	})
 	return nil
 }
@@ -323,10 +325,420 @@ func (c *clients) deployPoolForSweep(ctx context.Context, cfg Config, emulated, 
 
 func printConnTable(rows []connRow) {
 	stepf("connection-sweep results")
-	infof("%-9s %-7s %-14s %-14s %s", "replicas", "ready", "mongoConns", "mongodCPU", "mongodMemMi")
+	infof("%-9s %-7s %-12s %-12s %-12s %-12s %-9s %-9s %-8s %s",
+		"replicas", "ready", "mongoConns", "mongodCPU", "mongodMemMi", "mongodReady", "restarts", "limitHit", "fqRest", "drainerRest")
 	for _, r := range rows {
-		infof("%-9d %-7v %-14s %-14s %s", r.Replicas, r.Ready, r.MongoConns, r.MongodCPU, r.MongodMemMi)
+		infof("%-9d %-7v %-12s %-12s %-12s %-12s %-9d %-9v %-8d %d",
+			r.Replicas, r.Ready, r.MongoConns, r.MongodCPU, r.MongodMemMi, r.MongodReady,
+			r.MongodRestarts, r.CPULimitHit, r.FQRestarts, r.DrainerRestarts)
 	}
+}
+
+// sampleMongoPressure reads datastore pressure without Prometheus: metrics-server
+// for CPU/memory (same source as `kubectl top`), mongod logs for connectionCount,
+// and live pod status for Ready/restarts. Peak mongod replica is the saturation
+// signal (one member hitting its CPU limit).
+func (c *clients) sampleMongoPressure(ctx context.Context, cfg Config, lookback time.Duration) connRow {
+	row := connRow{
+		MongoConns: "n/a", MongodCPU: "n/a", MongodMemMi: "n/a", MongodReady: "0/0",
+	}
+	pods, err := c.listMongoServerPods(ctx, cfg.NVSNamespace)
+	if err != nil {
+		warnf("connection-sweep: list mongodb pods: %v", err)
+		return row
+	}
+	ready, restarts := 0, 0
+	for i := range pods {
+		if podReady(&pods[i]) {
+			ready++
+		}
+		restarts += int(containerRestartCount(&pods[i], mongoServerContainer(&pods[i])))
+	}
+	row.MongodReady = fmt.Sprintf("%d/%d", ready, len(pods))
+	row.MongodRestarts = restarts
+
+	if cpu, mem, src, hit, err := c.mongoTopFromMetrics(ctx, cfg.NVSNamespace, pods); err == nil {
+		row.MongodCPU, row.MongodMemMi, row.CPULimitHit, row.CPUSource = cpu, mem, hit, src
+	} else if len(pods) > 0 {
+		row.CPUSource = src
+		warnf("connection-sweep: mongodb CPU/mem unavailable: %v", err)
+	}
+
+	if n, ok := c.readMongoConnectionCount(ctx, cfg.NVSNamespace, pods, lookback); ok {
+		row.MongoConns = strconv.Itoa(n)
+	} else if len(pods) > 0 {
+		warnf("connection-sweep: no connectionCount in mongod logs (lookback %s)", lookback)
+	}
+
+	row.FQRestarts = c.prefixPodRestarts(ctx, cfg.NVSNamespace, "fault-quarantine")
+	row.DrainerRestarts = c.prefixPodRestarts(ctx, cfg.NVSNamespace, "node-drainer")
+	return row
+}
+
+func (c *clients) listMongoServerPods(ctx context.Context, ns string) ([]corev1.Pod, error) {
+	for _, sel := range []string{
+		"app.kubernetes.io/name=mongodb,app.kubernetes.io/component=mongodb",
+		"app.kubernetes.io/name=mongodb",
+		"app=mongodb",
+	} {
+		list, err := c.kube.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: sel})
+		if err != nil {
+			return nil, err
+		}
+		if out := filterMongoServerPods(list.Items); len(out) > 0 {
+			return out, nil
+		}
+	}
+	list, err := c.kube.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return filterMongoServerPods(list.Items), nil
+}
+
+func filterMongoServerPods(pods []corev1.Pod) []corev1.Pod {
+	var out []corev1.Pod
+	for i := range pods {
+		if isMongoDBServerPod(&pods[i]) {
+			out = append(out, pods[i])
+		}
+	}
+	return out
+}
+
+func (c *clients) mongoTopFromMetrics(ctx context.Context, ns string, pods []corev1.Pod) (cpu, memMi, source string, limitHit bool, err error) {
+	if len(pods) == 0 {
+		return "n/a", "n/a", "", false, fmt.Errorf("no mongodb server pods")
+	}
+	byName, source, err := c.mongoResourceByPod(ctx, ns, pods)
+	if err != nil {
+		return "n/a", "n/a", source, false, err
+	}
+	peakMilli, peakMem := int64(-1), int64(-1)
+	for i := range pods {
+		u, found := byName[pods[i].Name]
+		if !found {
+			continue
+		}
+		if u.cpuMilli > peakMilli {
+			peakMilli = u.cpuMilli
+		}
+		if u.memMi > peakMem {
+			peakMem = u.memMi
+		}
+		limit := cpuLimitMilli(&pods[i], mongoServerContainer(&pods[i]))
+		if limit > 0 && u.mongodMilli*100 >= limit*95 {
+			limitHit = true
+		}
+	}
+	if peakMilli < 0 {
+		return "n/a", "n/a", source, false, fmt.Errorf("no usage samples for mongodb pods")
+	}
+	return fmtCores(peakMilli), strconv.FormatInt(peakMem, 10), source, limitHit, nil
+}
+
+type mongoResUsage struct {
+	cpuMilli    int64
+	memMi       int64
+	mongodMilli int64
+}
+
+func (c *clients) mongoResourceByPod(ctx context.Context, ns string, pods []corev1.Pod) (map[string]mongoResUsage, string, error) {
+	want := map[string]bool{}
+	for i := range pods {
+		want[pods[i].Name] = true
+	}
+	var msErr error
+	msCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	items, err := c.podUsage(msCtx, ns)
+	cancel()
+	if err == nil {
+		out := map[string]mongoResUsage{}
+		for _, it := range items {
+			if !want[it.name] {
+				continue
+			}
+			out[it.name] = mongoResUsage{cpuMilli: it.cpuMilli, memMi: it.memMi, mongodMilli: it.cpuMilli}
+		}
+		if len(out) > 0 {
+			return out, "metrics-server", nil
+		}
+	} else {
+		msErr = err
+	}
+	kubeOut, kErr := c.mongoUsageFromKubelet(ctx, pods)
+	if len(kubeOut) > 0 {
+		return kubeOut, "kubelet-summary", nil
+	}
+	switch {
+	case msErr != nil && kErr != nil:
+		return nil, "", fmt.Errorf("metrics-server: %v; kubelet summary: %w", msErr, kErr)
+	case kErr != nil:
+		return nil, "", fmt.Errorf("kubelet summary: %w", kErr)
+	case msErr != nil:
+		return nil, "", fmt.Errorf("metrics-server: %w", msErr)
+	default:
+		return nil, "", fmt.Errorf("mongodb pods missing from metrics-server and kubelet summary")
+	}
+}
+
+func (c *clients) mongoUsageFromKubelet(ctx context.Context, pods []corev1.Pod) (map[string]mongoResUsage, error) {
+	out := map[string]mongoResUsage{}
+	summaries := map[string]*kubeletSummary{}
+	var firstErr error
+	for i := range pods {
+		node := pods[i].Spec.NodeName
+		if node == "" {
+			continue
+		}
+		sum, cached := summaries[node]
+		if !cached {
+			raw, err := c.kubeletStatsSummaryRaw(ctx, node)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				summaries[node] = nil
+				continue
+			}
+			var parsed kubeletSummary
+			if err := json.Unmarshal(raw, &parsed); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				summaries[node] = nil
+				continue
+			}
+			sum = &parsed
+			summaries[node] = sum
+		}
+		if sum == nil {
+			continue
+		}
+		if u, ok := lookupMongoUsage(sum, pods[i].Namespace, pods[i].Name); ok {
+			out[pods[i].Name] = u
+		}
+	}
+	if len(out) == 0 {
+		if firstErr != nil {
+			return nil, firstErr
+		}
+		return nil, fmt.Errorf("mongodb pods not present in kubelet stats/summary")
+	}
+	return out, nil
+}
+
+type kubeletSummary struct {
+	Pods []kubeletPodStats `json:"pods"`
+}
+
+type kubeletPodStats struct {
+	PodRef struct {
+		Name      string `json:"name"`
+		Namespace string `json:"namespace"`
+	} `json:"podRef"`
+	CPU struct {
+		UsageNanoCores int64 `json:"usageNanoCores"`
+	} `json:"cpu"`
+	Memory struct {
+		WorkingSetBytes int64 `json:"workingSetBytes"`
+	} `json:"memory"`
+	Containers []kubeletContainerStats `json:"containers"`
+}
+
+type kubeletContainerStats struct {
+	Name string `json:"name"`
+	CPU  struct {
+		UsageNanoCores int64 `json:"usageNanoCores"`
+	} `json:"cpu"`
+	Memory struct {
+		WorkingSetBytes int64 `json:"workingSetBytes"`
+	} `json:"memory"`
+}
+
+func lookupMongoUsage(sum *kubeletSummary, ns, name string) (mongoResUsage, bool) {
+	for i := range sum.Pods {
+		p := &sum.Pods[i]
+		if p.PodRef.Name != name || (p.PodRef.Namespace != "" && p.PodRef.Namespace != ns) {
+			continue
+		}
+		u := mongoResUsage{
+			cpuMilli: nanoCoresToMilli(p.CPU.UsageNanoCores),
+			memMi:    p.Memory.WorkingSetBytes / (1024 * 1024),
+		}
+		for _, c := range p.Containers {
+			if isMongoDataContainerName(c.Name) {
+				u.mongodMilli += nanoCoresToMilli(c.CPU.UsageNanoCores)
+			}
+		}
+		if u.mongodMilli == 0 {
+			u.mongodMilli = u.cpuMilli
+		}
+		return u, true
+	}
+	return mongoResUsage{}, false
+}
+
+func nanoCoresToMilli(nano int64) int64 {
+	if nano <= 0 {
+		return 0
+	}
+	return (nano + 500_000) / 1_000_000
+}
+
+func (c *clients) readMongoConnectionCount(ctx context.Context, ns string, pods []corev1.Pod, lookback time.Duration) (int, bool) {
+	max, found := 0, false
+	since := int64(lookback.Seconds())
+	if since < 1 {
+		since = 60
+	}
+	tail := int64(2000)
+	for i := range pods {
+		cname := mongoServerContainer(&pods[i])
+		opts := &corev1.PodLogOptions{Container: cname, TailLines: &tail, SinceSeconds: &since}
+		req := c.kube.CoreV1().Pods(ns).GetLogs(pods[i].Name, opts)
+		stream, err := req.Stream(ctx)
+		if err != nil {
+			continue
+		}
+		data, _ := io.ReadAll(stream)
+		stream.Close()
+		if n, ok := parseMaxConnectionCount(string(data)); ok && n >= max {
+			max, found = n, true
+		}
+	}
+	return max, found
+}
+
+func (c *clients) prefixPodRestarts(ctx context.Context, ns, prefix string) int {
+	list, err := c.kube.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return 0
+	}
+	sum := 0
+	for i := range list.Items {
+		if !strings.HasPrefix(list.Items[i].Name, prefix) {
+			continue
+		}
+		for _, st := range list.Items[i].Status.ContainerStatuses {
+			sum += int(st.RestartCount)
+		}
+	}
+	return sum
+}
+
+var (
+	mongoSTSPodRe          = regexp.MustCompile(`^mongodb-\d+$`)
+	mongoConnectionCountRe = regexp.MustCompile(`(?i)"?connectionCount"?\s*[:=]\s*(\d+)`)
+)
+
+func isMongoDBServerPod(p *corev1.Pod) bool {
+	if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
+		return false
+	}
+	if _, job := p.Labels["job-name"]; job {
+		return false
+	}
+	name := p.Name
+	if strings.Contains(name, "create-") || strings.Contains(name, "backup") || strings.Contains(name, "exporter") {
+		return false
+	}
+	switch p.Labels["app.kubernetes.io/component"] {
+	case "arbiter", "metrics", "exporter":
+		return false
+	}
+	if mongoSTSPodRe.MatchString(name) {
+		return true
+	}
+	if p.Labels["app.kubernetes.io/name"] != "mongodb" && p.Labels["app"] != "mongodb" {
+		return false
+	}
+	return strings.HasPrefix(name, "mongodb")
+}
+
+func mongoServerContainer(p *corev1.Pod) string {
+	for _, want := range []string{"mongodb", "mongod", "database"} {
+		for _, c := range p.Spec.Containers {
+			if strings.EqualFold(c.Name, want) {
+				return c.Name
+			}
+		}
+	}
+	for _, c := range p.Spec.Containers {
+		if isMetricsSidecarName(c.Name) {
+			continue
+		}
+		return c.Name
+	}
+	if len(p.Spec.Containers) > 0 {
+		return p.Spec.Containers[0].Name
+	}
+	return ""
+}
+
+func isMongoDataContainerName(name string) bool {
+	n := strings.ToLower(name)
+	return n == "mongodb" || n == "mongod" || n == "database"
+}
+
+func isMetricsSidecarName(name string) bool {
+	n := strings.ToLower(name)
+	return n == "metrics" || n == "exporter" || strings.Contains(n, "log")
+}
+
+func parseMaxConnectionCount(logs string) (int, bool) {
+	matches := mongoConnectionCountRe.FindAllStringSubmatch(logs, -1)
+	if len(matches) == 0 {
+		return 0, false
+	}
+	max := 0
+	for _, m := range matches {
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			continue
+		}
+		if n > max {
+			max = n
+		}
+	}
+	return max, true
+}
+
+func containerRestartCount(p *corev1.Pod, container string) int32 {
+	for _, st := range p.Status.ContainerStatuses {
+		if st.Name == container {
+			return st.RestartCount
+		}
+	}
+	return 0
+}
+
+func cpuLimitMilli(p *corev1.Pod, container string) int64 {
+	for _, c := range p.Spec.Containers {
+		if c.Name != container {
+			continue
+		}
+		if q, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
+			return q.MilliValue()
+		}
+	}
+	return 0
+}
+
+func parseLookback(window string, settleSec int) time.Duration {
+	d, err := time.ParseDuration(window)
+	if err != nil || d <= 0 {
+		d = 5 * time.Minute
+	}
+	settle := time.Duration(settleSec)*time.Second + 30*time.Second
+	if settle > d {
+		return settle
+	}
+	return d
+}
+
+func fmtCores(milli int64) string {
+	return strconv.FormatFloat(float64(milli)/1000.0, 'f', 3, 64)
 }
 
 func (c *clients) scalePoolReplicas(ctx context.Context, cfg Config, n int) error {
