@@ -20,31 +20,42 @@ import (
 	"strings"
 )
 
+// opSet is the MongoDB $set update operator.
+const opSet = "$set"
+
 // UpdateBuilder provides a database-agnostic update builder
 // It generates MongoDB update documents or PostgreSQL UPDATE SET clauses from the same API
 type UpdateBuilder struct {
-	operations []UpdateOperation
+	operations []setUpdateOperation
 }
 
 // UpdateOperation represents a single update operation
 type UpdateOperation interface {
 	// ToMongo converts the operation to MongoDB update format
-	ToMongo() map[string]interface{}
+	ToMongo() map[string]any
 
 	// ToSQL converts the operation to PostgreSQL UPDATE SET clause
 	// Returns the SQL string and parameter values
-	ToSQL(paramNum int) (string, []interface{}, int)
+	ToSQL(paramNum int) (string, []any, int)
+}
+
+// setUpdateOperation is the operation subset accepted by UpdateBuilder.
+// Provider-native operations such as MongoDB $unset and $inc use their
+// provider builder and remain ordinary update documents.
+type setUpdateOperation interface {
+	UpdateOperation
+	mongoSet() (string, any)
 }
 
 // NewUpdate creates a new update builder
 func NewUpdate() *UpdateBuilder {
 	return &UpdateBuilder{
-		operations: make([]UpdateOperation, 0),
+		operations: make([]setUpdateOperation, 0),
 	}
 }
 
 // Set adds a $set operation (field = value)
-func (u *UpdateBuilder) Set(field string, value interface{}) *UpdateBuilder {
+func (u *UpdateBuilder) Set(field string, value any) *UpdateBuilder {
 	u.operations = append(u.operations, &setOperation{field: field, value: value})
 	return u
 }
@@ -52,13 +63,13 @@ func (u *UpdateBuilder) Set(field string, value interface{}) *UpdateBuilder {
 // SetDocumentField explicitly updates a field in the JSONB document, bypassing column detection.
 // This is useful when a field exists as both a denormalized column AND in the document,
 // and you need to update the document field specifically to keep them in sync.
-func (u *UpdateBuilder) SetDocumentField(field string, value interface{}) *UpdateBuilder {
+func (u *UpdateBuilder) SetDocumentField(field string, value any) *UpdateBuilder {
 	u.operations = append(u.operations, &setDocumentFieldOperation{field: field, value: value})
 	return u
 }
 
 // SetMultiple adds multiple $set operations at once
-func (u *UpdateBuilder) SetMultiple(updates map[string]interface{}) *UpdateBuilder {
+func (u *UpdateBuilder) SetMultiple(updates map[string]any) *UpdateBuilder {
 	for field, value := range updates {
 		u.operations = append(u.operations, &setOperation{field: field, value: value})
 	}
@@ -67,30 +78,82 @@ func (u *UpdateBuilder) SetMultiple(updates map[string]interface{}) *UpdateBuild
 }
 
 // ToMongo generates a MongoDB update document
-func (u *UpdateBuilder) ToMongo() map[string]interface{} {
+func (u *UpdateBuilder) ToMongo() map[string]any {
 	if u == nil || len(u.operations) == 0 {
-		return map[string]interface{}{}
+		return map[string]any{}
 	}
 
-	// Combine all $set operations into a single $set document
-	setDoc := make(map[string]interface{})
+	// Combine all $set operations into a single $set document.
+	setDoc := make(map[string]any)
 
 	for _, op := range u.operations {
-		opMap := op.ToMongo()
-		if setMap, ok := opMap["$set"].(map[string]interface{}); ok {
-			for k, v := range setMap {
-				setDoc[k] = v
-			}
-		}
+		field, value := op.mongoSet()
+		setDoc[field] = value
 	}
 
 	if len(setDoc) == 0 {
-		return map[string]interface{}{}
+		return map[string]any{}
 	}
 
-	return map[string]interface{}{
-		"$set": setDoc,
+	return map[string]any{
+		opSet: setDoc,
 	}
+}
+
+// ToMongoPipeline generates an aggregation-pipeline update that safely creates
+// or replaces non-object parents before assigning nested document fields.
+// This is useful for bulk updates that may include legacy documents whose
+// parent field is missing or explicitly null. UpdateBuilder accepts only $set
+// operations; provider-native operations such as $unset and $inc remain
+// ordinary update documents and do not use this conversion.
+func (u *UpdateBuilder) ToMongoPipeline() []any {
+	if u == nil || len(u.operations) == 0 {
+		return nil
+	}
+
+	pipeline := make([]any, 0, len(u.operations))
+
+	for _, op := range u.operations {
+		field, setValue := op.mongoSet()
+		parts := strings.Split(field, ".")
+
+		value := any(map[string]any{"$literal": setValue})
+		if len(parts) > 1 {
+			value = mongoNestedFieldExpression(parts[0], parts[1:], setValue)
+		}
+
+		pipeline = append(pipeline, map[string]any{
+			opSet: map[string]any{parts[0]: value},
+		})
+	}
+
+	return pipeline
+}
+
+func mongoNestedFieldExpression(parent string, remaining []string, value any) map[string]any {
+	fieldValue := any(map[string]any{"$literal": value})
+	if len(remaining) > 1 {
+		fieldValue = mongoNestedFieldExpression(
+			parent+"."+remaining[0], remaining[1:], value)
+	}
+
+	return map[string]any{"$mergeObjects": []any{
+		mongoObjectOrEmpty(parent),
+		map[string]any{remaining[0]: fieldValue},
+	}}
+}
+
+func mongoObjectOrEmpty(field string) map[string]any {
+	reference := "$" + field
+
+	return map[string]any{"$cond": []any{
+		map[string]any{"$eq": []any{
+			map[string]any{"$type": reference},
+			"object",
+		}},
+		reference,
+		map[string]any{},
+	}}
 }
 
 // documentUpdate represents a pending JSONB document field update.
@@ -164,31 +227,60 @@ func (u *UpdateBuilder) categorizeOperation(op UpdateOperation, paramNum int) (s
 func buildChainedJSONBSet(updates []documentUpdate, startParam int) (string, []any) {
 	expr := "document"
 	args := make([]any, 0, len(updates))
+	initializedParents := make(map[string]struct{})
 
 	for i, du := range updates {
+		parts := strings.Split(du.path, ",")
+		for depth := 1; depth < len(parts); depth++ {
+			parentPath := strings.Join(parts[:depth], ",")
+			if _, initialized := initializedParents[parentPath]; initialized {
+				continue
+			}
+
+			parentValue := fmt.Sprintf("%s #> '{%s}'", expr, parentPath)
+			expr = fmt.Sprintf(
+				"jsonb_set(%s, '{%s}', CASE WHEN jsonb_typeof(%s) = 'object' THEN %s ELSE '{}'::jsonb END, true)",
+				expr, parentPath, parentValue, parentValue,
+			)
+			initializedParents[parentPath] = struct{}{}
+		}
+
 		expr = fmt.Sprintf("jsonb_set(%s, '{%s}', $%d::jsonb)", expr, du.path, startParam+i)
 		args = append(args, toJSONBValue(du.value))
+		invalidateInitializedParents(initializedParents, du.path)
 	}
 
 	return "document = " + expr, args
+}
+
+func invalidateInitializedParents(initialized map[string]struct{}, overwrittenPath string) {
+	for path := range initialized {
+		if path == overwrittenPath || strings.HasPrefix(path, overwrittenPath+",") {
+			delete(initialized, path)
+		}
+	}
 }
 
 // --- Set Operation ---
 
 type setOperation struct {
 	field string
-	value interface{}
+	value any
 }
 
-func (s *setOperation) ToMongo() map[string]interface{} {
-	return map[string]interface{}{
-		"$set": map[string]interface{}{
+func (s *setOperation) ToMongo() map[string]any {
+	return map[string]any{
+		opSet: map[string]any{
 			s.field: s.value,
 		},
 	}
 }
 
-func (s *setOperation) ToSQL(paramNum int) (string, []interface{}, int) {
+func (s *setOperation) mongoSet() (string, any) {
+	return s.field, s.value
+}
+
+func (s *setOperation) ToSQL(paramNum int) (string, []any, int) {
 	// For JSONB updates, we need to use jsonb_set for nested paths
 	if strings.Contains(s.field, ".") && !isColumnField(s.field) {
 		// Nested JSONB field update
@@ -197,20 +289,20 @@ func (s *setOperation) ToSQL(paramNum int) (string, []interface{}, int) {
 		// Cast the value to jsonb to ensure PostgreSQL treats it as JSONB
 		sql := fmt.Sprintf("document = jsonb_set(document, '{%s}', $%d::jsonb)", path, paramNum)
 
-		return sql, []interface{}{toJSONBValue(s.value)}, paramNum + 1
+		return sql, []any{toJSONBValue(s.value)}, paramNum + 1
 	}
 
 	// Simple column or top-level JSONB field update
 	if isColumnField(s.field) {
 		sql := fmt.Sprintf("%s = $%d", s.field, paramNum)
-		return sql, []interface{}{s.value}, paramNum + 1
+		return sql, []any{s.value}, paramNum + 1
 	}
 
 	// Top-level JSONB field
 	// Cast the value to jsonb to ensure PostgreSQL treats it as JSONB
 	sql := fmt.Sprintf("document = jsonb_set(document, '{%s}', $%d::jsonb)", s.field, paramNum)
 
-	return sql, []interface{}{toJSONBValue(s.value)}, paramNum + 1
+	return sql, []any{toJSONBValue(s.value)}, paramNum + 1
 }
 
 // --- SetDocumentField Operation ---
@@ -226,10 +318,14 @@ type setDocumentFieldOperation struct {
 func (s *setDocumentFieldOperation) ToMongo() map[string]any {
 	// For MongoDB, this is the same as a regular $set
 	return map[string]any{
-		"$set": map[string]any{
+		opSet: map[string]any{
 			s.field: s.value,
 		},
 	}
+}
+
+func (s *setDocumentFieldOperation) mongoSet() (string, any) {
+	return s.field, s.value
 }
 
 func (s *setDocumentFieldOperation) ToSQL(paramNum int) (string, []any, int) {
@@ -247,10 +343,12 @@ func mongoFieldToJSONBPath(fieldPath string) string {
 }
 
 // toJSONBValue converts a Go value to JSONB-compatible format
-func toJSONBValue(value interface{}) string {
+func toJSONBValue(value any) string {
 	switch v := value.(type) {
 	case string:
-		return fmt.Sprintf("\"%s\"", v)
+		encoded, _ := json.Marshal(v)
+
+		return string(encoded)
 	case bool:
 		return fmt.Sprintf("%t", v)
 	case int, int32, int64, uint, uint32, uint64:

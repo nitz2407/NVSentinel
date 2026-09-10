@@ -132,7 +132,7 @@ func (f *ClientFactory) CreateChangeStreamWatcher(
 	ctx context.Context,
 	dbClient client.DatabaseClient,
 	clientName string,
-	pipeline interface{},
+	pipeline any,
 ) (client.ChangeStreamWatcher, error) {
 	provider := os.Getenv("DATASTORE_PROVIDER")
 	providerType := datastore.DataStoreProvider(provider)
@@ -153,7 +153,7 @@ func (f *ClientFactory) CreateChangeStreamWatcher(
 	// Convert database-agnostic pipeline to provider-specific format if needed
 	// For MongoDB: converts to mongo.Pipeline
 	// For PostgreSQL: pipeline is used for filtering events (keep as-is)
-	var providerPipeline interface{}
+	var providerPipeline any
 
 	if providerType == datastore.ProviderMongoDB {
 		convertedPipeline, err := convertToMongoPipeline(pipeline)
@@ -195,7 +195,15 @@ func (f *ClientFactory) CreateChangeStreamWatcher(
 		).WithMetadata("clientName", clientName).WithMetadata("tokenConfig", tokenConfig)
 	}
 
-	return client.NewChangeStreamWatcherWithResumeControl(watcher, resumeControlDecision), nil
+	wrapped := client.NewChangeStreamWatcherWithResumeControl(watcher, resumeControlDecision)
+
+	// Every consumer that builds its watcher through this factory registers here, including
+	// event-exporter, which reaches neither provider adapter. The default registry is correct
+	// for those; consumers serving their own registry register again via their adapter, and
+	// registration is idempotent per registry and client.
+	client.RegisterChangeStreamLag(nil, clientName, wrapped)
+
+	return wrapped, nil
 }
 
 // GetDatabaseConfig returns the database configuration used by this factory
@@ -204,18 +212,18 @@ func (f *ClientFactory) GetDatabaseConfig() config.DatabaseConfig {
 }
 
 // convertToMongoPipeline converts various pipeline types to MongoDB-compatible pipeline
-func convertToMongoPipeline(pipeline interface{}) (interface{}, error) {
+func convertToMongoPipeline(pipeline any) (any, error) {
 	switch p := pipeline.(type) {
 	case datastore.Pipeline:
 		// Use the client package conversion function to avoid circular imports
 		return client.ConvertAgnosticPipelineToMongo(p)
-	case []interface{}:
+	case []any:
 		// Convert []interface{} to mongo.Pipeline for change streams
 		// This handles pipelines created by client.NewPipelineBuilder()
-		mongoPipeline := make([]map[string]interface{}, len(p))
+		mongoPipeline := make([]map[string]any, len(p))
 
 		for i, stage := range p {
-			if stageMap, ok := stage.(map[string]interface{}); ok {
+			if stageMap, ok := stage.(map[string]any); ok {
 				mongoPipeline[i] = stageMap
 			} else {
 				return nil, fmt.Errorf("invalid pipeline stage type: %T", stage)

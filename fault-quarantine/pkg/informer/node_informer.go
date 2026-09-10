@@ -22,6 +22,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -91,6 +92,10 @@ func NewNodeInformer(clientset kubernetes.Interface,
 	ni.lister = nodeInformerObj.Lister()
 	ni.informerSynced = nodeInformerObj.Informer().HasSynced
 
+	if err := ni.informer.SetTransform(stripNodeStatus); err != nil {
+		return nil, fmt.Errorf("failed to set node cache transform: %w", err)
+	}
+
 	err := ni.informer.AddIndexers(cache.Indexers{
 		quarantineAnnotationIndexName: quarantineAnnotationIndexFunc,
 	})
@@ -111,6 +116,17 @@ func NewNodeInformer(clientset kubernetes.Interface,
 		"gpuNodeLabelKey", gpuNodeLabelKey, "gpuNodeLabelValue", gpuNodeLabelValue)
 
 	return ni, nil
+}
+
+func stripNodeStatus(obj any) (any, error) {
+	node, ok := obj.(*v1.Node)
+	if !ok {
+		return nil, fmt.Errorf("expected node object, got %T", obj)
+	}
+
+	node.Status = v1.NodeStatus{}
+
+	return node, nil
 }
 
 // Run starts the informer and waits for cache sync.
@@ -150,7 +166,7 @@ func (ni *NodeInformer) WaitForSync(ctx context.Context) bool {
 }
 
 // quarantineAnnotationIndexFunc is the indexer function for quarantined nodes
-func quarantineAnnotationIndexFunc(obj interface{}) ([]string, error) {
+func quarantineAnnotationIndexFunc(obj any) ([]string, error) {
 	node, ok := obj.(*v1.Node)
 	if !ok {
 		return nil, fmt.Errorf("expected node object, got %T", obj)
@@ -203,6 +219,20 @@ func (ni *NodeInformer) GetNode(name string) (*v1.Node, error) {
 	return ni.lister.Get(name)
 }
 
+// GetNodeDirect retrieves current node metadata and spec from the API server.
+// Status is stripped to keep the Node CEL contract identical to the informer view.
+func (ni *NodeInformer) GetNodeDirect(ctx context.Context, name string) (*v1.Node, error) {
+	node, err := ni.clientset.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	node = node.DeepCopy()
+	node.Status = v1.NodeStatus{}
+
+	return node, nil
+}
+
 // ListNodes lists all nodes from the informer's cache.
 func (ni *NodeInformer) ListNodes() ([]*v1.Node, error) {
 	return ni.lister.List(labels.Everything())
@@ -212,7 +242,7 @@ func (ni *NodeInformer) ListNodes() ([]*v1.Node, error) {
 // This is important during informer restart/resync when we get ADD events
 // for all existing nodes. If a node was manually uncordoned/untainted while
 // FQ was down, we need to detect and handle it.
-func (ni *NodeInformer) handleAddNode(obj interface{}) {
+func (ni *NodeInformer) handleAddNode(obj any) {
 	node, ok := obj.(*v1.Node)
 	if !ok {
 		slog.Error("Add event received unexpected type",
@@ -309,7 +339,7 @@ func (ni *NodeInformer) hasMissingTaints(node *v1.Node, expectedTaints []config.
 }
 
 // handleUpdateNodeWrapper is a wrapper for handleUpdateNode that converts interface{} to *v1.Node.
-func (ni *NodeInformer) handleUpdateNodeWrapper(oldObj, newObj interface{}) {
+func (ni *NodeInformer) handleUpdateNodeWrapper(oldObj, newObj any) {
 	oldNode, okOld := oldObj.(*v1.Node)
 	newNode, okNew := newObj.(*v1.Node)
 
@@ -432,7 +462,7 @@ func (ni *NodeInformer) SetOnManualUntaintCallback(callback func(nodeName string
 }
 
 // handleDeleteNode handles node deletion events.
-func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
+func (ni *NodeInformer) handleDeleteNode(obj any) {
 	node, ok := obj.(*v1.Node)
 	if !ok {
 		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
@@ -469,7 +499,6 @@ func (ni *NodeInformer) handleDeleteNode(obj interface{}) {
 func hasTaint(node *v1.Node, expectedTaint config.Taint) bool {
 	for _, taint := range node.Spec.Taints {
 		if taint.Key == expectedTaint.Key &&
-			taint.Value == expectedTaint.Value &&
 			string(taint.Effect) == expectedTaint.Effect {
 			return true
 		}

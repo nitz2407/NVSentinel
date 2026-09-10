@@ -40,6 +40,33 @@ func createXidEvent(nodeName, xidCode string, timestamp time.Time) *protos.Healt
 	}
 }
 
+// TestXidBurstDetector_NilGeneratedTimestamp_NoPanic is a regression test:
+// ProcessEvent previously dereferenced event.GeneratedTimestamp without a nil
+// check, panicking on events with a missing timestamp and (because failed
+// events are redelivered via the resume token) crash-looping the analyzer.
+// It now skips such events; nil timestamps are a real occurrence in the
+// system — platform-connectors implements safeTimestamp specifically to
+// handle "HealthEvent has nil GeneratedTimestamp".
+func TestXidBurstDetector_NilGeneratedTimestamp_NoPanic(t *testing.T) {
+	d := NewXidBurstDetector()
+
+	ev := &protos.HealthEvent{
+		NodeName:       "node-nil-ts",
+		Agent:          "gpu-health-monitor",
+		ComponentClass: "GPU",
+		IsHealthy:      false,
+		ErrorCode:      []string{"79"},
+		// GeneratedTimestamp intentionally nil
+		EntitiesImpacted: []*protos.Entity{
+			{EntityType: "GPU", EntityValue: "0"},
+		},
+	}
+
+	assert.NotPanics(t, func() {
+		d.ProcessEvent(ev)
+	}, "ProcessEvent must not panic on a health event with a nil GeneratedTimestamp")
+}
+
 // Helper function to create test XID events for a specific GPU (by UUID or ordinal).
 // Uses the production "GPU_UUID" entity type emitted by the syslog health monitor.
 func createXidEventForGPU(nodeName, xidCode, gpuUUID string, timestamp time.Time) *protos.HealthEvent {
@@ -91,7 +118,7 @@ func TestXidBurstDetector_FourBursts_NoTrigger(t *testing.T) {
 	var shouldTrigger bool
 	var burstCount int
 
-	for burst := 0; burst < 4; burst++ {
+	for burst := range 4 {
 		burstStart := baseTime.Add(time.Duration(burst) * 5 * time.Minute)
 		events := []*protos.HealthEvent{
 			createXidEvent(nodeName, xidCode, burstStart),
@@ -118,7 +145,7 @@ func TestXidBurstDetector_FiveBursts_Trigger(t *testing.T) {
 	var shouldTrigger bool
 	var burstCount int
 
-	for burst := 0; burst < 5; burst++ {
+	for burst := range 5 {
 		burstStart := baseTime.Add(time.Duration(burst) * 5 * time.Minute)
 		events := []*protos.HealthEvent{
 			createXidEvent(nodeName, xidCode, burstStart),
@@ -187,7 +214,7 @@ func TestXidBurstDetector_MultipleNodes_Independent(t *testing.T) {
 	xidCode := "120" // Non-sticky XID
 
 	// Node 1: 4 bursts (not enough to trigger)
-	for burst := 0; burst < 4; burst++ {
+	for burst := range 4 {
 		burstStart := baseTime.Add(time.Duration(burst) * 5 * time.Minute)
 		detector.ProcessEvent(createXidEvent("node-1", xidCode, burstStart))
 		detector.ProcessEvent(createXidEvent("node-1", xidCode, burstStart.Add(30*time.Second)))
@@ -196,7 +223,7 @@ func TestXidBurstDetector_MultipleNodes_Independent(t *testing.T) {
 	// Node 2: 5 bursts (should trigger)
 	var shouldTrigger bool
 	var burstCount int
-	for burst := 0; burst < 5; burst++ {
+	for burst := range 5 {
 		burstStart := baseTime.Add(time.Duration(burst) * 5 * time.Minute)
 		detector.ProcessEvent(createXidEvent("node-2", xidCode, burstStart))
 		shouldTrigger, burstCount = detector.ProcessEvent(createXidEvent("node-2", xidCode, burstStart.Add(30*time.Second)))
@@ -265,7 +292,7 @@ func TestXidBurstDetector_ClearNodeHistory(t *testing.T) {
 	xidCode := "120" // Non-sticky XID
 
 	// Create 5 bursts to trigger
-	for burst := 0; burst < 5; burst++ {
+	for burst := range 5 {
 		burstStart := baseTime.Add(time.Duration(burst) * 5 * time.Minute)
 		detector.ProcessEvent(createXidEvent(nodeName, xidCode, burstStart))
 		detector.ProcessEvent(createXidEvent(nodeName, xidCode, burstStart.Add(30*time.Second)))
@@ -284,7 +311,7 @@ func TestXidBurstDetector_ClearNodeHistory(t *testing.T) {
 
 	// Create new bursts after clearing - should not trigger until 5 bursts again
 	var shouldTrigger bool
-	for burst := 0; burst < 4; burst++ {
+	for burst := range 4 {
 		burstStart := baseTime.Add(time.Duration(burst+5) * 5 * time.Minute)
 		detector.ProcessEvent(createXidEvent(nodeName, xidCode, burstStart))
 		shouldTrigger, _ = detector.ProcessEvent(createXidEvent(nodeName, xidCode, burstStart.Add(30*time.Second)))
@@ -377,7 +404,7 @@ func TestXidBurstDetector_DifferentGPUs_DoNotMerge(t *testing.T) {
 	const gpu3 = "GPU-3"
 
 	// GPU-0: 3 distinct bursts (below threshold of 5).
-	for burst := 0; burst < 3; burst++ {
+	for burst := range 3 {
 		burstStart := baseTime.Add(time.Duration(burst) * 5 * time.Minute)
 		detector.ProcessEvent(createXidEventForGPU(nodeName, xidCode, gpu0, burstStart))
 		detector.ProcessEvent(createXidEventForGPU(nodeName, xidCode, gpu0,
@@ -390,7 +417,7 @@ func TestXidBurstDetector_DifferentGPUs_DoNotMerge(t *testing.T) {
 
 	var burstCount int
 
-	for burst := 0; burst < 2; burst++ {
+	for burst := range 2 {
 		burstStart := baseTime.Add(time.Duration(burst+3) * 5 * time.Minute)
 		detector.ProcessEvent(createXidEventForGPU(nodeName, xidCode, gpu3, burstStart))
 		shouldTrigger, burstCount = detector.ProcessEvent(
@@ -423,7 +450,7 @@ func TestXidBurstDetector_SameGPU_TriggersAcrossBursts(t *testing.T) {
 	xidCode := "120" // Non-sticky XID
 
 	// Noise on GPU-3: a few events on another GPU that must not leak into GPU-0.
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		detector.ProcessEvent(createXidEventForGPU(nodeName, xidCode, "GPU-3",
 			baseTime.Add(time.Duration(i)*5*time.Minute)))
 	}
@@ -432,7 +459,7 @@ func TestXidBurstDetector_SameGPU_TriggersAcrossBursts(t *testing.T) {
 
 	var burstCount int
 
-	for burst := 0; burst < 5; burst++ {
+	for burst := range 5 {
 		burstStart := baseTime.Add(time.Duration(burst) * 5 * time.Minute)
 		detector.ProcessEvent(createXidEventForGPU(nodeName, xidCode, "GPU-0", burstStart))
 		shouldTrigger, burstCount = detector.ProcessEvent(

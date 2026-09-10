@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/healthstatus"
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
 	datamodels "github.com/nvidia/nvsentinel/data-models/pkg/model"
 	protos "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -37,9 +38,21 @@ import (
 
 // No retry constants needed - EventProcessor no longer retries internally
 
+const (
+	// agentName identifies this component in health events it publishes, and is
+	// used to filter out its own events when watching the store.
+	agentName = "health-events-analyzer"
+	// fieldProcessingStrategy is the stored document field holding the
+	// per-event processing strategy.
+	fieldProcessingStrategy = "healthevent.processingstrategy"
+	// fieldNodeName is the stored document field used to scope rule evaluation
+	// to the node that produced the incoming event.
+	fieldNodeName = "healthevent.nodename"
+)
+
 type HealthEventsAnalyzerReconcilerConfig struct {
 	DataStoreConfig           *datastore.DataStoreConfig
-	Pipeline                  interface{}
+	Pipeline                  any
 	HealthEventsAnalyzerRules *config.TomlConfig
 	Publisher                 *publisher.PublisherConfig
 }
@@ -89,7 +102,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	datastoreAdapter, ok := ds.(interface {
 		GetDatabaseClient() client.DatabaseClient
 		CreateChangeStreamWatcher(
-			ctx context.Context, clientName string, pipeline interface{},
+			ctx context.Context, clientName string, pipeline any,
 		) (datastore.ChangeStreamWatcher, error)
 	})
 	if !ok {
@@ -99,7 +112,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	r.databaseClient = datastoreAdapter.GetDatabaseClient()
 
 	changeStreamWatcher, err := datastoreAdapter.CreateChangeStreamWatcher(
-		ctx, "health-events-analyzer", r.config.Pipeline)
+		ctx, agentName, r.config.Pipeline)
 	if err != nil {
 		return fmt.Errorf("failed to create change stream watcher: %w", err)
 	}
@@ -121,8 +134,11 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	// Failed events will be retried on next pod restart (via resume token)
 	processorConfig := client.EventProcessorConfig{
 		EnableMetrics:        true,
-		MetricsLabels:        map[string]string{"module": "health-events-analyzer"},
+		MetricsLabels:        map[string]string{"module": agentName},
 		MarkProcessedOnError: false, // IMPORTANT: Don't mark failed events as processed
+		SkipEvent: func(event client.Event) bool {
+			return client.EventUpdatesOnly(event, healthstatus.FaultQuarantineRecoveryPath)
+		},
 	}
 
 	r.eventProcessor = client.NewEventProcessor(oldWatcher, r.databaseClient, processorConfig)
@@ -378,7 +394,8 @@ func (r *Reconciler) publishMatchedEvent(ctx context.Context,
 		return fmt.Errorf("error in publishing the new fatal event: %w", err)
 	}
 
-	slog.InfoContext(ctx, "New event successfully published for matching rule", "rule_name", rule.Name)
+	slog.InfoContext(ctx, "New event successfully published for matching rule",
+		"rule_name", rule.Name, "node", event.HealthEvent.NodeName)
 
 	return nil
 }
@@ -424,7 +441,7 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 		return false, fmt.Errorf("failed to build pipeline stages: %w", err)
 	}
 
-	var result []map[string]interface{}
+	var result []map[string]any
 
 	slog.DebugContext(ctx, "Executing aggregation pipeline",
 		"rule_name", rule.Name, "pipeline_stages_count", len(pipelineStages))
@@ -494,23 +511,26 @@ func (r *Reconciler) validateAllSequenceCriteria(ctx context.Context, rule confi
 func (r *Reconciler) getPipelineStages(
 	rule config.HealthEventsAnalyzerRule,
 	healthEventWithStatus datamodels.HealthEventWithStatus,
-) ([]map[string]interface{}, error) {
-	// CRITICAL: Always start with agent filter to exclude events from health-events-analyzer itself
-	// This prevents the analyzer from matching its own generated events, which would cause
-	// infinite loops and incorrect rule evaluations
-	pipeline := []map[string]interface{}{
+) ([]map[string]any, error) {
+	// Always start with mandatory filters. The agent filter prevents the analyzer
+	// from matching its own generated events, while the node filter limits each
+	// rule evaluation to events from the node that produced the incoming event.
+	// Keeping the node predicate in the first stage lets the datastore use its
+	// node-prefixed HealthEvents index before evaluating configured rule stages.
+	pipeline := []map[string]any{
 		{
-			"$match": map[string]interface{}{
-				"healthevent.agent": map[string]interface{}{"$ne": "health-events-analyzer"},
-				"$or": []interface{}{
-					map[string]interface{}{
-						"healthevent.processingstrategy": int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
+			"$match": map[string]any{
+				"healthevent.agent": map[string]any{"$ne": agentName},
+				fieldNodeName:       healthEventWithStatus.HealthEvent.NodeName,
+				"$or": []any{
+					map[string]any{
+						fieldProcessingStrategy: int32(protos.ProcessingStrategy_EXECUTE_REMEDIATION),
 					},
-					map[string]interface{}{
-						"healthevent.processingstrategy": int32(protos.ProcessingStrategy_STORE_AND_ANALYSE),
+					map[string]any{
+						fieldProcessingStrategy: int32(protos.ProcessingStrategy_STORE_AND_ANALYSE),
 					},
-					map[string]interface{}{
-						"healthevent.processingstrategy": map[string]interface{}{"$exists": false},
+					map[string]any{
+						fieldProcessingStrategy: map[string]any{"$exists": false},
 					},
 				},
 			},
@@ -542,7 +562,7 @@ func (r *Reconciler) shouldProcessXidEvent(event *protos.HealthEvent) bool {
 		event.ComponentClass == "GPU" &&
 		!event.IsHealthy &&
 		len(event.ErrorCode) > 0 &&
-		event.Agent != "health-events-analyzer" // Don't process our own events
+		event.Agent != agentName // Don't process our own events
 }
 
 // shouldClearXidHistory checks if a healthy GPU event should clear the XID burst history
@@ -552,7 +572,7 @@ func (r *Reconciler) shouldClearXidHistory(event *protos.HealthEvent) bool {
 	return event != nil &&
 		event.ComponentClass == "GPU" &&
 		event.IsHealthy &&
-		event.Agent != "health-events-analyzer" // Don't process our own events
+		event.Agent != agentName // Don't process our own events
 }
 
 // processXidBurstDetection processes GPU XID events through the burst detector

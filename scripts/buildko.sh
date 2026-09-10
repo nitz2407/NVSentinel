@@ -47,6 +47,7 @@ if [ ! -f go.work ]; then
     ./health-events-analyzer \
     ./health-monitors/csp-health-monitor \
     ./health-monitors/kubernetes-object-monitor \
+    ./health-monitors/nvcre-certification-monitor \
     ./health-monitors/nic-health-monitor \
     ./janitor \
     ./janitor-provider \
@@ -54,7 +55,8 @@ if [ ! -f go.work ]; then
     ./node-drainer \
     ./platform-connectors \
     ./plugins/slinky-drainer \
-    ./preflight
+    ./preflight \
+    ./lifecycle-manager
 fi
 
 ko build "${KO_FLAGS[@]}" \
@@ -65,6 +67,7 @@ ko build "${KO_FLAGS[@]}" \
   ./health-monitors/csp-health-monitor/cmd/csp-health-monitor \
   ./health-monitors/csp-health-monitor/cmd/maintenance-notifier \
   ./health-monitors/kubernetes-object-monitor \
+  ./health-monitors/nvcre-certification-monitor \
   ./health-monitors/nic-health-monitor \
   ./janitor \
   ./janitor-provider \
@@ -72,7 +75,8 @@ ko build "${KO_FLAGS[@]}" \
   ./node-drainer \
   ./platform-connectors \
   ./plugins/slinky-drainer \
-  ./preflight
+  ./preflight \
+  ./lifecycle-manager
 
 echo "built refs:"
 cat digests.txt

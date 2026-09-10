@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/configmanager"
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/breaker"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
@@ -40,6 +41,7 @@ type InitializationParams struct {
 	DatabaseClientCertMountPath string
 	GPUNodeLabelKey             string
 	GPUNodeLabelValue           string
+	KubernetesClientRateLimits  kubeclient.RateLimitConfig
 }
 
 type Components struct {
@@ -47,7 +49,7 @@ type Components struct {
 	K8sClient       *informer.FaultQuarantineClient
 	CircuitBreaker  breaker.CircuitBreaker
 	DatastoreConfig *datastore.DataStoreConfig
-	Pipeline        interface{}
+	Pipeline        any
 	TomlConfig      config.TomlConfig
 }
 
@@ -79,7 +81,7 @@ func InitializeAll(ctx context.Context, params InitializationParams) (*Component
 
 	k8sClient, err := informer.NewFaultQuarantineClient(
 		params.KubeconfigPath, params.DryRun, 30*time.Minute,
-		params.GPUNodeLabelKey, params.GPUNodeLabelValue,
+		params.GPUNodeLabelKey, params.GPUNodeLabelValue, params.KubernetesClientRateLimits,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error while initializing kubernetes client: %w", err)
@@ -125,7 +127,7 @@ func createReconcilerConfig(
 	circuitBreakerEnabled bool,
 	datastoreConfig *datastore.DataStoreConfig,
 	tokenConfig storeconfig.TokenConfig,
-	pipeline interface{},
+	pipeline any,
 ) reconciler.ReconcilerConfig {
 	// Convert store config types to the types expected by reconciler
 	clientTokenConfig := client.TokenConfig{
@@ -182,15 +184,20 @@ func initializeCircuitBreaker(
 		return nil, fmt.Errorf("invalid circuit breaker duration %q: %w", cbConfig.Duration, err)
 	}
 
+	// Bounds are validated by NewSlidingWindowBreaker below, so a caller that builds the
+	// config directly cannot bypass the check.
+
 	slog.InfoContext(ctx, "Initializing circuit breaker",
 		"configMap", circuitBreakerName,
 		"namespace", namespace,
 		"percentage", cbConfig.Percentage,
+		"maxNodes", cbConfig.MaxNodes,
 		"duration", cbConfig.Duration)
 
 	cb, err := breaker.NewSlidingWindowBreaker(ctx, breaker.Config{
 		Window:             duration,
 		TripPercentage:     float64(cbConfig.Percentage),
+		TripMaxNodes:       cbConfig.MaxNodes,
 		K8sClient:          k8sClient,
 		ConfigMapName:      circuitBreakerName,
 		ConfigMapNamespace: namespace,

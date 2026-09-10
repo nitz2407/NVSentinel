@@ -19,6 +19,18 @@ global:
   imagePullSecrets:
     - name: global-pull-secret
 
+  # simple-health-client (tilt/simple-health-client) is the injection path for
+  # the e2e fault-injection helpers: a single Deployment that posts health
+  # events naming arbitrary target nodes. It therefore needs the same cross-node
+  # grant as the real cluster-scoped monitors. Its ServiceAccount and projected
+  # token are defined in tilt/simple-health-client/deployment.yaml.
+  platformConnectorAuth:
+    # The bundled monitors are derived from the release namespace; only the
+    # dev-only fault-injection client needs listing. Tilt always installs into
+    # nvsentinel, so the literal namespace is accurate here.
+    crossNodeServiceAccounts:
+      - "system:serviceaccount:nvsentinel:simple-health-client"
+
   # NOTE: Datastore configuration is provided by:
   # - values-tilt-mongodb.yaml (default, when USE_POSTGRESQL is not set)
   # - values-tilt-postgresql.yaml (when USE_POSTGRESQL=1)
@@ -78,6 +90,9 @@ global:
   janitor:
     enabled: true
 
+  lifecycleManager:
+    enabled: true
+
   janitorProvider:
     enabled: true
 
@@ -88,6 +103,9 @@ global:
     enabled: false
 
   kubernetesObjectMonitor:
+    enabled: true
+
+  nvcreCertificationMonitor:
     enabled: true
 
   slurmDrainMonitor:
@@ -150,6 +168,8 @@ mongodb-store:
         name: rs0
         size: 3
         configuration: |
+          replication:
+            oplogSizeMB: 990
           setParameter:
             authenticationMechanisms: "MONGODB-X509,SCRAM-SHA-256,SCRAM-SHA-1"
         replsetOverrides:
@@ -163,7 +183,8 @@ mongodb-store:
           pvc:
             resources:
               requests:
-                storage: "1Gi"
+                # 2Gi is enough for Tilt Percona plus MongoDB's 990 MiB oplog floor.
+                storage: "2Gi"
         nodeSelector:
           node-role.kubernetes.io/control-plane: ""
         tolerations:
@@ -380,7 +401,9 @@ health-events-analyzer:
   config: |
     [[rules]]
     name = "MultipleRemediations"
-    description = "Detect if multiple remediations are performed within 2 minutes on a node (test config)"
+    # Keep this wider than two full remediation cycles in CI. A 120s window
+    # flakes when each reboot takes ~70-90s (see #1458).
+    description = "Detect if multiple remediations are performed within 10 minutes on a node (test config)"
     recommended_action = "CONTACT_SUPPORT"
     evaluate_rule = true
     stage = [
@@ -392,7 +415,7 @@ health-events-analyzer:
               {
                 "$gte": [
                   "$healthevent.generatedtimestamp.seconds",
-                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 120]}
+                  {"$subtract": ["this.healthevent.generatedtimestamp.seconds", 600]}
                 ]
               },
               {
@@ -421,7 +444,7 @@ health-events-analyzer:
 
     [[rules]]
     name = "RepeatedXIDErrorOnSameGPU"
-    description = "Detect occurrence of fatal XIDs 2 times within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
+    description = "Detect occurrence of XID errors (any XID except 31 and 45) on the same GPU 2 times within 2 minutes where the burst window is 15 seconds and sticky XIDs window is 30 seconds (test config)"
     recommended_action = "CONTACT_SUPPORT"
     evaluate_rule = true
     stage = [
@@ -469,6 +492,10 @@ health-events-analyzer:
       ''',
       # Candidate docs must also be XID events so non-XID unhealthy events on
       # the same node are not merged into GPU burst counts.
+      #
+      # Excluded codes: 31 has its own dedicated rules; 45 is preemptive channel cleanup that
+      # the Xid catalogue resolves as "Not Solo: IGNORE (follow other Xid)", and a repeat is
+      # never solo.
       '''
       {
         "$match": {
@@ -477,7 +504,7 @@ health-events-analyzer:
           "healthevent.nodename": "this.healthevent.nodename",
           "$expr": {
           "$and": [
-            {"$ne": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, "31"]},
+            {"$not": [{"$in": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, ["31", "45"]]}]},
             {
               "$gt": [
                 {
@@ -3810,7 +3837,7 @@ health-events-analyzer:
               {
                 "$in": [
                   "this.healthevent.errorcode.0",
-                  ["netdev_watchdog", "port_module_high_temp", "pci_power_insufficient", "module_unplugged"]
+                  ["netdev_watchdog", "port_module_high_temp", "pci_power_insufficient", "module_unplugged", "mlx5_tx_timeout_detected", "mlx5_rx_timeout_detected"]
                 ]
               }
             ]
@@ -3996,7 +4023,7 @@ health-events-analyzer:
 
 janitor:
   config:
-    cspProviderHost: "janitor-provider.nvsentinel.svc.cluster.local:50051"
+    # Derived from the release namespace; no need to pin it.
     cspProvider:
       tls:
         enabled: true
@@ -4052,7 +4079,9 @@ janitor-provider:
   tls:
     enabled: true
   auth:
-    enabled: true
+    # The bundled janitor is derived from the release namespace, so nothing is
+    # needed here. List only an out-of-tree janitor, if you run one.
+    allowedUsernames: []
 
 labeler:
   logLevel: debug
@@ -4068,8 +4097,11 @@ syslog-health-monitor:
     # Tilt-only: production defaults intentionally leave SysLogsNICDriverError
     # disabled. Enable it here so e2e tests can exercise NIC driver syslog detection.
     - SysLogsNICDriverError
-  # Tilt-only: production defaults intentionally do not enable any NIC driver
-  # syslog pattern names. The regexes, severities, and actions are owned by code.
+  # Tilt-only overrides: the production chart enables only the mlx5 timeout
+  # patterns and the soft-lockup pattern (the latter in STORE_ONLY shadow
+  # mode). Tilt enables every pattern with EXECUTE_REMEDIATION so e2e tests
+  # can exercise detection and the quarantine path end to end. The regexes,
+  # severities, and actions are owned by code.
   nicDriverDetection:
     patterns:
       - name: cmd_exec_timeout
@@ -4101,6 +4133,18 @@ syslog-health-monitor:
         processingStrategy: EXECUTE_REMEDIATION
 
       - name: module_unplugged
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: mlx5_tx_timeout_detected
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: mlx5_rx_timeout_detected
+        enabled: true
+        processingStrategy: EXECUTE_REMEDIATION
+
+      - name: mlx5_napi_soft_lockup
         enabled: true
         processingStrategy: EXECUTE_REMEDIATION
 
@@ -4159,7 +4203,9 @@ platformConnector:
   transformers:
     MetadataAugmentor:
       cacheSize: 50
-      cacheTTLSeconds: 3600
+      cacheTTLSeconds: 60
+      # Must match commons/pkg/managed.ManagedLabelKey and ManagedLabelValueFalse.
+      skipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false"
       allowedLabels:
         - "topology.kubernetes.io/zone"
         - "topology.kubernetes.io/region"
@@ -4259,6 +4305,14 @@ kubernetes-object-monitor:
             kubernetes.io/metadata.name: kube-system
         topologyKey: kubernetes.io/hostname
 
+nvcre-certification-monitor:
+  logLevel: debug
+  # Short sweep interval for faster test feedback (production default is 15m).
+  # Tilt installs only the cluster-readiness-engine Certification CRD
+  # (tilt/nvcre-certification-crd.yaml), not the NVCRE controller; the e2e test
+  # writes Certification status itself.
+  resyncInterval: 30s
+
 event-exporter:
   replicaCount: 1
 
@@ -4322,3 +4376,22 @@ event-exporter:
       initialBackoff: "1s"
       maxBackoff: "10s"
       backoffMultiplier: 2.0
+
+lifecycle-manager:
+  config:
+    readinessCriteria:
+      - name: not-under-quarantine
+        expression: >-
+          !(has(node.metadata.annotations) &&
+          "quarantineHealthEvent" in node.metadata.annotations)
+    tests:
+      e2e-smoke-test:
+        provider: k8s-job-provider
+        image: alpine:3.21
+        command:
+          - sh
+          - -c
+          - "sleep 5"
+        supportsBatchingNodes: false
+        minimumNodesPerBatch: 1
+        batchFailurePolicy: fail

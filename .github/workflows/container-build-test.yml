@@ -79,7 +79,7 @@ jobs:
           - component: gpu-reset
             make_command: 'make -C gpu-reset docker-build'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env
@@ -137,6 +137,8 @@ jobs:
             path: ./cmd/maintenance-notifier
           - module: health-monitors/kubernetes-object-monitor
             path: .
+          - module: health-monitors/nvcre-certification-monitor
+            path: .
           - module: health-monitors/nic-health-monitor
             path: .
           - module: event-exporter
@@ -145,8 +147,10 @@ jobs:
             path: .
           - module: preflight
             path: .
+          - module: lifecycle-manager
+            path: .
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Setup build environment
         uses: ./.github/actions/setup-ci-env

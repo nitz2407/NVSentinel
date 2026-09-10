@@ -26,7 +26,7 @@ type Normalizer interface {
 	// Normalize attempts to convert the raw event data into a MaintenanceEvent.
 	// The rawEvent is expected to be the specific type for the implementing CSP.
 	// additionalInfo can be used to pass context like nodeName, instanceID, entityArn for AWS.
-	Normalize(rawEvent interface{}, additionalInfo ...interface{}) (*model.MaintenanceEvent, error)
+	Normalize(rawEvent any, additionalInfo ...any) (*model.MaintenanceEvent, error)
 }
 
 // GetNormalizer is a factory function that returns the appropriate normalizer
@@ -37,6 +37,8 @@ func GetNormalizer(csp model.CSP) (Normalizer, error) {
 		return &GCPNormalizer{}, nil // GCPNormalizer is defined in gcp_normalizer.go
 	case model.CSPAWS:
 		return &AWSNormalizer{}, nil // AWSNormalizer is defined in aws_normalizer.go
+	case model.CSPLambda:
+		return &LambdaNormalizer{}, nil // LambdaNormalizer is defined in lambda_normalizer.go
 	default:
 		return nil, fmt.Errorf("no normalizer available for CSP: %s", csp)
 	}

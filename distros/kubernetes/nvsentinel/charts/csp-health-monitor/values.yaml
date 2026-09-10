@@ -45,6 +45,9 @@ quarantineTriggerEngine:
 # Scheduling configuration
 nodeSelector: {}
 affinity: {}
+# Pod priority for this component. Overridden by the matching global when that is set.
+priorityClassName: ""
+
 tolerations: []
 
 podAnnotations: {}
@@ -63,7 +66,7 @@ logLevel: info
 # Set to an empty string to disable MongoDB TLS client certificate mounts.
 clientCertMountPath: /etc/ssl/client-certs
 
-# cspName specifies the active cloud service provider. Can be "gcp" or "aws".
+# cspName specifies the active cloud service provider. Can be "gcp", "aws", or "lambda".
 cspName: ""
 
 # config.toml content will be generated from the fields below using the configmap template.
@@ -93,3 +96,41 @@ configToml:
     # If empty, defaults to "<clusterName>-nvsentinel-health-monitor-assume-role-policy".
     # Set this if your cluster name exceeds 19 characters (AWS IAM role names max 64 chars).
     iamRoleName: ""
+
+  lambda:
+    # apiEndpoint is the base URL of the Lambda maintenance API.
+    # Defaulted to the production endpoint so the happy path works out of the
+    # box; override for staging (cloud.lambdastaging.com) or a local fake.
+    apiEndpoint: "https://cloud.lambda.ai"
+    # workspaceId scopes the maintenance-events query to one Lambda workspace,
+    # in dashed or undashed UUID form, e.g. "c4d291f47f9d436fa39f58493ce3b50d"
+    # or "c4d291f4-7f9d-436f-a39f-58493ce3b50d". Leave it empty to use the
+    # default workspace; set it when that is not the workspace running this
+    # cluster, otherwise the poller reads the wrong workspace's events and no
+    # maintenance is ever seen for these nodes.
+    workspaceId: ""
+    # pollingIntervalSeconds controls how often the Lambda maintenance-events
+    # API is polled for new / updated events. Lower values reduce trigger
+    # latency at the cost of more API traffic.
+    pollingIntervalSeconds: 30
+    # mockEventsFilePath is intentionally not exposed through the chart. It is
+    # a dev-only path in pkg/config.LambdaConfig that swaps the real API poller
+    # for a JSON-file source; set it directly in a locally-run config.toml when
+    # exercising csp-health-monitor without hitting cloud.lambda.ai.
+
+# lambdaApiKeySecret names the Secret containing the LAMBDA_API_KEY env var.
+# Required when cspName=lambda unless lambdaWorkloadIdentity.identityLRN is set.
+lambdaApiKeySecret:
+  name: ""
+  key: "LAMBDA_API_KEY"
+
+# lambdaWorkloadIdentity authenticates with a short-lived token instead of a
+# static key, so no Lambda credential is stored in the cluster. Setting
+# identityLRN annotates the ServiceAccount and lambdaApiKeySecret is no longer
+# required. See docs/configuration/csp-health-monitor.md.
+lambdaWorkloadIdentity:
+  # identityLRN is the service identity to assume, in the form
+  # lrn:iam:identity:<id>, e.g. "lrn:iam:identity:3cd2d107c6a347eeb0ef9498820d637d".
+  # It needs permission to read maintenance events in the workspace named by
+  # configToml.lambda.workspaceId, and must trust this cluster's ServiceAccount.
+  identityLRN: ""

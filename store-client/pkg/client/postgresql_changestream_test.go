@@ -18,11 +18,15 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+
+	"github.com/nvidia/nvsentinel/commons/pkg/healthstatus"
 )
 
 func Test_matchesPipeline_deleteEventFallback(t *testing.T) {
-	pipeline := []map[string]interface{}{
-		{"$match": map[string]interface{}{
+	pipeline := []map[string]any{
+		{"$match": map[string]any{
 			"operationType":                 "delete",
 			"document.healthevent.nodename": "node-1",
 		}},
@@ -32,9 +36,9 @@ func Test_matchesPipeline_deleteEventFallback(t *testing.T) {
 	t.Run("falls back to oldValues when newValues is nil", func(t *testing.T) {
 		entry := &postgresqlEvent{
 			operation: "DELETE",
-			oldValues: map[string]interface{}{
-				"document": map[string]interface{}{
-					"healthevent": map[string]interface{}{"nodename": "node-1"},
+			oldValues: map[string]any{
+				"document": map[string]any{
+					"healthevent": map[string]any{"nodename": "node-1"},
 				},
 			},
 		}
@@ -261,4 +265,57 @@ func Test_postgresqlEvent_GetResumeToken(t *testing.T) {
 	if err != nil {
 		t.Errorf("GetResumeToken() not int-parseable: %v, error: %v", tokenStr, err)
 	}
+}
+
+// TestPostgreSQLEvent_CompletionOnlyUpdate_ExposesOnlyLeafField verifies that
+// legacy null or missing status parents do not hide a completion-only update.
+func TestPostgreSQLEvent_CompletionOnlyUpdate_ExposesOnlyLeafField(t *testing.T) {
+	newValues := map[string]any{"document": map[string]any{
+		"healtheventstatus": map[string]any{"faultquarantinerecovery": "completed"},
+	}}
+
+	for name, oldValues := range map[string]map[string]any{
+		"existing parent": {"document": map[string]any{
+			"healtheventstatus": map[string]any{},
+		}},
+		"missing parent": {"document": map[string]any{}},
+		"null parent": {"document": map[string]any{
+			"healtheventstatus": nil,
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			updated := &postgresqlEvent{operation: "UPDATE", oldValues: oldValues, newValues: newValues}
+			assert.Equal(t, map[string]any{
+				healthstatus.FaultQuarantineRecoveryPath: "completed",
+			}, updated.UpdatedFields())
+			assert.True(t, EventUpdatesOnly(updated, healthstatus.FaultQuarantineRecoveryPath))
+		})
+	}
+
+	inserted := &postgresqlEvent{operation: "INSERT", newValues: newValues}
+	assert.False(t, EventUpdatesOnly(inserted, healthstatus.FaultQuarantineRecoveryPath))
+}
+
+// TestPostgreSQLEvent_CompletionAndRemoval_ExposesBothChanges verifies that a
+// completion marker cannot conceal a substantive field removal.
+func TestPostgreSQLEvent_CompletionAndRemoval_ExposesBothChanges(t *testing.T) {
+	oldValues := map[string]any{"document": map[string]any{
+		"healtheventstatus": map[string]any{
+			"nodequarantined": "Quarantined",
+			"obsolete":        "remove-me",
+		},
+	}}
+	newValues := map[string]any{"document": map[string]any{
+		"healtheventstatus": map[string]any{
+			"nodequarantined":         "Quarantined",
+			"faultquarantinerecovery": "completed",
+		},
+	}}
+
+	updated := &postgresqlEvent{operation: "UPDATE", oldValues: oldValues, newValues: newValues}
+	assert.Equal(t, map[string]any{
+		healthstatus.FaultQuarantineRecoveryPath: "completed",
+		"healtheventstatus.obsolete":             nil,
+	}, updated.UpdatedFields())
+	assert.False(t, EventUpdatesOnly(updated, healthstatus.FaultQuarantineRecoveryPath))
 }

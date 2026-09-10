@@ -59,15 +59,13 @@ type kubeletResponses struct {
 
 var (
 	testPodTemplate = &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "example-pod",
-			Namespace: "default",
-			Labels: map[string]string{
-				"app": "demo",
-			},
-			Annotations: map[string]string{
-				"example.com/owner": "team-a",
-			},
+		Name:      "example-pod",
+		Namespace: "default",
+		Labels: map[string]string{
+			"app": "demo",
+		},
+		Annotations: map[string]string{
+			"example.com/owner": "team-a",
 		},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{
@@ -350,6 +348,51 @@ func TestUpdatePodDevicesAnnotationsWithNonRetryablePatchError(t *testing.T) {
 	numUpdates, err := mapper.UpdatePodDevicesAnnotations()
 	assert.Error(t, err)
 	assert.Equal(t, numUpdates, 0)
+}
+
+func TestUpdatePodDevicesAnnotationsSkipsDeletedPod(t *testing.T) {
+	deletedTestPod := testPodTemplate.DeepCopy()
+	deletedTestPod.SetName("deleted-pod")
+	existingTestPod := testPodTemplate.DeepCopy()
+
+	deletedPodKey := "default/deleted-pod"
+	existingPodKey := "default/example-pod"
+	deviceAnnotation := map[string]*model.DeviceAnnotation{
+		deletedPodKey: {
+			Devices: map[string][]string{
+				"nvidia.com/gpu": {
+					"GPU-123",
+				},
+			},
+		},
+		existingPodKey: {
+			Devices: map[string][]string{
+				"nvidia.com/gpu": {
+					"GPU-456",
+				},
+			},
+		},
+	}
+	_, expectedDeviceAnnotationJSON, err := getDeviceAnnotation(deviceAnnotation, existingPodKey, "")
+	assert.NoError(t, err)
+
+	testCase := &kubeletResponses{
+		pods:          []corev1.Pod{*deletedTestPod, *existingTestPod},
+		httpClientErr: nil,
+		devicesPerPod: deviceAnnotation,
+		grpcClientErr: nil,
+	}
+	mapper, err := newTestDeviceMapper(testCase, []*corev1.Pod{existingTestPod})
+	assert.NoError(t, err)
+
+	numUpdates, err := mapper.UpdatePodDevicesAnnotations()
+	assert.NoError(t, err)
+	assert.Equal(t, 1, numUpdates)
+
+	pod, err := mapper.kubernetesClient.CoreV1().Pods(existingTestPod.GetNamespace()).
+		Get(context.TODO(), existingTestPod.GetName(), metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.Equal(t, expectedDeviceAnnotationJSON, pod.GetAnnotations()[model.PodDeviceAnnotationName])
 }
 
 func TestUpdatePodDevicesAnnotationsWithMultiplePodsResourcesAndDevices(t *testing.T) {

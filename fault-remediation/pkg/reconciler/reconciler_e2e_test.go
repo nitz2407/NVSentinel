@@ -17,9 +17,11 @@ package reconciler
 import (
 	"context"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -156,8 +158,10 @@ type MockHealthEventStore struct {
 	UpdateHealthEventStatusFn        func(ctx context.Context, id string, status datastore.HealthEventStatus) error
 	FindHealthEventsByQueryFn        func(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error)
 	FindHealthEventsByQueryBatchedFn func(ctx context.Context, builder datastore.QueryBuilder, batchSize int, fn func([]datastore.HealthEventWithStatus) error) error
-	updateCalled                     int
-	findHealthEventsByQueryCalls     int
+	// Counters are written from the controller goroutine and polled by tests, so they
+	// must be atomic to stay race-free.
+	updateCalled                 atomic.Int64
+	findHealthEventsByQueryCalls atomic.Int64
 }
 
 // UpdateHealthEventStatus updates a health event status (mock implementation)
@@ -181,7 +185,7 @@ func (m *MockHealthEventStore) FindHealthEventsByNode(ctx context.Context, nodeN
 	return nil, nil
 }
 
-func (m *MockHealthEventStore) FindHealthEventsByFilter(ctx context.Context, filter map[string]interface{}) ([]datastore.HealthEventWithStatus, error) {
+func (m *MockHealthEventStore) FindHealthEventsByFilter(ctx context.Context, filter map[string]any) ([]datastore.HealthEventWithStatus, error) {
 	return nil, nil
 }
 
@@ -197,7 +201,7 @@ func (m *MockHealthEventStore) UpdatePodEvictionStatus(ctx context.Context, even
 	return nil
 }
 
-func (m *MockHealthEventStore) UpdateRemediationStatus(ctx context.Context, eventID string, status interface{}) error {
+func (m *MockHealthEventStore) UpdateRemediationStatus(ctx context.Context, eventID string, status any) error {
 	return nil
 }
 
@@ -210,7 +214,7 @@ func (m *MockHealthEventStore) FindLatestEventForNode(ctx context.Context, nodeN
 }
 
 func (m *MockHealthEventStore) FindHealthEventsByQuery(ctx context.Context, builder datastore.QueryBuilder) ([]datastore.HealthEventWithStatus, error) {
-	m.findHealthEventsByQueryCalls++
+	m.findHealthEventsByQueryCalls.Add(1)
 
 	if m.FindHealthEventsByQueryFn != nil {
 		return m.FindHealthEventsByQueryFn(ctx, builder)
@@ -240,16 +244,17 @@ func (m *MockHealthEventStore) UpdateSpanID(ctx context.Context, id string, serv
 }
 
 var (
-	ctrlRuntimeClient client.Client
-	testClient        *kubernetes.Clientset
-	testDynamic       dynamic.Interface
-	testContext       context.Context
-	testCancelFunc    context.CancelFunc
-	testEnv           *envtest.Environment
-	testRestConfig    *rest.Config
-	mockWatcher       *MockChangeStreamWatcher
-	mockStore         *MockHealthEventStore
-	reconciler        *FaultRemediationReconciler
+	ctrlRuntimeClient    client.Client
+	ctrlRuntimeAPIReader client.Reader
+	testClient           *kubernetes.Clientset
+	testDynamic          dynamic.Interface
+	testContext          context.Context
+	testCancelFunc       context.CancelFunc
+	testEnv              *envtest.Environment
+	testRestConfig       *rest.Config
+	mockWatcher          *MockChangeStreamWatcher
+	mockStore            *MockHealthEventStore
+	reconciler           *FaultRemediationReconciler
 )
 
 func TestMain(m *testing.M) {
@@ -290,6 +295,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	ctrlRuntimeClient = mgr.GetClient()
+	ctrlRuntimeAPIReader = mgr.GetAPIReader()
 
 	remediationClient, err := createTestRemediationClient(false, restartRemediationActions)
 	if err != nil {
@@ -299,16 +305,18 @@ func TestMain(m *testing.M) {
 	cfg := ReconcilerConfig{
 		RemediationClient: remediationClient,
 		StateManager:      statemanager.NewStateManager(testClient),
+		NodeReader:        ctrlRuntimeAPIReader,
 		UpdateMaxRetries:  3,
 		UpdateRetryDelay:  100 * time.Millisecond,
+		// Keep requeues fast so tests can observe events waiting behind an
+		// in-progress CR being reconsidered within an Eventually window.
+		InProgressRequeueDelay: 200 * time.Millisecond,
 	}
 
 	// Create mock health event store
-	mockStore = &MockHealthEventStore{
-		updateCalled: 0,
-	}
+	mockStore = &MockHealthEventStore{}
 	mockStore.UpdateHealthEventStatusFn = func(ctx context.Context, id string, status datastore.HealthEventStatus) error {
-		mockStore.updateCalled++
+		mockStore.updateCalled.Add(1)
 		return nil
 	}
 
@@ -346,11 +354,9 @@ func createTestNode(ctx context.Context, name string, annotations map[string]str
 		labels = make(map[string]string)
 	}
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Annotations: annotations,
-			Labels:      labels,
-		},
+		Name:        name,
+		Annotations: annotations,
+		Labels:      labels,
 		Status: corev1.NodeStatus{
 			Conditions: []corev1.NodeCondition{
 				{
@@ -417,11 +423,9 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Process Event 1
 		healthEventDoc := &events.HealthEventDoc{
 			ID: "test-event-id-1",
-			HealthEventWithStatus: model.HealthEventWithStatus{
-				HealthEvent: &protos.HealthEvent{
-					NodeName:          nodeName,
-					RecommendedAction: protos.RecommendedAction_RESTART_BM,
-				},
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
 		}
 		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, healthEventDoc.HealthEvent)
@@ -454,7 +458,7 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		}
 		cr, err := testDynamic.Resource(gvr).Get(ctx, crName, metav1.GetOptions{})
 		require.NoError(t, err)
-		assert.Equal(t, nodeName, cr.Object["spec"].(map[string]interface{})["nodeName"])
+		assert.Equal(t, nodeName, cr.Object["spec"].(map[string]any)["nodeName"])
 
 		// Cleanup
 		_ = testDynamic.Resource(gvr).Delete(ctx, crName, metav1.DeleteOptions{})
@@ -482,11 +486,9 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Event 1: Create first CR
 		event1 := &events.HealthEventDoc{
 			ID: "test-event-id-cr-1",
-			HealthEventWithStatus: model.HealthEventWithStatus{
-				HealthEvent: &protos.HealthEvent{
-					NodeName:          nodeName,
-					RecommendedAction: protos.RecommendedAction_RESTART_BM,
-				},
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
 		}
 		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, event1.HealthEvent)
@@ -500,16 +502,26 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Update CR status to InProgress
 		updateRebootNodeStatus(ctx, t, firstCRName, "InProgress")
 
-		// Event 2: Should be skipped
-		shouldCreateCR, existingCR, _, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, time.Now(), groupConfig)
+		// Event 2: must wait for the in-progress CR instead of being finalized
+		decision, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, time.Now(), groupConfig)
 		assert.NoError(t, err)
-		assert.False(t, shouldCreateCR, "Second event should be skipped")
-		assert.Equal(t, firstCRName, existingCR)
+		assert.False(t, decision.shouldCreate, "Second event should not create a CR yet")
+		assert.True(t, decision.inProgress, "Second event must be requeued while the CR is in progress")
+		assert.Equal(t, firstCRName, decision.crName)
 
 		// Verify annotation still exists and unchanged
 		state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
 		require.NoError(t, err)
 		assert.Equal(t, firstCRName, state.EquivalenceGroups["restart"].MaintenanceCR)
+
+		// Once the CR completes, a post-session event (created after the CR) must be
+		// allowed to create a new CR instead of staying stranded (issue #1536).
+		updateRebootNodeStatus(ctx, t, firstCRName, "Succeeded")
+
+		decision, err = r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, time.Now(), groupConfig)
+		assert.NoError(t, err)
+		assert.True(t, decision.shouldCreate, "post-session event must be reconsidered after the CR succeeds")
+		assert.False(t, decision.inProgress)
 
 		// Cleanup
 		gvr := schema.GroupVersionResource{
@@ -542,11 +554,9 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Event 1: Create first CR
 		event1 := &events.HealthEventDoc{
 			ID: "test-event-id-cr-1",
-			HealthEventWithStatus: model.HealthEventWithStatus{
-				HealthEvent: &protos.HealthEvent{
-					NodeName:          nodeName,
-					RecommendedAction: protos.RecommendedAction_RESTART_BM,
-				},
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
 		}
 		groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, event1.HealthEvent)
@@ -562,9 +572,9 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		updateRebootNodeStatus(ctx, t, firstCRName, "Failed")
 
 		// Event 2: Should create new CR after cleanup
-		shouldCreateCR, _, _, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, time.Now(), groupConfig)
+		decision, err := r.checkExistingCRStatus(ctx, event1.HealthEventWithStatus.HealthEvent, time.Now(), groupConfig)
 		assert.NoError(t, err)
-		assert.True(t, shouldCreateCR, "Should allow retry after CR failed")
+		assert.True(t, decision.shouldCreate, "Should allow retry after CR failed")
 
 		// Verify annotation was cleaned up.
 		// Use Eventually because RemoveGroupsFromState writes to the API server but
@@ -581,11 +591,9 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Event 2: Create retry CR
 		event2 := &events.HealthEventDoc{
 			ID: "test-event-id",
-			HealthEventWithStatus: model.HealthEventWithStatus{
-				HealthEvent: &protos.HealthEvent{
-					NodeName:          nodeName,
-					RecommendedAction: protos.RecommendedAction_RESTART_BM,
-				},
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_RESTART_BM,
 			},
 		}
 		groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions, event2.HealthEvent)
@@ -636,11 +644,9 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 		// Event 1: RESTART_VM
 		event1 := &events.HealthEventDoc{
 			ID: "test-event-id",
-			HealthEventWithStatus: model.HealthEventWithStatus{
-				HealthEvent: &protos.HealthEvent{
-					NodeName:          nodeName,
-					RecommendedAction: protos.RecommendedAction_RESTART_VM,
-				},
+			HealthEvent: &protos.HealthEvent{
+				NodeName:          nodeName,
+				RecommendedAction: protos.RecommendedAction_RESTART_VM,
 			},
 		}
 		groupConfig1, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
@@ -666,10 +672,11 @@ func TestCRBasedDeduplication_Integration(t *testing.T) {
 			event2Health)
 		assert.NoError(t, err)
 
-		shouldCreateCR, existingCR, _, err := r.checkExistingCRStatus(ctx, event2Health, time.Now(), groupConfig2)
+		decision, err := r.checkExistingCRStatus(ctx, event2Health, time.Now(), groupConfig2)
 		assert.NoError(t, err)
-		assert.False(t, shouldCreateCR, "RESTART_BM should be deduplicated with RESTART_VM (same group)")
-		assert.Equal(t, firstCRName, existingCR)
+		assert.False(t, decision.shouldCreate, "RESTART_BM should be deduplicated with RESTART_VM (same group)")
+		assert.True(t, decision.inProgress, "deduplicated event must wait for the in-progress CR")
+		assert.Equal(t, firstCRName, decision.crName)
 
 		// Verify both actions map to same group
 		assert.Equal(t, groupConfig1, groupConfig2, "Both actions should be in same equivalence group")
@@ -704,6 +711,7 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	cfg := ReconcilerConfig{
 		RemediationClient: remediationClient,
 		StateManager:      stateManager,
+		NodeReader:        ctrlRuntimeAPIReader,
 		UpdateMaxRetries:  3,
 		UpdateRetryDelay:  100 * time.Millisecond,
 	}
@@ -721,11 +729,9 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	// Event 1: RESTART_BM creates CR-1
 	event1 := &events.HealthEventDoc{
 		ID: "test-event-id",
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          nodeName,
-				RecommendedAction: protos.RecommendedAction_RESTART_BM,
-			},
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          nodeName,
+			RecommendedAction: protos.RecommendedAction_RESTART_BM,
 		},
 	}
 	groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
@@ -751,10 +757,11 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event2)
 	assert.NoError(t, err)
-	shouldCreate, existingCR, _, err := r.checkExistingCRStatus(ctx, event2, time.Now(), groupConfig)
+	decision, err := r.checkExistingCRStatus(ctx, event2, time.Now(), groupConfig)
 	assert.NoError(t, err)
-	assert.False(t, shouldCreate, "RESTART_VM should be skipped (same group as RESTART_BM)")
-	assert.Equal(t, crName1, existingCR)
+	assert.False(t, decision.shouldCreate, "RESTART_VM should be skipped (same group as RESTART_BM)")
+	assert.True(t, decision.inProgress, "RESTART_VM must wait for the in-progress CR")
+	assert.Equal(t, crName1, decision.crName)
 
 	// Verify annotation unchanged
 	state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
@@ -771,11 +778,12 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event3)
 	assert.NoError(t, err)
-	shouldCreate, _, remediatedByExistingCR, err := r.checkExistingCRStatus(ctx, event3, time.Now().Add(-time.Minute),
+	decision, err = r.checkExistingCRStatus(ctx, event3, time.Now().Add(-time.Minute),
 		groupConfig)
 	assert.NoError(t, err)
-	assert.False(t, shouldCreate, "RESTART_BM should be skipped (CR succeeded)")
-	assert.True(t, remediatedByExistingCR, "successful existing CR should cover equivalent event")
+	assert.False(t, decision.shouldCreate, "RESTART_BM should be skipped (CR succeeded)")
+	assert.True(t, decision.remediated, "successful existing CR should cover equivalent event")
+	assert.False(t, decision.inProgress)
 
 	// Event 4: CR fails - annotation cleaned, retry allowed
 	updateRebootNodeStatus(ctx, t, crName1, "Failed")
@@ -787,9 +795,9 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event4)
 	assert.NoError(t, err)
-	shouldCreate, _, _, err = r.checkExistingCRStatus(ctx, event4, time.Now(), groupConfig)
+	decision, err = r.checkExistingCRStatus(ctx, event4, time.Now(), groupConfig)
 	assert.NoError(t, err)
-	assert.True(t, shouldCreate, "Should allow retry after failure")
+	assert.True(t, decision.shouldCreate, "Should allow retry after failure")
 
 	// Verify annotation cleaned.
 	// Use Eventually because RemoveGroupsFromState writes to the API server but
@@ -807,11 +815,9 @@ func TestEventSequenceWithAnnotations_Integration(t *testing.T) {
 	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
 	event5 := &events.HealthEventDoc{
 		ID: "test-event-id",
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          nodeName,
-				RecommendedAction: protos.RecommendedAction_RESTART_BM,
-			},
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          nodeName,
+			RecommendedAction: protos.RecommendedAction_RESTART_BM,
 		},
 	}
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
@@ -850,6 +856,7 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	cfg := ReconcilerConfig{
 		RemediationClient: remediationClient,
 		StateManager:      stateManager,
+		NodeReader:        ctrlRuntimeAPIReader,
 		UpdateMaxRetries:  3,
 		UpdateRetryDelay:  100 * time.Millisecond,
 	}
@@ -872,11 +879,9 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	// Event 1: RESTART_BM in group restart creates CR-1
 	event1 := &events.HealthEventDoc{
 		ID: "test-event-id",
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          nodeName,
-				RecommendedAction: protos.RecommendedAction_RESTART_BM,
-			},
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          nodeName,
+			RecommendedAction: protos.RecommendedAction_RESTART_BM,
 		},
 	}
 	groupConfig, err := common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
@@ -910,12 +915,14 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event2.HealthEvent)
 	assert.NoError(t, err)
-	shouldSkip := r.shouldSkipEvent(ctx, event2, groupConfig)
-	assert.False(t, shouldSkip, "Shouldn't valid health event")
-	shouldCreate, existingCR, _, err := r.checkExistingCRStatus(ctx, event2.HealthEvent, time.Now(), groupConfig)
+	shouldSkip, err := r.shouldSkipEvent(ctx, event2, groupConfig)
 	assert.NoError(t, err)
-	assert.False(t, shouldCreate, "COMPONENT_RESET should be skipped (same group as RESTART_BM)")
-	assert.Equal(t, crName1, existingCR)
+	assert.False(t, shouldSkip, "Shouldn't valid health event")
+	decision, err := r.checkExistingCRStatus(ctx, event2.HealthEvent, time.Now(), groupConfig)
+	assert.NoError(t, err)
+	assert.False(t, decision.shouldCreate, "COMPONENT_RESET should be skipped (same group as RESTART_BM)")
+	assert.True(t, decision.inProgress, "COMPONENT_RESET must wait for the in-progress superseding CR")
+	assert.Equal(t, crName1, decision.crName)
 
 	// Verify annotation unchanged
 	state, _, err := r.annotationManager.GetRemediationState(ctx, nodeName)
@@ -939,11 +946,12 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event3)
 	assert.NoError(t, err)
-	shouldCreate, _, remediatedByExistingCR, err := r.checkExistingCRStatus(ctx, event3, time.Now().Add(-time.Minute),
+	decision, err = r.checkExistingCRStatus(ctx, event3, time.Now().Add(-time.Minute),
 		groupConfig)
 	assert.NoError(t, err)
-	assert.False(t, shouldCreate, "COMPONENT_RESET should be skipped (superseding CR succeeded)")
-	assert.True(t, remediatedByExistingCR, "successful superseding CR should cover reset event")
+	assert.False(t, decision.shouldCreate, "COMPONENT_RESET should be skipped (superseding CR succeeded)")
+	assert.True(t, decision.remediated, "successful superseding CR should cover reset event")
+	assert.False(t, decision.inProgress)
 
 	// Event 4: COMPONENT_RESET in group reset with superseding group restart should be created after CR-1 fails
 	updateRebootNodeStatus(ctx, t, crName1, "Failed")
@@ -961,9 +969,9 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event4)
 	assert.NoError(t, err)
-	shouldCreate, _, _, err = r.checkExistingCRStatus(ctx, event4, time.Now(), groupConfig)
+	decision, err = r.checkExistingCRStatus(ctx, event4, time.Now(), groupConfig)
 	assert.NoError(t, err)
-	assert.True(t, shouldCreate, "Should allow retry after failure")
+	assert.True(t, decision.shouldCreate, "Should allow retry after failure")
 
 	// Verify annotation cleaned.
 	// Use Eventually because RemoveGroupsFromState writes to the API server but
@@ -981,15 +989,13 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
 	event5 := &events.HealthEventDoc{
 		ID: "test-event-id",
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          nodeName,
-				RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
-				EntitiesImpacted: []*protos.Entity{
-					{
-						EntityType:  "GPU_UUID",
-						EntityValue: "GPU-455d8f70-2051-db6c-0430-ffc457bff834",
-					},
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          nodeName,
+			RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+			EntitiesImpacted: []*protos.Entity{
+				{
+					EntityType:  "GPU_UUID",
+					EntityValue: "GPU-455d8f70-2051-db6c-0430-ffc457bff834",
 				},
 			},
 		},
@@ -1021,10 +1027,11 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event6)
 	assert.NoError(t, err)
-	shouldCreate, existingCR, _, err = r.checkExistingCRStatus(ctx, event6, time.Now(), groupConfig)
+	decision, err = r.checkExistingCRStatus(ctx, event6, time.Now(), groupConfig)
 	assert.NoError(t, err)
-	assert.False(t, shouldCreate, "COMPONENT_RESET should be skipped (same group as previous COMPONENT_RESET)")
-	assert.Equal(t, crName2, existingCR)
+	assert.False(t, decision.shouldCreate, "COMPONENT_RESET should be skipped (same group as previous COMPONENT_RESET)")
+	assert.True(t, decision.inProgress, "COMPONENT_RESET must wait for the in-progress reset CR")
+	assert.Equal(t, crName2, decision.crName)
 
 	// Verify annotation unchanged
 	state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
@@ -1034,15 +1041,13 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	// Event 7: COMPONENT_RESET in group reset with the different entity should allow CR-3 creation
 	event7 := &events.HealthEventDoc{
 		ID: "test-event-id-2",
-		HealthEventWithStatus: model.HealthEventWithStatus{
-			HealthEvent: &protos.HealthEvent{
-				NodeName:          nodeName,
-				RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
-				EntitiesImpacted: []*protos.Entity{
-					{
-						EntityType:  "GPU_UUID",
-						EntityValue: "GPU-927d8f70-2051-db6c-0430-ffc457bff834",
-					},
+		HealthEvent: &protos.HealthEvent{
+			NodeName:          nodeName,
+			RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+			EntitiesImpacted: []*protos.Entity{
+				{
+					EntityType:  "GPU_UUID",
+					EntityValue: "GPU-927d8f70-2051-db6c-0430-ffc457bff834",
 				},
 			},
 		},
@@ -1051,9 +1056,9 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event7.HealthEvent)
 	assert.NoError(t, err)
-	shouldCreate, existingCR, _, err = r.checkExistingCRStatus(ctx, event7.HealthEvent, time.Now(), groupConfig)
+	decision, err = r.checkExistingCRStatus(ctx, event7.HealthEvent, time.Now(), groupConfig)
 	assert.NoError(t, err)
-	assert.True(t, shouldCreate, "COMPONENT_RESET should be allowed (different group as previous COMPONENT_RESET)")
+	assert.True(t, decision.shouldCreate, "COMPONENT_RESET should be allowed (different group as previous COMPONENT_RESET)")
 
 	// Verify annotation unchanged
 	state, _, err = r.annotationManager.GetRemediationState(ctx, nodeName)
@@ -1091,9 +1096,9 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event8)
 	assert.NoError(t, err)
-	shouldCreate, existingCR, _, err = r.checkExistingCRStatus(ctx, event8, time.Now(), groupConfig)
+	decision, err = r.checkExistingCRStatus(ctx, event8, time.Now(), groupConfig)
 	assert.NoError(t, err)
-	assert.True(t, shouldCreate, "COMPONENT_RESET should be allowed (same group as previous "+
+	assert.True(t, decision.shouldCreate, "COMPONENT_RESET should be allowed (same group as previous "+
 		"COMPONENT_RESET that completed)")
 
 	// Verify annotation removed for CR-2 but not CR-3.
@@ -1110,18 +1115,39 @@ func TestEventSequenceWithSupersedingGroup(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond, "Expected CR-2 group to be removed and CR-3 group to remain")
 
 	// Event 9: COMPONENT_RESET missing GPU_UUID should result in a nvsentinel-state label having value remediation-failed.
+	// Model the active fault-quarantine state that permits fault-remediation to write a terminal label.
+	activeUnsupportedEvent := &protos.HealthEvent{
+		Id:                "event-9",
+		Version:           1,
+		Agent:             "test-agent",
+		ComponentClass:    "GPU",
+		CheckName:         "test-check",
+		IsFatal:           true,
+		RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
+		NodeName:          nodeName,
+	}
+	node, err = testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	if node.Annotations == nil {
+		node.Annotations = make(map[string]string)
+	}
+	maps.Copy(node.Annotations, quarantineAnnotationForTest(t, activeUnsupportedEvent))
+	_, err = testClient.CoreV1().Nodes().Update(ctx, node, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	active, err := r.nodeHasActiveQuarantine(ctx, activeUnsupportedEvent)
+	require.NoError(t, err)
+	require.True(t, active)
+
 	_, _ = stateManager.UpdateNVSentinelStateNodeLabel(ctx, nodeName, statemanager.DrainSucceededLabelValue, false)
 	event9 := model.HealthEventWithStatus{
-		HealthEvent: &protos.HealthEvent{
-			NodeName:          nodeName,
-			RecommendedAction: protos.RecommendedAction_COMPONENT_RESET,
-		},
+		HealthEvent: activeUnsupportedEvent,
 	}
 	groupConfig, err = common.GetGroupConfigForEvent(cfg.RemediationClient.GetConfig().RemediationActions,
 		event9.HealthEvent)
 	assert.Error(t, err)
 	assert.Nil(t, groupConfig)
-	shouldSkip = r.shouldSkipEvent(ctx, event9, groupConfig)
+	shouldSkip, err = r.shouldSkipEvent(ctx, event9, groupConfig)
+	assert.NoError(t, err)
 	assert.True(t, shouldSkip, "Should skip invalid health event")
 
 	node, err = testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
@@ -1155,7 +1181,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 	}
 
 	t.Run("CompleteFlow_WithEventLoop", func(t *testing.T) {
-		mockStore.updateCalled = 0
+		mockStore.updateCalled.Store(0)
 
 		beforeReceived := getCounterValue(t, metrics.TotalEventsReceived)
 		beforeDuration := getHistogramCount(t, metrics.EventHandlingDuration)
@@ -1164,7 +1190,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		eventID1 := "test-event-id-1"
 		event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 		eventToken1 := datastore.EventWithToken{
-			Event:       map[string]interface{}(event1),
+			Event:       map[string]any(event1),
 			ResumeToken: []byte("test-token-1"),
 		}
 		mockWatcher.EventsChan <- eventToken1
@@ -1197,48 +1223,45 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		// Verify CR exists in Kubernetes
 		cr, err := testDynamic.Resource(gvr).Get(ctx, crName, metav1.GetOptions{})
 		require.NoError(t, err, "CR should exist in Kubernetes")
-		assert.Equal(t, nodeName, cr.Object["spec"].(map[string]interface{})["nodeName"])
+		assert.Equal(t, nodeName, cr.Object["spec"].(map[string]any)["nodeName"])
 
 		// Verify only one CR exists for this node
 		crList, err := testDynamic.Resource(gvr).List(ctx, metav1.ListOptions{})
 		require.NoError(t, err)
 		crCount := 0
 		for _, item := range crList.Items {
-			if item.Object["spec"].(map[string]interface{})["nodeName"] == nodeName {
+			if item.Object["spec"].(map[string]any)["nodeName"] == nodeName {
 				crCount++
 			}
 		}
 		assert.Equal(t, 1, crCount, "Only one CR should exist for the node at this point")
 
-		// Event 2: Set CR to InProgress, send duplicate event (different action, same group)
+		// Event 2: Set CR to InProgress, send duplicate event (different action, same group).
+		// Regression test for issue #1536: the duplicate must be requeued while the CR is
+		// in progress — not checkpointed or finalized — and automatically reconsidered
+		// once the CR reaches a terminal state.
 		updateRebootNodeStatus(ctx, t, crName, "InProgress")
 
 		// Record MongoDB update count before sending duplicate event
-		updateCountBefore := mockStore.updateCalled
+		updateCountBefore := mockStore.updateCalled.Load()
+		_, markedBeforeEvent2, _, _ := mockWatcher.GetCallCounts()
+		waitingBefore := getCounterVecValue(t, metrics.EventsProcessed, metrics.CRStatusWaiting, nodeName)
 
 		eventID2 := "test-event-id-2"
-		event2 := createQuarantineEvent(eventID2, nodeName, protos.RecommendedAction_RESTART_VM)
+		// The event predates the CR so it belongs to the running remediation session and
+		// must be marked remediated (not produce a second CR) once the CR succeeds.
+		event2 := createQuarantineEventCreatedAt(eventID2, nodeName, protos.RecommendedAction_RESTART_VM,
+			time.Now().Add(-time.Hour))
 		eventToken2 := datastore.EventWithToken{
-			Event:       map[string]interface{}(event2),
+			Event:       map[string]any(event2),
 			ResumeToken: []byte("test-token-2"),
 		}
 		mockWatcher.EventsChan <- eventToken2
 
-		// Wait for event to be processed and verify deduplication
+		// Wait until the event has been evaluated at least once against the in-progress CR
 		assert.Eventually(t, func() bool {
-			state, _, err = reconciler.annotationManager.GetRemediationState(ctx, nodeName)
-			if err != nil {
-				t.Logf("Failed to get remediation state: %v", err)
-				return false
-			}
-
-			// Check if the CR name is still the original one (deduplication working)
-			if grp, ok := state.EquivalenceGroups["restart"]; ok {
-				return grp.MaintenanceCR == crName
-			}
-
-			return false
-		}, 5*time.Second, 100*time.Millisecond, "Event should be processed and deduplicated")
+			return getCounterVecValue(t, metrics.EventsProcessed, metrics.CRStatusWaiting, nodeName) > waitingBefore
+		}, 5*time.Second, 50*time.Millisecond, "duplicate event should wait behind the in-progress CR")
 
 		// Verify annotation is still on the node and unchanged
 		node, err = testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
@@ -1255,19 +1278,49 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		require.NoError(t, err)
 		crCount2 := 0
 		for _, item := range crList2.Items {
-			if item.Object["spec"].(map[string]interface{})["nodeName"] == nodeName {
+			if item.Object["spec"].(map[string]any)["nodeName"] == nodeName {
 				crCount2++
 			}
 		}
 		assert.Equal(t, 1, crCount2, "Should still be only one CR (duplicate event was skipped)")
 
-		// Verify MongoDB update was NOT called (event was skipped due to deduplication)
-		assert.Equal(t, updateCountBefore, mockStore.updateCalled, "MongoDB update should not be called for skipped event")
+		// While waiting, the event must not be finalized: no status write, no checkpoint.
+		assert.Equal(t, updateCountBefore, mockStore.updateCalled.Load(),
+			"MongoDB update should not be called while the event waits for the in-progress CR")
+		_, markedWhileWaiting, _, _ := mockWatcher.GetCallCounts()
+		assert.Equal(t, markedBeforeEvent2, markedWhileWaiting,
+			"resume token should not advance while the event waits for the in-progress CR")
+
+		// Complete the CR: the waiting event must be reconsidered automatically and marked
+		// remediated (covered by the completed remediation session) without a new CR.
+		updateRebootNodeStatus(ctx, t, crName, "Succeeded")
+
+		assert.Eventually(t, func() bool {
+			return mockStore.updateCalled.Load() > updateCountBefore
+		}, 5*time.Second, 50*time.Millisecond,
+			"waiting event should be marked remediated after the CR succeeds")
+
+		assert.Eventually(t, func() bool {
+			_, marked, _, _ := mockWatcher.GetCallCounts()
+			return marked > markedBeforeEvent2
+		}, 5*time.Second, 50*time.Millisecond,
+			"waiting event should be checkpointed after it is resolved")
+
+		// Still exactly one CR: resolving the waiting event must not create a duplicate.
+		crList2, err = testDynamic.Resource(gvr).List(ctx, metav1.ListOptions{})
+		require.NoError(t, err)
+		crCount2 = 0
+		for _, item := range crList2.Items {
+			if item.Object["spec"].(map[string]any)["nodeName"] == nodeName {
+				crCount2++
+			}
+		}
+		assert.Equal(t, 1, crCount2, "resolved same-session event must not create a second CR")
 
 		// Event 3: Send unquarantine event
 		unquarantineEvent := createUnquarantineEvent(nodeName)
 		unquarantineEventToken := datastore.EventWithToken{
-			Event:       map[string]interface{}(unquarantineEvent),
+			Event:       map[string]any(unquarantineEvent),
 			ResumeToken: []byte("test-token-3"),
 		}
 		mockWatcher.EventsChan <- unquarantineEventToken
@@ -1301,10 +1354,12 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		afterDuration := getHistogramCount(t, metrics.EventHandlingDuration)
 		createdCount := getCounterVecValue(t, metrics.EventsProcessed, metrics.CRStatusCreated, nodeName)
 		skippedCount := getCounterVecValue(t, metrics.EventsProcessed, metrics.CRStatusSkipped, nodeName)
+		waitingCount := getCounterVecValue(t, metrics.EventsProcessed, metrics.CRStatusWaiting, nodeName)
 
 		assert.GreaterOrEqual(t, afterReceived, beforeReceived+3, "TotalEventsReceived should increment for all events")
 		assert.GreaterOrEqual(t, createdCount, float64(1), "EventsProcessed with cr_status=created should increment for CR creation")
-		assert.GreaterOrEqual(t, skippedCount, float64(1), "EventsProcessed with cr_status=skipped should increment for duplicate event")
+		assert.GreaterOrEqual(t, waitingCount, float64(1), "EventsProcessed with cr_status=waiting should increment while the duplicate event waits")
+		assert.GreaterOrEqual(t, skippedCount, float64(1), "EventsProcessed with cr_status=skipped should increment when the duplicate event is covered")
 		assert.GreaterOrEqual(t, afterDuration, beforeDuration+3, "EventHandlingDuration should record observations for all events")
 
 		// Cleanup
@@ -1318,6 +1373,7 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 		cfg := ReconcilerConfig{
 			RemediationClient: remediationClient,
 			StateManager:      statemanager.NewStateManager(testClient),
+			NodeReader:        ctrlRuntimeAPIReader,
 			UpdateMaxRetries:  3,
 			UpdateRetryDelay:  100 * time.Millisecond,
 		}
@@ -1339,7 +1395,8 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 			healthEvent.HealthEvent)
 		assert.NoError(t, err)
 
-		shouldSkip := reconcilerInstance.shouldSkipEvent(ctx, healthEvent, groupConfig)
+		shouldSkip, err := reconcilerInstance.shouldSkipEvent(ctx, healthEvent, groupConfig)
+		assert.NoError(t, err)
 		assert.True(t, shouldSkip, "Should skip unsupported action")
 
 		afterUnsupported := getCounterVecValue(t, metrics.TotalUnsupportedRemediationActions, "UNKNOWN", nodeName)
@@ -1352,15 +1409,15 @@ func TestFullReconcilerWithMockedMongoDB_E2E(t *testing.T) {
 func createCustomActionQuarantineEvent(eventID, nodeName, customAction string) datastore.Event {
 	return datastore.Event{
 		"operationType": "update",
-		"fullDocument": map[string]interface{}{
+		"fullDocument": map[string]any{
 			"_id": eventID,
-			"healtheventstatus": map[string]interface{}{
-				"userpodsevictionstatus": map[string]interface{}{
+			"healtheventstatus": map[string]any{
+				"userpodsevictionstatus": map[string]any{
 					"status": model.StatusSucceeded,
 				},
 				"nodequarantined": model.Quarantined,
 			},
-			"healthevent": map[string]interface{}{
+			"healthevent": map[string]any{
 				"nodename":                nodeName,
 				"recommendedaction":       int32(protos.RecommendedAction_CUSTOM),
 				"customrecommendedaction": customAction,
@@ -1373,15 +1430,15 @@ func createCustomActionQuarantineEvent(eventID, nodeName, customAction string) d
 func createQuarantineEvent(eventID string, nodeName string, action protos.RecommendedAction) datastore.Event {
 	return datastore.Event{
 		"operationType": "update",
-		"fullDocument": map[string]interface{}{
+		"fullDocument": map[string]any{
 			"_id": eventID,
-			"healtheventstatus": map[string]interface{}{
-				"userpodsevictionstatus": map[string]interface{}{
+			"healtheventstatus": map[string]any{
+				"userpodsevictionstatus": map[string]any{
 					"status": model.StatusSucceeded,
 				},
 				"nodequarantined": model.Quarantined,
 			},
-			"healthevent": map[string]interface{}{
+			"healthevent": map[string]any{
 				"nodename":          nodeName,
 				"recommendedaction": int32(action),
 			},
@@ -1389,19 +1446,33 @@ func createQuarantineEvent(eventID string, nodeName string, action protos.Recomm
 	}
 }
 
+// createQuarantineEventCreatedAt is createQuarantineEvent with an explicit document
+// creation time, used to position the event inside or outside a remediation session.
+func createQuarantineEventCreatedAt(
+	eventID string,
+	nodeName string,
+	action protos.RecommendedAction,
+	createdAt time.Time,
+) datastore.Event {
+	event := createQuarantineEvent(eventID, nodeName, action)
+	event["fullDocument"].(map[string]any)["createdAt"] = createdAt.UTC().Format(time.RFC3339Nano)
+
+	return event
+}
+
 // Helper to create unquarantine event
 func createUnquarantineEvent(nodeName string) datastore.Event {
 	return datastore.Event{
 		"operationType": "update",
-		"fullDocument": map[string]interface{}{
+		"fullDocument": map[string]any{
 			"_id": "test-doc-id",
-			"healtheventstatus": map[string]interface{}{
+			"healtheventstatus": map[string]any{
 				"nodequarantined": model.UnQuarantined,
-				"userpodsevictionstatus": map[string]interface{}{
+				"userpodsevictionstatus": map[string]any{
 					"status": model.StatusSucceeded,
 				},
 			},
-			"healthevent": map[string]interface{}{
+			"healthevent": map[string]any{
 				"nodename": nodeName,
 			},
 		},
@@ -1412,12 +1483,12 @@ func createUnquarantineEvent(nodeName string) datastore.Event {
 func createCancelledEvent(eventID string, nodeName string, action protos.RecommendedAction) datastore.Event {
 	return datastore.Event{
 		"operationType": "update",
-		"fullDocument": map[string]interface{}{
+		"fullDocument": map[string]any{
 			"_id": eventID,
-			"healtheventstatus": map[string]interface{}{
+			"healtheventstatus": map[string]any{
 				"nodequarantined": model.Cancelled,
 			},
-			"healthevent": map[string]interface{}{
+			"healthevent": map[string]any{
 				"nodename":          nodeName,
 				"recommendedaction": int32(action),
 			},
@@ -1427,7 +1498,7 @@ func createCancelledEvent(eventID string, nodeName string, action protos.Recomme
 
 // TestReconciler_CancelledEventCleansAnnotation tests that a cancelled event removes the equivalence group from the annotation
 func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
-	mockStore.updateCalled = 0
+	mockStore.updateCalled.Store(0)
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
 
@@ -1449,7 +1520,7 @@ func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
 	eventID1 := "test-event-id-1"
 	event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 	eventToken1 := datastore.EventWithToken{
-		Event:       map[string]interface{}(event1),
+		Event:       map[string]any(event1),
 		ResumeToken: []byte("test-token-1"),
 	}
 	mockWatcher.EventsChan <- eventToken1
@@ -1476,7 +1547,7 @@ func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
 	t.Log("Send Cancelled event to remove group from annotation")
 	cancelledEvent := createCancelledEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 	cancelledEventToken := datastore.EventWithToken{
-		Event:       map[string]interface{}(cancelledEvent),
+		Event:       map[string]any(cancelledEvent),
 		ResumeToken: []byte("test-token-2"),
 	}
 	mockWatcher.EventsChan <- cancelledEventToken
@@ -1501,7 +1572,7 @@ func TestReconciler_CancelledEventCleansAnnotation(t *testing.T) {
 
 // TestReconciler_CancelledEventClearsAllGroups tests that a cancelled event clears all equivalence groups
 func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
-	mockStore.updateCalled = 0
+	mockStore.updateCalled.Store(0)
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
 
@@ -1523,7 +1594,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 	eventID1 := "test-event-id-1"
 	event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 	eventToken1 := datastore.EventWithToken{
-		Event:       map[string]interface{}(event1),
+		Event:       map[string]any(event1),
 		ResumeToken: []byte("test-token-1"),
 	}
 	mockWatcher.EventsChan <- eventToken1
@@ -1546,7 +1617,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 	eventID2 := "test-event-id-2"
 	event2 := createQuarantineEvent(eventID2, nodeName, protos.RecommendedAction_RESTART_VM)
 	eventToken2 := datastore.EventWithToken{
-		Event:       map[string]interface{}(event2),
+		Event:       map[string]any(event2),
 		ResumeToken: []byte("test-token-2"),
 	}
 	mockWatcher.EventsChan <- eventToken2
@@ -1562,7 +1633,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 	t.Log("Send Cancelled event")
 	cancelledEvent := createCancelledEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 	cancelledEventToken := datastore.EventWithToken{
-		Event:       map[string]interface{}(cancelledEvent),
+		Event:       map[string]any(cancelledEvent),
 		ResumeToken: []byte("test-token-3"),
 	}
 	mockWatcher.EventsChan <- cancelledEventToken
@@ -1582,7 +1653,7 @@ func TestReconciler_CancelledEventClearsAllGroups(t *testing.T) {
 
 // TestReconciler_CancelledAndUnQuarantinedClearAllState tests that Cancelled followed by UnQuarantined clears all state
 func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
-	mockStore.updateCalled = 0
+	mockStore.updateCalled.Store(0)
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
 
@@ -1604,7 +1675,7 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 	eventID1 := "test-event-id-1"
 	event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 	eventToken1 := datastore.EventWithToken{
-		Event:       map[string]interface{}(event1),
+		Event:       map[string]any(event1),
 		ResumeToken: []byte("test-token-1"),
 	}
 	mockWatcher.EventsChan <- eventToken1
@@ -1625,7 +1696,7 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 	t.Log("Send Cancelled event")
 	cancelledEvent := createCancelledEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 	cancelledEventToken := datastore.EventWithToken{
-		Event:       map[string]interface{}(cancelledEvent),
+		Event:       map[string]any(cancelledEvent),
 		ResumeToken: []byte("test-token-2"),
 	}
 	mockWatcher.EventsChan <- cancelledEventToken
@@ -1641,7 +1712,7 @@ func TestReconciler_CancelledAndUnQuarantinedClearAllState(t *testing.T) {
 	t.Log("Send UnQuarantined event")
 	unquarantineEvent := createUnquarantineEvent(nodeName)
 	unquarantineEventToken := datastore.EventWithToken{
-		Event:       map[string]interface{}(unquarantineEvent),
+		Event:       map[string]any(unquarantineEvent),
 		ResumeToken: []byte("test-token-3"),
 	}
 	mockWatcher.EventsChan <- unquarantineEventToken
@@ -1683,17 +1754,17 @@ func updateGPUResetStatus(ctx context.Context, t *testing.T, crName, status stri
 	}
 
 	// Update status based on the provided status string
-	conditions := []interface{}{}
+	conditions := []any{}
 	switch status {
 	case "Succeeded":
-		conditions = append(conditions, map[string]interface{}{
+		conditions = append(conditions, map[string]any{
 			"type":               "Complete",
 			"status":             "True",
 			"reason":             "GPUResetSucceeded",
 			"message":            "GPU reset successfully",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
-		cr.Object["status"] = map[string]interface{}{
+		cr.Object["status"] = map[string]any{
 			"conditions":     conditions,
 			"startTime":      time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
 			"completionTime": time.Now().Format(time.RFC3339),
@@ -1725,63 +1796,63 @@ func updateRebootNodeStatus(ctx context.Context, t *testing.T, crName, status st
 	}
 
 	// Update status based on the provided status string
-	conditions := []interface{}{}
+	conditions := []any{}
 	switch status {
 	case "Succeeded":
-		conditions = append(conditions, map[string]interface{}{
+		conditions = append(conditions, map[string]any{
 			"type":               "SignalSent",
 			"status":             "True",
 			"reason":             "SignalSent",
 			"message":            "Reboot signal sent successfully",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
-		conditions = append(conditions, map[string]interface{}{
+		conditions = append(conditions, map[string]any{
 			"type":               "NodeReady",
 			"status":             "True",
 			"reason":             "NodeReady",
 			"message":            "Node is ready after reboot",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
-		cr.Object["status"] = map[string]interface{}{
+		cr.Object["status"] = map[string]any{
 			"conditions":     conditions,
 			"startTime":      time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
 			"completionTime": time.Now().Format(time.RFC3339),
 		}
 	case "InProgress":
-		conditions = append(conditions, map[string]interface{}{
+		conditions = append(conditions, map[string]any{
 			"type":               "SignalSent",
 			"status":             "True",
 			"reason":             "SignalSent",
 			"message":            "Reboot signal sent",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
-		conditions = append(conditions, map[string]interface{}{
+		conditions = append(conditions, map[string]any{
 			"type":               "NodeReady",
 			"status":             "Unknown",
 			"reason":             "InProgress",
 			"message":            "Waiting for node to become ready",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
-		cr.Object["status"] = map[string]interface{}{
+		cr.Object["status"] = map[string]any{
 			"conditions": conditions,
 			"startTime":  time.Now().Add(-1 * time.Minute).Format(time.RFC3339),
 		}
 	case "Failed":
-		conditions = append(conditions, map[string]interface{}{
+		conditions = append(conditions, map[string]any{
 			"type":               "SignalSent",
 			"status":             "True",
 			"reason":             "SignalSent",
 			"message":            "Reboot signal sent",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
-		conditions = append(conditions, map[string]interface{}{
+		conditions = append(conditions, map[string]any{
 			"type":               "NodeReady",
 			"status":             "False",
 			"reason":             "Failed",
 			"message":            "Node failed to reach ready state",
 			"lastTransitionTime": time.Now().Format(time.RFC3339),
 		})
-		cr.Object["status"] = map[string]interface{}{
+		cr.Object["status"] = map[string]any{
 			"conditions":     conditions,
 			"startTime":      time.Now().Add(-2 * time.Minute).Format(time.RFC3339),
 			"completionTime": time.Now().Format(time.RFC3339),
@@ -1815,7 +1886,7 @@ func cleanupNodeAnnotations(ctx context.Context, t *testing.T, nodeName string) 
 
 // TestMetrics_CRGenerationDuration tests that CR generation duration metric is recorded
 func TestMetrics_CRGenerationDuration(t *testing.T) {
-	mockStore.updateCalled = 0
+	mockStore.updateCalled.Store(0)
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
 
@@ -1845,14 +1916,14 @@ func TestMetrics_CRGenerationDuration(t *testing.T) {
 	event1 := createQuarantineEvent(eventID1, nodeName, protos.RecommendedAction_RESTART_BM)
 
 	drainFinishTime := time.Now().Add(-5 * time.Second)
-	if fullDoc, ok := event1["fullDocument"].(map[string]interface{}); ok {
-		if status, ok := fullDoc["healtheventstatus"].(map[string]interface{}); ok {
+	if fullDoc, ok := event1["fullDocument"].(map[string]any); ok {
+		if status, ok := fullDoc["healtheventstatus"].(map[string]any); ok {
 			status["drainfinishtimestamp"] = timestamppb.New(drainFinishTime)
 		}
 	}
 
 	eventToken1 := datastore.EventWithToken{
-		Event:       map[string]interface{}(event1),
+		Event:       map[string]any(event1),
 		ResumeToken: []byte("test-token-1"),
 	}
 	mockWatcher.EventsChan <- eventToken1
@@ -1889,7 +1960,7 @@ func TestMetrics_ProcessingErrors(t *testing.T) {
 	beforeError := getCounterVecValue(t, metrics.ProcessingErrors, "unmarshal_doc_error", "unknown")
 
 	invalidEventToken := &datastore.EventWithToken{
-		Event: map[string]interface{}{
+		Event: map[string]any{
 			"fullDocument": "invalid-data",
 		},
 		ResumeToken: []byte("test-token"),
@@ -1944,13 +2015,13 @@ func makeColdStartHealthEvent(
 		CreatedAt: createdAt,
 		RawEvent: datastore.Event{
 			"_id": eventID,
-			"healtheventstatus": map[string]interface{}{
+			"healtheventstatus": map[string]any{
 				"nodequarantined": string(quarantineStatus),
-				"userpodsevictionstatus": map[string]interface{}{
+				"userpodsevictionstatus": map[string]any{
 					"status": string(drainStatus),
 				},
 			},
-			"healthevent": map[string]interface{}{
+			"healthevent": map[string]any{
 				"nodename":          nodeName,
 				"recommendedaction": int32(action),
 			},
@@ -1963,7 +2034,7 @@ func makeColdStartHealthEvent(
 //  2. HandleColdStart enqueues the missed event into the controller workqueue
 //  3. Controller-runtime processes it and FR creates a maintenance CR
 func TestHandleColdStart_RemediationFlow(t *testing.T) {
-	mockStore.updateCalled = 0
+	mockStore.updateCalled.Store(0)
 
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
@@ -1983,6 +2054,7 @@ func TestHandleColdStart_RemediationFlow(t *testing.T) {
 	defer func() {
 		cleanupNodeAnnotations(ctx, t, nodeName)
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+		mockStore.FindHealthEventsByQueryFn = nil
 		mockStore.FindHealthEventsByQueryBatchedFn = nil
 	}()
 
@@ -1991,9 +2063,19 @@ func TestHandleColdStart_RemediationFlow(t *testing.T) {
 		model.Quarantined, model.StatusSucceeded,
 		protos.RecommendedAction_RESTART_BM, time.Now(),
 	)
-
-	mockStore.FindHealthEventsByQueryBatchedFn = func(_ context.Context, _ datastore.QueryBuilder, _ int, fn func([]datastore.HealthEventWithStatus) error) error {
+	mockStore.FindHealthEventsByQueryBatchedFn = func(
+		_ context.Context,
+		_ datastore.QueryBuilder,
+		_ int,
+		fn func([]datastore.HealthEventWithStatus) error,
+	) error {
 		return fn([]datastore.HealthEventWithStatus{missedEvent})
+	}
+	mockStore.FindHealthEventsByQueryFn = func(
+		_ context.Context,
+		_ datastore.QueryBuilder,
+	) ([]datastore.HealthEventWithStatus, error) {
+		return []datastore.HealthEventWithStatus{missedEvent}, nil
 	}
 
 	t.Log("Calling HandleColdStart to enqueue missed event")
@@ -2028,7 +2110,7 @@ func TestHandleColdStart_RemediationFlow(t *testing.T) {
 //  2. While FR was down, the event was cancelled
 //  3. HandleColdStart picks up the cancellation and clears remediation state
 func TestHandleColdStart_CancellationFlow(t *testing.T) {
-	mockStore.updateCalled = 0
+	mockStore.updateCalled.Store(0)
 
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
@@ -2046,6 +2128,7 @@ func TestHandleColdStart_CancellationFlow(t *testing.T) {
 
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+		mockStore.FindHealthEventsByQueryFn = nil
 		mockStore.FindHealthEventsByQueryBatchedFn = nil
 	}()
 
@@ -2054,7 +2137,7 @@ func TestHandleColdStart_CancellationFlow(t *testing.T) {
 	eventID := "cold-start-cancel-event-1"
 	quarantineEvent := createQuarantineEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM)
 	mockWatcher.EventsChan <- datastore.EventWithToken{
-		Event:       map[string]interface{}(quarantineEvent),
+		Event:       map[string]any(quarantineEvent),
 		ResumeToken: []byte("cold-start-token-1"),
 	}
 
@@ -2082,9 +2165,19 @@ func TestHandleColdStart_CancellationFlow(t *testing.T) {
 		model.Cancelled, model.StatusSucceeded,
 		protos.RecommendedAction_RESTART_BM, time.Now(),
 	)
-
-	mockStore.FindHealthEventsByQueryBatchedFn = func(_ context.Context, _ datastore.QueryBuilder, _ int, fn func([]datastore.HealthEventWithStatus) error) error {
+	mockStore.FindHealthEventsByQueryBatchedFn = func(
+		_ context.Context,
+		_ datastore.QueryBuilder,
+		_ int,
+		fn func([]datastore.HealthEventWithStatus) error,
+	) error {
 		return fn([]datastore.HealthEventWithStatus{cancelledEvent})
+	}
+	mockStore.FindHealthEventsByQueryFn = func(
+		_ context.Context,
+		_ datastore.QueryBuilder,
+	) ([]datastore.HealthEventWithStatus, error) {
+		return []datastore.HealthEventWithStatus{cancelledEvent}, nil
 	}
 
 	t.Log("Step 3: Calling HandleColdStart to enqueue missed cancellation")
@@ -2169,7 +2262,7 @@ func TestCancellationEvent_WritesCompletionMarker(t *testing.T) {
 	eventID := "cancel-marker-event-1"
 	quarantineEvent := createQuarantineEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM)
 	quarantineEventToken := datastore.EventWithToken{
-		Event:       map[string]interface{}(quarantineEvent),
+		Event:       map[string]any(quarantineEvent),
 		ResumeToken: []byte("cancel-marker-token-1"),
 	}
 	_, err = localReconciler.Reconcile(ctx, &quarantineEventToken)
@@ -2197,7 +2290,7 @@ func TestCancellationEvent_WritesCompletionMarker(t *testing.T) {
 	t.Log("Step 2: Sending cancellation event and capturing store updates")
 	cancelledEvent := createCancelledEvent(eventID, nodeName, protos.RecommendedAction_RESTART_BM)
 	cancelledEventToken := datastore.EventWithToken{
-		Event:       map[string]interface{}(cancelledEvent),
+		Event:       map[string]any(cancelledEvent),
 		ResumeToken: []byte("cancel-marker-token-2"),
 	}
 	_, err = localReconciler.Reconcile(ctx, &cancelledEventToken)
@@ -2244,14 +2337,20 @@ func TestColdStartCancellationQueryRequiresCompletionMarker(t *testing.T) {
 	ctx, cancel := context.WithTimeout(testContext, 30*time.Second)
 	defer cancel()
 
-	var capturedQuery map[string]interface{}
+	var capturedQuery map[string]any
 	coldStartCallCount := 0
 
 	localStore := &MockHealthEventStore{}
-	localStore.FindHealthEventsByQueryBatchedFn = func(_ context.Context, builder datastore.QueryBuilder, _ int, fn func([]datastore.HealthEventWithStatus) error) error {
+	localStore.FindHealthEventsByQueryBatchedFn = func(
+		_ context.Context,
+		builder datastore.QueryBuilder,
+		_ int,
+		_ func([]datastore.HealthEventWithStatus) error,
+	) error {
 		coldStartCallCount++
 		capturedQuery = builder.ToMongo()
-		return fn([]datastore.HealthEventWithStatus{})
+
+		return nil
 	}
 
 	remediationClient, err := createTestRemediationClient(false, restartRemediationActions)
@@ -2273,14 +2372,14 @@ func TestColdStartCancellationQueryRequiresCompletionMarker(t *testing.T) {
 		"Cold start cancellation query must include faultremediated==nil gate")
 }
 
-func coldStartCancellationQueryHasCompletionGate(q map[string]interface{}) bool {
-	orConditions, ok := q["$or"].([]interface{})
+func coldStartCancellationQueryHasCompletionGate(q map[string]any) bool {
+	orConditions, ok := q["$or"].([]any)
 	if !ok {
 		return false
 	}
 
 	for _, rawCondition := range orConditions {
-		condition, ok := rawCondition.(map[string]interface{})
+		condition, ok := rawCondition.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -2289,7 +2388,7 @@ func coldStartCancellationQueryHasCompletionGate(q map[string]interface{}) bool 
 			return true
 		}
 
-		andConditions, ok := condition["$and"].([]interface{})
+		andConditions, ok := condition["$and"].([]any)
 		if !ok {
 			continue
 		}
@@ -2297,7 +2396,7 @@ func coldStartCancellationQueryHasCompletionGate(q map[string]interface{}) bool 
 		hasCancellationFilter := false
 		hasCompletionGate := false
 		for _, rawAndCondition := range andConditions {
-			andCondition, ok := rawAndCondition.(map[string]interface{})
+			andCondition, ok := rawAndCondition.(map[string]any)
 			if !ok {
 				continue
 			}
@@ -2312,13 +2411,13 @@ func coldStartCancellationQueryHasCompletionGate(q map[string]interface{}) bool 
 	return false
 }
 
-func isCancellationQueryLeg(condition map[string]interface{}) bool {
-	nodeQuarantined, ok := condition["healtheventstatus.nodequarantined"].(map[string]interface{})
+func isCancellationQueryLeg(condition map[string]any) bool {
+	nodeQuarantined, ok := condition["healtheventstatus.nodequarantined"].(map[string]any)
 	if !ok {
 		return false
 	}
 
-	values, ok := nodeQuarantined["$in"].([]interface{})
+	values, ok := nodeQuarantined["$in"].([]any)
 	if !ok {
 		return false
 	}
@@ -2337,7 +2436,7 @@ func isCancellationQueryLeg(condition map[string]interface{}) bool {
 	return foundUnquarantined && foundCancelled
 }
 
-func hasFaultRemediatedNilGate(condition map[string]interface{}) bool {
+func hasFaultRemediatedNilGate(condition map[string]any) bool {
 	value, ok := condition["healtheventstatus.faultremediated"]
 	return ok && value == nil
 }
@@ -2405,7 +2504,7 @@ func TestCustomAction_E2E(t *testing.T) {
 	eventID := "custom-action-e2e-event-1"
 	rawEvent := createCustomActionQuarantineEvent(eventID, nodeName, "REPLACE_DISK")
 	eventToken := datastore.EventWithToken{
-		Event:       map[string]interface{}(rawEvent),
+		Event:       map[string]any(rawEvent),
 		ResumeToken: []byte("custom-token-1"),
 	}
 
@@ -2423,7 +2522,7 @@ func TestCustomAction_E2E(t *testing.T) {
 
 	cr, err := testDynamic.Resource(gvr).Get(ctx, crName, metav1.GetOptions{})
 	require.NoError(t, err, "Custom action CR should exist in Kubernetes")
-	assert.Equal(t, nodeName, cr.Object["spec"].(map[string]interface{})["nodeName"])
+	assert.Equal(t, nodeName, cr.Object["spec"].(map[string]any)["nodeName"])
 
 	labels := cr.GetLabels()
 	assert.Equal(t, "true", labels["nvsentinel.nvidia.com/custom-action"],

@@ -12,7 +12,7 @@ Official Helm chart for NVSentinel - GPU node resilience system for automated fa
 - **Kubernetes**: 1.25 or later
 - **Helm**: 3.0 or later
 - **NVIDIA GPU Operator**: Required for GPU monitoring (includes DCGM)
-- **cert-manager**: Required for TLS certificate management (v1.19.0+)
+- **cert-manager**: Required for TLS certificate management (v1.21.0+)
 - **Persistent Storage**: For MongoDB (default: 10GB per replica)
 
 ```bash
@@ -21,7 +21,7 @@ helm repo add jetstack https://charts.jetstack.io --force-update
 helm install cert-manager jetstack/cert-manager \
   --namespace cert-manager \
   --create-namespace \
-  --version v1.19.1 \
+  --version v1.21.1 \
   --set installCRDs=true
 
 # Install Prometheus (optional, for metrics collection)
@@ -36,13 +36,13 @@ helm install prometheus prometheus-community/kube-prometheus-stack \
 ```bash
 # Install with default configuration
 helm install nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version v1.14.0 \
+  --version v1.22.0 \
   --namespace nvsentinel \
   --create-namespace
 
 # Upgrade to a new version
 helm upgrade nvsentinel oci://ghcr.io/nvidia/nvsentinel \
-  --version v1.14.0 \
+  --version v1.22.0 \
   --namespace nvsentinel
 
 # Uninstall
@@ -316,6 +316,19 @@ janitor:
       principalId: "ocid1.principal.oc1..aaa..."
 ```
 
+##### Label provider
+
+Requests reboot and terminate by labeling the Node. An external controller running on the Kubernetes control plane can watch those labels and perform the required action. After reboot completion, that controller **MUST** remove the reboot label.
+
+```yaml
+janitor-provider:
+  csp:
+    provider: "label"
+    label:
+      rebootKey: "nke.nvidia.com/reboot=requested-by-nvsentinel"
+      terminateKey: "nke.nvidia.com/terminate=requested-by-nvsentinel"
+```
+
 ### Complete Configuration Reference
 
 For detailed documentation of all available configuration options, see:
@@ -326,5 +339,5 @@ For detailed documentation of all available configuration options, see:
 To view all options from the published chart:
 
 ```bash
-helm show values oci://ghcr.io/nvidia/nvsentinel --version v1.14.0
+helm show values oci://ghcr.io/nvidia/nvsentinel --version v1.22.0
 ```

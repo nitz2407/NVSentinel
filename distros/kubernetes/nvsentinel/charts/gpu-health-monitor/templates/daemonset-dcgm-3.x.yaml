@@ -19,9 +19,11 @@ metadata:
     {{- include "gpu-health-monitor.labels" . | nindent 4 }}
 spec:
   updateStrategy:
-    type: RollingUpdate
+    type: {{ .Values.updateStrategy.type }}
+    {{- if eq .Values.updateStrategy.type "RollingUpdate" }}
     rollingUpdate:
-      maxUnavailable: 5%
+      maxUnavailable: {{ .Values.updateStrategy.rollingUpdate.maxUnavailable }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "gpu-health-monitor.selectorLabels" . | nindent 6 }}
@@ -38,6 +40,10 @@ spec:
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if include "gpu-health-monitor.dcgmStartupGateEnabled" . }}
+      initContainers:
+        {{- include "gpu-health-monitor.dcgmStartupGate" (dict "root" . "dcgmVersion" "3.x") | nindent 8 }}
       {{- end }}
       containers:
         - name: {{ .Chart.Name }}
@@ -63,8 +69,15 @@ spec:
             - {{ .Values.global.metadataPath | quote }}
             - --processing-strategy
             - {{ .Values.processingStrategy | quote }}
+            - --suppress-nvlink-down-unbridged-pcie
+            - {{ .Values.suppressNvlinkDownOnUnbridgedPcie | quote }}
           securityContext:
             runAsUser: 0
+            {{- if eq (include "gpu-health-monitor.dcgmMode" .) "embedded-mode" }}
+            # Required for NVIDIA container toolkit GPU/driver injection when the
+            # toolkit ignores NVIDIA_VISIBLE_DEVICES for unprivileged containers.
+            privileged: true
+            {{- end }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}-dcgm-3.x"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           resources:
@@ -76,18 +89,12 @@ spec:
             httpGet:
               path: /healthz
               port: {{ .Values.global.metricsPort }}
-            initialDelaySeconds: 30
-            periodSeconds: 30
-            timeoutSeconds: 3
-            failureThreshold: 3
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
             httpGet:
               path: /metrics
               port: {{ .Values.global.metricsPort }}
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 3
-            failureThreshold: 3
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
           volumeMounts:
             {{- if .Values.additionalVolumeMounts }}
             {{ toYaml .Values.additionalVolumeMounts | nindent 12 }}
@@ -99,12 +106,21 @@ spec:
             - name: gpu-metadata
               mountPath: /var/lib/nvsentinel
               readOnly: true
+            {{- if include "gpu-health-monitor.pcAuth.enabled" . }}
+            {{- include "gpu-health-monitor.pcAuth.volumeMount" . | nindent 12 }}
+            {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: spec.nodeName
+            {{- if include "gpu-health-monitor.pcAuth.enabled" . }}
+            {{- /* Projected token presented on health-event publishes. This monitor
+                 only names its own node, so it needs no cross-node allowlisting. */}}
+            - name: PLATFORM_CONNECTOR_TOKEN_PATH
+              value: {{ include "gpu-health-monitor.pcAuth.tokenPath" . | quote }}
+            {{- end }}
       volumes:
         - name: config-vol
           configMap:
@@ -118,6 +134,9 @@ spec:
           hostPath:
             path: /var/lib/nvsentinel
             type: DirectoryOrCreate
+        {{- if include "gpu-health-monitor.pcAuth.enabled" . }}
+        {{- include "gpu-health-monitor.pcAuth.volume" . | nindent 8 }}
+        {{- end }}
         {{- if .Values.additionalHostVolumes }}
         {{ toYaml .Values.additionalHostVolumes | nindent 8 }}
         {{- end }}
@@ -142,4 +161,7 @@ spec:
       {{- with (.Values.global.tolerations | default .Values.tolerations) }}
       tolerations:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.priorityClassName | default .Values.priorityClassName) }}
+      priorityClassName: {{ . | quote }}
       {{- end }}

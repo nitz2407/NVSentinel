@@ -51,7 +51,6 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/transport/spdy"
 	"k8s.io/client-go/util/retry"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	kwokv1alpha1 "sigs.k8s.io/kwok/pkg/apis/v1alpha1"
@@ -60,28 +59,45 @@ import (
 )
 
 const (
-	EventuallyWaitTimeout = 10 * time.Minute
-	NeverWaitTimeout      = 10 * time.Second
-	WaitInterval          = 5 * time.Second
-	NVSentinelNamespace   = "nvsentinel"
+	EventuallyWaitTimeout         = 10 * time.Minute
+	NeverWaitTimeout              = 10 * time.Second
+	WaitInterval                  = 5 * time.Second
+	validationRequestPollInterval = 1 * time.Second
+	NVSentinelNamespace           = "nvsentinel"
 )
 
 var (
 	RebootNodeGVK = schema.GroupVersionKind{
-		Group:   "janitor.dgxc.nvidia.com",
-		Version: "v1alpha1",
+		Group:   RebootNodeCRDGroup,
+		Version: RebootNodeCRDVersion,
 		Kind:    "RebootNode",
 	}
 	GPUResetGVK = schema.GroupVersionKind{
-		Group:   "janitor.dgxc.nvidia.com",
-		Version: "v1alpha1",
+		Group:   RebootNodeCRDGroup,
+		Version: RebootNodeCRDVersion,
 		Kind:    "GPUReset",
+	}
+	TerminateNodeGVK = schema.GroupVersionKind{
+		Group:   RebootNodeCRDGroup,
+		Version: RebootNodeCRDVersion,
+		Kind:    "TerminateNode",
 	}
 	ExternalRemediationRequestGVK = schema.GroupVersionKind{
 		Group:   "nvsentinel.dgxc.nvidia.com",
 		Version: "v1",
 		Kind:    "ExternalRemediationRequest",
 	}
+	ValidationRequestGVK = schema.GroupVersionKind{
+		Group:   "nvsentinel.nvidia.com",
+		Version: "v1alpha1",
+		Kind:    "ValidationRequest",
+	}
+)
+
+// Node annotations the validation-controller manages while a ValidationRequest runs against a node.
+const (
+	AnnotationActiveValidationRequest = "nvsentinel.nvidia.com/active-validation-request"
+	AnnotationValidationSession       = "nvsentinel.nvidia.com/validation-session"
 )
 
 func WaitForNodesCordonState(
@@ -113,9 +129,7 @@ func WaitForNodesCordonState(
 
 func CreateNamespace(ctx context.Context, c klient.Client, name string) error {
 	namespace := &v1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-		},
+		Name: name,
 	}
 
 	err := c.Resources().Create(ctx, namespace)
@@ -132,9 +146,7 @@ func CreateNamespace(ctx context.Context, c klient.Client, name string) error {
 
 func DeleteNamespace(ctx context.Context, t *testing.T, c klient.Client, name string) error {
 	namespace := &v1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-		},
+		Name: name,
 	}
 
 	err := c.Resources().Delete(ctx, namespace)
@@ -193,7 +205,7 @@ func StartNodeLabelWatcher(ctx context.Context, t *testing.T, c klient.Client, n
 
 	return c.Resources().Watch(&v1.NodeList{}, resources.WithFieldSelector(
 		labels.FormatLabels(map[string]string{"metadata.name": nodeName}))).
-		WithUpdateFunc(func(updated interface{}) {
+		WithUpdateFunc(func(updated any) {
 			state.handleUpdate(t, ctx, updated, success)
 		}).Start(ctx)
 }
@@ -242,7 +254,7 @@ func newLabelWatcherState(ctx context.Context, t *testing.T, c klient.Client,
 	return state
 }
 
-func (s *labelWatcherState) handleUpdate(t *testing.T, ctx context.Context, updated interface{}, success chan bool) {
+func (s *labelWatcherState) handleUpdate(t *testing.T, ctx context.Context, updated any, success chan bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -500,8 +512,18 @@ func EnsureNodeEventNotPresent(ctx context.Context, t *testing.T,
 	}, NeverWaitTimeout, WaitInterval, "node %s should not have event %v", nodeName, eventType)
 }
 
-// SelectTestNodeFromUnusedPool selects an available test node from the cluster.
-// Prefers uncordoned nodes but will fall back to the first node if none are available.
+// SelectTestNodeFromUnusedPool returns an uncordoned node carrying no leftover
+// quarantine state, and fails the test if there is none.
+//
+// Uncordoned alone is not enough. A node can be uncordoned while still holding
+// the AggregatedNodeHealth taint or the quarantine annotations from an earlier
+// test, and a test that asserts such state is absent then fails immediately on
+// residue it did not create — before its own event could possibly have been
+// processed.
+//
+// It deliberately does NOT fall back to a contaminated or cordoned node. A
+// silent fallback turns a cleanup regression into a passing test: the residue
+// is real, and the run should say so rather than route around it.
 func SelectTestNodeFromUnusedPool(ctx context.Context, t *testing.T, client klient.Client) string {
 	t.Log("Selecting an available uncordoned test node")
 
@@ -509,23 +531,74 @@ func SelectTestNodeFromUnusedPool(ctx context.Context, t *testing.T, client klie
 	require.NoError(t, err)
 	require.NotEmpty(t, nodes, "no nodes found in cluster")
 
-	// Try to find an uncordoned node
+	var (
+		cordoned     []string
+		contaminated []string
+		unreadable   []string
+	)
+
 	for _, name := range nodes {
 		node, err := GetNodeByName(ctx, client, name)
 		if err != nil {
+			// Not silently skipped: a node we could not read is not evidence of
+			// cordoning or residue, and folding it into either category makes
+			// the final diagnostic blame the wrong thing.
+			unreadable = append(unreadable, fmt.Sprintf("%s (%v)", name, err))
 			continue
 		}
 
-		if !node.Spec.Unschedulable {
-			t.Logf("Selected uncordoned node: %s", name)
-			return name
+		if node.Spec.Unschedulable {
+			cordoned = append(cordoned, name)
+			continue
+		}
+
+		if hasQuarantineResidue(node) {
+			contaminated = append(contaminated, name)
+			continue
+		}
+
+		t.Logf("Selected uncordoned node with no leftover quarantine state: %s", name)
+
+		return name
+	}
+
+	require.FailNowf(t, "no clean test node available",
+		"no node is both uncordoned and free of quarantine state from an earlier test. "+
+			"This is a cleanup regression, not a reason to continue on a dirty node.\n"+
+			"  cordoned:   %v\n"+
+			"  residue (taint %q or annotations %v): %v\n"+
+			"  unreadable: %v",
+		cordoned, AggregatedNodeHealthTaintKey,
+		[]string{
+			QuarantineHealthEventAnnotationKey,
+			QuarantineHealthEventIsCordonedAnnotationKey,
+			QuarantineHealthEventCordonPreExistingAnnotationKey,
+		}, contaminated, unreadable)
+
+	// Unreachable: require.FailNowf does not return.
+	return ""
+}
+
+// hasQuarantineResidue reports whether a node still carries fault-quarantine
+// state: the health taint, or any of the quarantine annotations.
+func hasQuarantineResidue(node *v1.Node) bool {
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == AggregatedNodeHealthTaintKey {
+			return true
 		}
 	}
 
-	nodeName := nodes[0]
-	t.Logf("No uncordoned node found, using first node: %s", nodeName)
+	for _, key := range []string{
+		QuarantineHealthEventAnnotationKey,
+		QuarantineHealthEventIsCordonedAnnotationKey,
+		QuarantineHealthEventCordonPreExistingAnnotationKey,
+	} {
+		if _, ok := node.Annotations[key]; ok {
+			return true
+		}
+	}
 
-	return nodeName
+	return false
 }
 
 // SelectTestNodeWithEmptyProviderID selects a test node with empty providerID.
@@ -569,10 +642,8 @@ func GetNodeByName(ctx context.Context, c klient.Client, nodeName string) (*v1.N
 func DeletePod(ctx context.Context, t *testing.T, c klient.Client, namespace, podName string,
 	waitForRemoval bool) error {
 	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName,
-			Namespace: namespace,
-		},
+		Name:      podName,
+		Namespace: namespace,
 	}
 
 	err := c.Resources().Delete(ctx, pod)
@@ -724,6 +795,29 @@ func WaitForCRByName(ctx context.Context, t *testing.T, c klient.Client, crName 
 	return resultCR
 }
 
+// WaitForValidationRequestPhase waits for the named ValidationRequest to reach a given phase
+func WaitForValidationRequestPhase(ctx context.Context, t *testing.T, c klient.Client,
+	crName, phase string) *unstructured.Unstructured {
+	t.Helper()
+
+	vr := &unstructured.Unstructured{}
+	vr.SetGroupVersionKind(ValidationRequestGVK)
+
+	require.Eventually(t, func() bool {
+		if err := c.Resources().Get(ctx, crName, "", vr); err != nil {
+			t.Logf("failed to get ValidationRequest %s: %v", crName, err)
+			return false
+		}
+
+		currentPhase, _, _ := unstructured.NestedString(vr.Object, "status", "phase")
+		t.Logf("ValidationRequest %s phase: %q (want %q)", crName, currentPhase, phase)
+
+		return currentPhase == phase
+	}, EventuallyWaitTimeout, validationRequestPollInterval, "ValidationRequest %s should reach phase %q", crName, phase)
+
+	return vr
+}
+
 func DeleteAllCRs(ctx context.Context, t *testing.T, c klient.Client, groupVersionKind schema.GroupVersionKind) error {
 	crList, err := ListAllCRs(ctx, c, groupVersionKind)
 	if err != nil {
@@ -742,6 +836,10 @@ func DeleteAllCRs(ctx context.Context, t *testing.T, c klient.Client, groupVersi
 
 func DeleteCR(ctx context.Context, t *testing.T, c klient.Client, cr *unstructured.Unstructured,
 	waitForRemoval bool) error {
+	if cr == nil {
+		return nil
+	}
+
 	err := c.Resources().Delete(ctx, cr)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -761,16 +859,60 @@ func DeleteCR(ctx context.Context, t *testing.T, c klient.Client, cr *unstructur
 	return nil
 }
 
+// WaitForCRConditionByName polls crName until conditionType has wantStatus, or until the
+// CR reaches completionTime. Returns (true, cr) if the condition matched first, (false, cr)
+// if the CR completed before the condition was seen. Callers should t.Skip when false is
+// returned and the condition requires an active long-running operation.
+func WaitForCRConditionByName(
+	ctx context.Context, t *testing.T, c klient.Client,
+	crName string, gvk schema.GroupVersionKind,
+	conditionType, wantStatus string,
+) (bool, *unstructured.Unstructured) {
+	t.Helper()
+
+	var (
+		conditionMet bool
+		result       *unstructured.Unstructured
+	)
+
+	require.Eventually(t, func() bool {
+		cur := &unstructured.Unstructured{}
+		cur.SetGroupVersionKind(gvk)
+
+		if err := c.Resources().Get(ctx, crName, "", cur); err != nil {
+			return false
+		}
+
+		result = cur
+
+		ct, _, _ := unstructured.NestedString(cur.Object, "status", "completionTime")
+		if ct != "" {
+			return true // CR completed; stop waiting regardless of condition
+		}
+
+		cond := GetCRCondition(cur, conditionType)
+		if cond != nil && cond["status"] == wantStatus {
+			conditionMet = true
+			return true
+		}
+
+		return false
+	}, EventuallyWaitTimeout, WaitInterval,
+		"CR %s should reach condition %s=%s or completionTime", crName, conditionType, wantStatus)
+
+	return conditionMet, result
+}
+
 // GetCRCondition returns the condition map for a given condition type from an unstructured CR's
 // status.conditions array, or nil if the condition is not found.
-func GetCRCondition(cr *unstructured.Unstructured, conditionType string) map[string]interface{} {
+func GetCRCondition(cr *unstructured.Unstructured, conditionType string) map[string]any {
 	conditions, found, err := unstructured.NestedSlice(cr.Object, "status", "conditions")
 	if err != nil || !found {
 		return nil
 	}
 
 	for _, c := range conditions {
-		cond, ok := c.(map[string]interface{})
+		cond, ok := c.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -979,17 +1121,15 @@ func DrainRunningPodsInNamespace(ctx context.Context, t *testing.T, c klient.Cli
 
 func NewGPUPodSpec(namespace string, gpuCount int) *v1.Pod {
 	return &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "test-gpu-pod-",
-			Namespace:    namespace,
-		},
+		GenerateName: "test-gpu-pod-",
+		Namespace:    namespace,
 		Spec: v1.PodSpec{
 			Containers: []v1.Container{
 				{
 					Name:    "gpu-container",
-					Image:   "busybox:latest",
-					Command: []string{"/bin/sh", "-c"},
-					Args:    []string{"sleep 3600"},
+					Image:   busyboxImage,
+					Command: []string{shellBinary, "-c"},
+					Args:    []string{sleepForever},
 					Resources: v1.ResourceRequirements{
 						Requests: v1.ResourceList{
 							"nvidia.com/gpu": resource.MustParse(fmt.Sprintf("%d", gpuCount)),
@@ -1070,6 +1210,38 @@ func CreateRebootNodeCR(ctx context.Context, c klient.Client, nodeName string,
 	return rebootNode, nil
 }
 
+// CreateValidationRequest creates a cluster-scoped ValidationRequest targeting the given nodes and tests
+func CreateValidationRequest(ctx context.Context, c klient.Client, crName string,
+	nodeNames, tests []string) (*unstructured.Unstructured, error) {
+	vr := &unstructured.Unstructured{}
+	vr.SetGroupVersionKind(ValidationRequestGVK)
+	vr.SetName(crName)
+
+	nodes := make([]interface{}, len(nodeNames))
+	for i, n := range nodeNames {
+		nodes[i] = map[string]interface{}{fieldNameKey: n}
+	}
+
+	if err := unstructured.SetNestedSlice(vr.Object, nodes, "spec", "nodes"); err != nil {
+		return nil, fmt.Errorf("failed to set nodes in spec: %w", err)
+	}
+
+	testsAny := make([]interface{}, len(tests))
+	for i, testName := range tests {
+		testsAny[i] = testName
+	}
+
+	if err := unstructured.SetNestedSlice(vr.Object, testsAny, "spec", "tests"); err != nil {
+		return nil, fmt.Errorf("failed to set tests in spec: %w", err)
+	}
+
+	if err := c.Resources().Create(ctx, vr); err != nil {
+		return nil, fmt.Errorf("failed to create ValidationRequest %s: %w", crName, err)
+	}
+
+	return vr, nil
+}
+
 func CreateGPUResetCR(ctx context.Context, c klient.Client, nodeName string, crName string,
 	uuid string) (*unstructured.Unstructured, error) {
 	gpuReset := &unstructured.Unstructured{}
@@ -1081,7 +1253,7 @@ func CreateGPUResetCR(ctx context.Context, c klient.Client, nodeName string, crN
 		return nil, fmt.Errorf("failed to set nodeName in spec: %w", err)
 	}
 
-	err = unstructured.SetNestedSlice(gpuReset.Object, []interface{}{uuid}, "spec", "selector", "uuids")
+	err = unstructured.SetNestedSlice(gpuReset.Object, []any{uuid}, "spec", "selector", "uuids")
 	if err != nil {
 		return nil, fmt.Errorf("failed to set selector.uuids in spec: %w", err)
 	}
@@ -1092,6 +1264,25 @@ func CreateGPUResetCR(ctx context.Context, c klient.Client, nodeName string, crN
 	}
 
 	return gpuReset, nil
+}
+
+func CreateTerminateNodeCR(ctx context.Context, c klient.Client, nodeName string,
+	crName string) (*unstructured.Unstructured, error) {
+	terminateNode := &unstructured.Unstructured{}
+	terminateNode.SetGroupVersionKind(TerminateNodeGVK)
+	terminateNode.SetName(crName)
+
+	err := unstructured.SetNestedField(terminateNode.Object, nodeName, "spec", "nodeName")
+	if err != nil {
+		return nil, fmt.Errorf("failed to set nodeName in spec: %w", err)
+	}
+
+	err = c.Resources().Create(ctx, terminateNode)
+	if err != nil {
+		return nil, err
+	}
+
+	return terminateNode, nil
 }
 
 // CreateExtRRCR returns the apiserver error verbatim so callers can inspect
@@ -1108,7 +1299,7 @@ func CreateExtRRCR(ctx context.Context, c klient.Client, crName, nodeName, healt
 
 // CreateMalformedExtRR lets tests exercise the webhook's rejection paths.
 func CreateMalformedExtRR(ctx context.Context, c klient.Client, crName string,
-	spec map[string]interface{}) (*unstructured.Unstructured, error) {
+	spec map[string]any) (*unstructured.Unstructured, error) {
 	extrr := &unstructured.Unstructured{}
 	extrr.SetGroupVersionKind(ExternalRemediationRequestGVK)
 	extrr.SetName(crName)
@@ -1137,7 +1328,7 @@ func SetExtRRComplete(ctx context.Context, c klient.Client, crName, status, reas
 	}
 
 	conditions, _, _ := unstructured.NestedSlice(cur.Object, "status", "conditions")
-	newCondition := map[string]interface{}{
+	newCondition := map[string]any{
 		"type":               "ExternalRemediationComplete",
 		"status":             status,
 		"reason":             reason,
@@ -1148,7 +1339,7 @@ func SetExtRRComplete(ctx context.Context, c klient.Client, crName, status, reas
 	replaced := false
 
 	for i, cIface := range conditions {
-		cond, ok := cIface.(map[string]interface{})
+		cond, ok := cIface.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -1301,8 +1492,8 @@ func newExtRR(crName, nodeName, healthEventID string) *unstructured.Unstructured
 	extrr.SetGroupVersionKind(ExternalRemediationRequestGVK)
 	extrr.SetName(crName)
 
-	spec := map[string]interface{}{
-		"healthEvent": map[string]interface{}{
+	spec := map[string]any{
+		"healthEvent": map[string]any{
 			"id":                      "he-" + healthEventID,
 			"nodeName":                nodeName,
 			"recommendedAction":       "CUSTOM",
@@ -1337,10 +1528,8 @@ func createConfigMapFromBytes(ctx context.Context, c klient.Client, yamlData []b
 	cm.ManagedFields = nil
 
 	existingCM := &v1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cm.Name,
-			Namespace: cm.Namespace,
-		},
+		Name:      cm.Name,
+		Namespace: cm.Namespace,
 	}
 	_ = c.Resources().Delete(ctx, existingCM)
 
@@ -1375,9 +1564,7 @@ func BackupConfigMap(
 	ctx context.Context, c klient.Client, name, namespace string,
 ) ([]byte, error) {
 	cm := &v1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-		},
+		Name: name,
 	}
 
 	err := c.Resources().Get(ctx, name, namespace, cm)
@@ -1445,7 +1632,7 @@ func ScaleDeployment(ctx context.Context, t *testing.T, c klient.Client, name, n
 			return err
 		}
 
-		current.Spec.Replicas = ptr.To(replicas)
+		current.Spec.Replicas = new(replicas)
 
 		return c.Resources().Update(ctx, current)
 	})
@@ -1935,10 +2122,8 @@ func CheckNodeEventExists(
 
 func PatchServicePort(ctx context.Context, c klient.Client, namespace, serviceName string, targetPort int) error {
 	svc := &v1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serviceName,
-			Namespace: namespace,
-		},
+		Name:      serviceName,
+		Namespace: namespace,
 	}
 
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -2139,10 +2324,8 @@ func DeletePodsByNames(ctx context.Context, t *testing.T, client klient.Client, 
 
 	for _, podName := range podNames {
 		pod := &v1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      podName,
-				Namespace: namespace,
-			},
+			Name:      podName,
+			Namespace: namespace,
 		}
 		err := client.Resources().Delete(ctx, pod)
 		require.NoError(t, err, "failed to delete pod %s", podName)
@@ -3288,10 +3471,8 @@ func CleanupDaemonSet(ctx context.Context, t *testing.T, client klient.Client, n
 	t.Helper()
 
 	ds := &appsv1.DaemonSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
+		Name:      name,
+		Namespace: namespace,
 	}
 
 	// Check if DaemonSet exists first - skip cleanup if not found

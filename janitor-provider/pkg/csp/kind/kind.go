@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -42,7 +43,7 @@ func NewClient(ctx context.Context) (*Client, error) {
 }
 
 // SendRebootSignal simulates sending a reboot signal for a kind node
-func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, _ string) (model.ResetSignalRequestRef, error) {
 	// nolint:gosec // G404: Using weak random for simulation is acceptable
 	// wait some random time to simulate a real csp (very short for fast tests)
 	time.Sleep(time.Duration(3+rand.IntN(3)) * time.Second)
@@ -106,14 +107,7 @@ func (c *Client) SendTerminateSignal(
 		return "", fmt.Errorf("failed to list containers: %w", err)
 	}
 
-	found := false
-
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		if line == containerName {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(strings.Split(strings.TrimSpace(string(output)), "\n"), containerName)
 
 	if !found {
 		slog.InfoContext(ctx, "Container not found, assuming already deleted", "container", containerName)
@@ -168,10 +162,8 @@ func (c *Client) deleteAndVerifyContainer(
 		return fmt.Errorf("failed to verify container deletion: %w", err)
 	}
 
-	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
-		if line == containerName {
-			return fmt.Errorf("container %s still exists after deletion attempt", containerName)
-		}
+	if slices.Contains(strings.Split(strings.TrimSpace(string(output)), "\n"), containerName) {
+		return fmt.Errorf("container %s still exists after deletion attempt", containerName)
 	}
 
 	return nil

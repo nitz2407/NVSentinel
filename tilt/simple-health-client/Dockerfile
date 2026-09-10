@@ -14,10 +14,8 @@
 
 # syntax=docker/dockerfile:1.6
 
-ARG TAG=v3.1.13
-ARG IMG=nvcr.io/nvidia/distroless/go
 
-FROM public.ecr.aws/docker/library/golang:1.26.4-trixie AS builder
+FROM public.ecr.aws/docker/library/golang:1.27.0-trixie@sha256:df98008ecd2b0ecc9f0a94d1b07e3564a9c92b555369b33d9b5f60d0765b2db7 AS builder
 
 # TODO: remove when pushing to GitHub
 ENV CGO_ENABLED=0
@@ -26,6 +24,11 @@ WORKDIR /go/src
 
 # Copy go.mod and go.sum files for all dependencies first
 COPY data-models/go.mod data-models/go.sum ./data-models/
+# commons is required for the shared platform-connector token client. It in
+# turn replaces data-models and store-client with local paths, so both of
+# those go.mod files must exist for the module graph to resolve.
+COPY commons/go.mod commons/go.sum ./commons/
+COPY store-client/go.mod store-client/go.sum ./store-client/
 COPY tilt/simple-health-client/go.mod tilt/simple-health-client/go.sum ./tilt/simple-health-client/
 
 WORKDIR /go/src/tilt/simple-health-client
@@ -36,11 +39,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Copy the source code after go mod download
 COPY tilt/simple-health-client/ .
 COPY data-models/ ../../data-models/
+COPY commons/ ../../commons/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -o simple-health-client main.go
 
-FROM ${IMG}:${TAG}
+FROM nvcr.io/nvidia/distroless/go:v3.1.13@sha256:694780ff504fb1c5e25b1f7fa4d618e55db8dcc12b8ca98b37b8959eb3f94e89
 
 WORKDIR /app
 

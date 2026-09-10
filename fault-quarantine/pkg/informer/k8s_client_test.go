@@ -16,20 +16,33 @@ package informer
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/fake"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/rest"
+	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/kubeclient"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -44,6 +57,7 @@ const (
 var (
 	testClient *kubernetes.Clientset
 	testEnv    *envtest.Environment
+	testConfig *rest.Config
 )
 
 func TestMain(m *testing.M) {
@@ -51,12 +65,12 @@ func TestMain(m *testing.M) {
 
 	testEnv = &envtest.Environment{}
 
-	testRestConfig, err := testEnv.Start()
+	testConfig, err = testEnv.Start()
 	if err != nil {
 		log.Fatalf("Failed to start test environment: %v", err)
 	}
 
-	testClient, err = kubernetes.NewForConfig(testRestConfig)
+	testClient, err = kubernetes.NewForConfig(testConfig)
 	if err != nil {
 		log.Fatalf("Failed to create kubernetes client: %v", err)
 	}
@@ -114,11 +128,9 @@ func createTestNode(ctx context.Context, t *testing.T, name string, annotations 
 	labels[GPUNodeLabel] = "true"
 
 	node := &v1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Annotations: annotations,
-			Labels:      labels,
-		},
+		Name:        name,
+		Annotations: annotations,
+		Labels:      labels,
 		Spec: v1.NodeSpec{
 			Unschedulable: unschedulable,
 			Taints:        taints,
@@ -134,6 +146,87 @@ func createTestNode(ctx context.Context, t *testing.T, name string, annotations 
 	if err != nil {
 		t.Fatalf("Failed to create test node %s: %v", name, err)
 	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+func cachedNodeInformer(t *testing.T, node *v1.Node) *NodeInformer {
+	t.Helper()
+
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	require.NoError(t, indexer.Add(node))
+
+	return &NodeInformer{
+		lister:         corelisters.NewNodeLister(indexer),
+		informerSynced: func() bool { return true },
+	}
+}
+
+// measureCordonThroughput creates nodes with an unrestricted setup client, then
+// measures only requests made by the rate-limited FaultQuarantineClient.
+func measureCordonThroughput(t *testing.T, prefix string, nodeCount int, qps float64, burst int) time.Duration {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+
+	nodeNames := make([]string, nodeCount)
+	for idx := range nodeCount {
+		nodeNames[idx] = testutils.GenerateTestNodeName(fmt.Sprintf("%s-%d", prefix, idx))
+		createTestNode(ctx, t, nodeNames[idx], nil, nil, nil, false)
+	}
+	t.Cleanup(func() {
+		for _, nodeName := range nodeNames {
+			_ = testClient.CoreV1().Nodes().Delete(context.Background(), nodeName, metav1.DeleteOptions{})
+		}
+	})
+
+	client, err := newFaultQuarantineClient(
+		rest.CopyConfig(testConfig),
+		false,
+		0,
+		GPUNodeLabel,
+		GPUNodeLabelValue,
+		kubeclient.RateLimitConfig{QPS: qps, Burst: burst},
+	)
+	require.NoError(t, err)
+
+	stopCh := make(chan struct{})
+	t.Cleanup(func() { close(stopCh) })
+	require.NoError(t, client.NodeInformer.Run(stopCh))
+
+	start := time.Now()
+	for _, nodeName := range nodeNames {
+		_, err := client.QuarantineNodeAndSetAnnotations(ctx, nodeName, nil, true, nil, nil)
+		require.NoError(t, err)
+	}
+
+	return time.Since(start)
+}
+
+// TestQuarantineNodeAndSetAnnotations_QPSControlledCordonThroughput_HigherQPSIncreasesThroughput
+// exercises FQ's cache-read + PATCH cordon path against envtest.
+func TestQuarantineNodeAndSetAnnotations_QPSControlledCordonThroughput_HigherQPSIncreasesThroughput(t *testing.T) {
+	const (
+		nodeCount = 10
+		burst     = 1
+	)
+
+	lowDuration := measureCordonThroughput(t, "low-qps", nodeCount, 4, burst)
+	highDuration := measureCordonThroughput(t, "high-qps", nodeCount, 40, burst)
+
+	lowRate := float64(nodeCount) / lowDuration.Seconds()
+	highRate := float64(nodeCount) / highDuration.Seconds()
+	throughputRatio := highRate / lowRate
+	t.Logf("cordon throughput: low QPS=%.2f nodes/s, high QPS=%.2f nodes/s, ratio=%.2fx",
+		lowRate, highRate, throughputRatio)
+
+	assert.GreaterOrEqual(t, throughputRatio, 6.0)
+	assert.LessOrEqual(t, throughputRatio, 14.0)
 }
 
 func TestQuarantineNodeAndSetAnnotations(t *testing.T) {
@@ -209,6 +302,61 @@ func TestQuarantineNodeAndSetAnnotations(t *testing.T) {
 	if val, ok := updatedNode.Annotations["test-annotation"]; !ok || val != "test-value" {
 		t.Errorf("Annotation not set correctly")
 	}
+}
+
+func TestQuarantineNodeAndSetAnnotationsMergesAppliedLabelWinners(t *testing.T) {
+	ctx := context.Background()
+	nodeName := testutils.GenerateTestNodeName("test-applied-label-winners")
+
+	createTestNode(ctx, t, nodeName, nil, nil, nil, false)
+	defer func() {
+		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
+	}()
+
+	k8sClient := setupTestClient(t)
+
+	first, err := json.Marshal([]config.AppliedLabel{{
+		Key: "gpu-fault", Value: "critical", Priority: 10, Order: 0,
+	}})
+	require.NoError(t, err)
+	_, err = k8sClient.QuarantineNodeAndSetAnnotations(
+		ctx,
+		nodeName,
+		nil,
+		false,
+		map[string]string{common.QuarantineHealthEventAppliedLabelsAnnotationKey: string(first)},
+		map[string]string{"gpu-fault": "critical"},
+	)
+	require.NoError(t, err)
+
+	second, err := json.Marshal([]config.AppliedLabel{
+		{Key: "gpu-fault", Value: "degraded", Priority: 5, Order: 1},
+		{Key: "network-fault", Value: "active", Priority: 5, Order: 1},
+	})
+	require.NoError(t, err)
+	_, err = k8sClient.QuarantineNodeAndSetAnnotations(
+		ctx,
+		nodeName,
+		nil,
+		false,
+		map[string]string{common.QuarantineHealthEventAppliedLabelsAnnotationKey: string(second)},
+		map[string]string{"gpu-fault": "degraded", "network-fault": "active"},
+	)
+	require.NoError(t, err)
+
+	node, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "critical", node.Labels["gpu-fault"])
+	assert.Equal(t, "active", node.Labels["network-fault"])
+
+	var applied []config.AppliedLabel
+	require.NoError(t, json.Unmarshal(
+		[]byte(node.Annotations[common.QuarantineHealthEventAppliedLabelsAnnotationKey]), &applied,
+	))
+	assert.ElementsMatch(t, []config.AppliedLabel{
+		{Key: "gpu-fault", Value: "critical", Priority: 10, Order: 0},
+		{Key: "network-fault", Value: "active", Priority: 5, Order: 1},
+	}, applied)
 }
 
 func TestUnQuarantineNodeAndRemoveAnnotations(t *testing.T) {
@@ -299,6 +447,61 @@ func TestUnQuarantineNodeAndRemoveAnnotations(t *testing.T) {
 	if updatedNode.Labels[uncordonedTimestampLabelKey] == "" {
 		t.Errorf("Expected uncordon-timestamp label to be set")
 	}
+}
+
+func TestUnQuarantineNodeAndRemoveAnnotations_DryRunRemovesAnnotationsOnly(t *testing.T) {
+	ctx := context.Background()
+	const (
+		nodeName      = "dry-run-unquarantine"
+		annotationKey = "test-annotation"
+	)
+
+	node := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        nodeName,
+			Annotations: map[string]string{annotationKey: "test-value"},
+			Labels: map[string]string{
+				cordonedReasonLabelKey: "gpu-error",
+			},
+		},
+		Spec: v1.NodeSpec{
+			Unschedulable: true,
+			Taints: []v1.Taint{{
+				Key: "test-key", Value: "test-value", Effect: v1.TaintEffectNoSchedule,
+			}},
+		},
+	}
+	clientset := fake.NewSimpleClientset(node)
+	k8sClient := &FaultQuarantineClient{
+		Clientset:  clientset,
+		DryRunMode: true,
+	}
+
+	require.NoError(t, k8sClient.UnQuarantineNodeAndRemoveAnnotations(
+		ctx,
+		nodeName,
+		[]config.Taint{{Key: "test-key", Value: "test-value", Effect: "NoSchedule"}},
+		true,
+		[]string{annotationKey},
+		[]string{cordonedReasonLabelKey},
+		map[string]string{uncordonedByLabelKey: common.ServiceName},
+	))
+
+	updatedNode, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.NotContains(t, updatedNode.Annotations, annotationKey)
+	assert.Equal(t, "gpu-error", updatedNode.Labels[cordonedReasonLabelKey])
+	assert.NotContains(t, updatedNode.Labels, uncordonedByLabelKey)
+	assert.True(t, updatedNode.Spec.Unschedulable)
+	require.Len(t, updatedNode.Spec.Taints, 1)
+
+	patches := 0
+	for _, action := range clientset.Actions() {
+		if action.GetVerb() == "patch" {
+			patches++
+		}
+	}
+	assert.Equal(t, 1, patches, "dry-run unquarantine should patch only the annotation removal")
 }
 
 func TestTaintAndCordonNode_NodeNotFound(t *testing.T) {
@@ -580,12 +783,13 @@ func TestTaintAndCordonNode_OverwriteAnnotation(t *testing.T) {
 func TestUnTaintAndUnCordonNode_NonExistentTaintRemoval(t *testing.T) {
 	ctx := context.Background()
 	nodeName := testutils.GenerateTestNodeName("test-nonexistent-taint-")
+	const annotationKey = "recovery-marker"
 
 	taints := []v1.Taint{
 		{Key: "taint1", Value: "val1", Effect: v1.TaintEffectNoSchedule},
 	}
 
-	createTestNode(ctx, t, nodeName, nil, nil, taints, false)
+	createTestNode(ctx, t, nodeName, map[string]string{annotationKey: "present"}, nil, taints, true)
 	defer func() {
 		_ = testClient.CoreV1().Nodes().Delete(ctx, nodeName, metav1.DeleteOptions{})
 	}()
@@ -593,7 +797,8 @@ func TestUnTaintAndUnCordonNode_NonExistentTaintRemoval(t *testing.T) {
 	k8sClient := setupTestClient(t)
 
 	taintsToRemove := []config.Taint{{Key: "taint-nonexistent", Value: "valX", Effect: "NoSchedule"}}
-	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(ctx, nodeName, taintsToRemove, true, nil, []string{}, map[string]string{})
+	err := k8sClient.UnQuarantineNodeAndRemoveAnnotations(
+		ctx, nodeName, taintsToRemove, true, []string{annotationKey}, []string{}, map[string]string{})
 	if err != nil {
 		t.Fatalf("Expected no error, got %v", err)
 	}
@@ -613,6 +818,12 @@ func TestUnTaintAndUnCordonNode_NonExistentTaintRemoval(t *testing.T) {
 	// Original taint should remain as we tried to remove a non-existent taint
 	if len(testTaints) != 1 {
 		t.Errorf("Expected 1 test taint to remain, got %d", len(testTaints))
+	}
+	if updatedNode.Spec.Unschedulable {
+		t.Errorf("Expected absent requested taint not to prevent uncordoning")
+	}
+	if _, exists := updatedNode.Annotations[annotationKey]; exists {
+		t.Errorf("Expected absent requested taint not to prevent annotation cleanup")
 	}
 }
 
@@ -708,4 +919,206 @@ func TestUnTaintAndUnCordonNode_NonExistentNode(t *testing.T) {
 	if err == nil {
 		t.Errorf("Expected error for non-existent node, got nil")
 	}
+}
+
+// TestUpdateNode_CachedNode_UsesPatchAndSkipsNoOp verifies that a cached Node
+// requires one PATCH for a change and no API request once the desired state is present.
+func TestUpdateNode_CachedNode_UsesPatchAndSkipsNoOp(t *testing.T) {
+	node := &v1.Node{Name: "node-1", ResourceVersion: "1"}
+	clientset := fake.NewSimpleClientset(node.DeepCopy())
+	client := &FaultQuarantineClient{
+		Clientset:    clientset,
+		NodeInformer: cachedNodeInformer(t, node.DeepCopy()),
+	}
+
+	clientset.ClearActions()
+	_, err := client.QuarantineNodeAndSetAnnotations(
+		context.Background(),
+		node.Name,
+		nil,
+		true,
+		nil,
+		nil,
+	)
+	require.NoError(t, err)
+
+	actions := clientset.Actions()
+	require.Len(t, actions, 1)
+	patchAction, ok := actions[0].(k8stesting.PatchAction)
+	require.True(t, ok)
+	assert.Equal(t, types.MergePatchType, patchAction.GetPatchType())
+	assert.JSONEq(t,
+		`{"metadata":{"resourceVersion":"1"},"spec":{"unschedulable":true}}`,
+		string(patchAction.GetPatch()),
+	)
+
+	updated, err := clientset.CoreV1().Nodes().Get(t.Context(), node.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.True(t, updated.Spec.Unschedulable)
+
+	client.NodeInformer = cachedNodeInformer(t, updated.DeepCopy())
+	clientset.ClearActions()
+	_, err = client.QuarantineNodeAndSetAnnotations(
+		context.Background(),
+		node.Name,
+		nil,
+		true,
+		nil,
+		nil,
+	)
+	require.NoError(t, err)
+	assert.Empty(t, clientset.Actions())
+}
+
+// TestUpdateNode_ConcurrentTaintUpdate_RetriesFromLiveNode verifies that a stale
+// resourceVersion triggers a live refresh and preserves both concurrent taint changes.
+func TestUpdateNode_ConcurrentTaintUpdate_RetriesFromLiveNode(t *testing.T) {
+	const nodeName = "concurrent-taint-update"
+
+	ctx := t.Context()
+	createTestNode(ctx, t, nodeName, nil, nil, nil, false)
+	t.Cleanup(func() {
+		_ = testClient.CoreV1().Nodes().Delete(
+			context.Background(),
+			nodeName,
+			metav1.DeleteOptions{},
+		)
+	})
+
+	client := setupTestClient(t)
+	fqTaint := v1.Taint{Key: "fq", Value: "quarantined", Effect: v1.TaintEffectNoSchedule}
+	concurrentTaint := v1.Taint{Key: "other-controller", Value: "updated", Effect: v1.TaintEffectNoExecute}
+
+	// Intercept the first FQ PATCH and advance the live Node immediately before
+	// forwarding it. This deterministically makes the first ResourceVersion stale.
+	restConfig := rest.CopyConfig(testConfig)
+	var injectOnce sync.Once
+	var injectErr error
+	patchRequests := 0
+	restConfig.Wrap(func(delegate http.RoundTripper) http.RoundTripper {
+		return roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+			if request.Method == http.MethodPatch {
+				patchRequests++
+				injectOnce.Do(func() {
+					liveNode, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+					if err != nil {
+						injectErr = err
+						return
+					}
+
+					liveNode.Spec.Taints = append(liveNode.Spec.Taints, concurrentTaint)
+					_, injectErr = testClient.CoreV1().Nodes().Update(ctx, liveNode, metav1.UpdateOptions{})
+				})
+				if injectErr != nil {
+					return nil, injectErr
+				}
+			}
+
+			return delegate.RoundTrip(request)
+		})
+	})
+
+	patchingClient, err := kubernetes.NewForConfig(restConfig)
+	require.NoError(t, err)
+	client.Clientset = patchingClient
+
+	attempts := 0
+	err = client.UpdateNode(ctx, nodeName, func(node *v1.Node) error {
+		attempts++
+		node.Spec.Taints = append(node.Spec.Taints, fqTaint)
+
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2, attempts, "the stale PATCH must conflict exactly once")
+	assert.Equal(t, 2, patchRequests)
+
+	updated, err := testClient.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	require.NoError(t, err)
+	assert.Contains(t, updated.Spec.Taints, fqTaint)
+	assert.Contains(t, updated.Spec.Taints, concurrentTaint)
+}
+
+// TestApplyTaints_DeduplicatesByKeyAndEffect verifies that taints with the same
+// Key/Effect pair are updated in place and deduplicated while new pairs are appended.
+func TestApplyTaints_DeduplicatesByKeyAndEffect(t *testing.T) {
+	timeAdded := metav1.Now()
+	node := &v1.Node{
+		Spec: v1.NodeSpec{
+			Taints: []v1.Taint{
+				{Key: "shared", Value: "old", Effect: v1.TaintEffectNoSchedule, TimeAdded: &timeAdded},
+				{Key: "shared", Value: "duplicate", Effect: v1.TaintEffectNoSchedule},
+				{Key: "shared", Value: "keep", Effect: v1.TaintEffectNoExecute},
+				{Key: "untouched", Value: "value", Effect: v1.TaintEffectPreferNoSchedule},
+			},
+		},
+	}
+	client := &FaultQuarantineClient{}
+
+	err := client.applyTaints(t.Context(), node, []config.Taint{
+		{Key: "shared", Value: "updated", Effect: string(v1.TaintEffectNoSchedule)},
+		{Key: "shared", Value: "final", Effect: string(v1.TaintEffectNoSchedule)},
+		{Key: "new", Value: "value", Effect: string(v1.TaintEffectNoSchedule)},
+	}, node.Name)
+	require.NoError(t, err)
+
+	assert.Equal(t, []v1.Taint{
+		{Key: "shared", Value: "final", Effect: v1.TaintEffectNoSchedule, TimeAdded: &timeAdded},
+		{Key: "shared", Value: "keep", Effect: v1.TaintEffectNoExecute},
+		{Key: "untouched", Value: "value", Effect: v1.TaintEffectPreferNoSchedule},
+		{Key: "new", Value: "value", Effect: v1.TaintEffectNoSchedule},
+	}, node.Spec.Taints)
+}
+
+// TestMergeAppliedTaints_ReplacesValueByKeyAndEffect verifies that bookkeeping
+// follows Kubernetes taint identity and retains pre-existing ownership state.
+func TestMergeAppliedTaints_ReplacesValueByKeyAndEffect(t *testing.T) {
+	merged := mergeAppliedTaints(
+		[]config.Taint{
+			{
+				Key:         "shared",
+				Value:       "old",
+				Effect:      string(v1.TaintEffectNoSchedule),
+				PreExisting: true,
+			},
+			{Key: "shared", Value: "keep", Effect: string(v1.TaintEffectNoExecute)},
+		},
+		[]config.Taint{
+			{Key: "shared", Value: "new", Effect: string(v1.TaintEffectNoSchedule)},
+			{Key: "shared", Value: "final", Effect: string(v1.TaintEffectNoSchedule)},
+		},
+	)
+
+	assert.ElementsMatch(t, []config.Taint{
+		{
+			Key:         "shared",
+			Value:       "final",
+			Effect:      string(v1.TaintEffectNoSchedule),
+			PreExisting: true,
+		},
+		{Key: "shared", Value: "keep", Effect: string(v1.TaintEffectNoExecute)},
+	}, merged)
+}
+
+// TestHasTaint_MatchesByKeyAndEffect verifies that changing a taint value does
+// not make FQ misclassify the same Kubernetes taint as manually removed.
+func TestHasTaint_MatchesByKeyAndEffect(t *testing.T) {
+	node := &v1.Node{
+		Spec: v1.NodeSpec{
+			Taints: []v1.Taint{
+				{Key: "shared", Value: "new", Effect: v1.TaintEffectNoSchedule},
+			},
+		},
+	}
+
+	assert.True(t, hasTaint(node, config.Taint{
+		Key:    "shared",
+		Value:  "old",
+		Effect: string(v1.TaintEffectNoSchedule),
+	}))
+	assert.False(t, hasTaint(node, config.Taint{
+		Key:    "shared",
+		Value:  "new",
+		Effect: string(v1.TaintEffectNoExecute),
+	}))
 }

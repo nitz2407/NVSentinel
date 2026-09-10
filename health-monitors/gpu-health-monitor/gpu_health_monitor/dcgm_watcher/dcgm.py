@@ -15,16 +15,23 @@
 import dcgm_agent, dcgm_structs, dcgm_errors, dcgm_fields, dcgmvalue, pydcgm, bisect
 import logging as log
 from . import types, metrics
-from gpu_health_monitor.metadata import MetadataReader
-from threading import Event
+from gpu_health_monitor.metadata import MetadataReader, NVLinkDownExpectation
+from threading import Event, Lock, Thread
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor
 from gpu_health_monitor.healthz import mark_alive as _mark_alive
+from collections.abc import Callable, Iterator
+import contextlib
+from contextlib import AbstractContextManager
 import os
+import time
 
 DELAY, MULTIPLIER, MAX_DELAY = 2, 1.5, 120
 DCGM_4_PYTHON_PATH = "/usr/share/datacenter-gpu-manager-4/bindings/python3"
 DCGM_CONNECTION_TYPE_TCP = 1
+
+# How often the watchdog thread checks for an overdue probe.
+PROBE_WATCHDOG_INTERVAL_SECONDS = 1.0
 
 
 def _run_dcgm_server(port: int, bind_address: str) -> None:
@@ -48,6 +55,21 @@ def _run_dcgm_server(port: int, bind_address: str) -> None:
 # 1. Add a new entry here (key = config key from [dcgmfieldsmonitoring])
 # 2. Add the key to configmap.yaml under [dcgmfieldsmonitoring]
 # 3. Add evaluation logic in _evaluate_* method if needed
+def _first_defined(module: object, *names: str) -> int | None:
+    """Return the first attribute that exists on ``module``, or None.
+
+    DCGM renamed the clocks-throttle family to "clocks event" in 4.x. Looking up
+    both spellings keeps a field monitor working across that rename in either
+    direction. ``getattr`` chaining with ``or`` is avoided deliberately: a
+    legitimate value of 0 would be skipped.
+    """
+    for name in names:
+        value = getattr(module, name, None)
+        if value is not None:
+            return value
+    return None
+
+
 DCGM_FIELDS_MONITORING: dict[str, types.DCGMFieldMonitor] = {}
 _gpu_temp_limit_field_id = getattr(dcgm_fields, "DCGM_FI_DEV_GPU_TEMP_TLIMIT", None)
 if _gpu_temp_limit_field_id is not None:
@@ -56,6 +78,119 @@ if _gpu_temp_limit_field_id is not None:
         watch_name="DCGM_HEALTH_WATCH_THERMAL_MARGIN",
         violation_code="GPU_TEMP_HW_SLOWDOWN_VIOLATION",
     )
+
+_clocks_event_reasons_field_id = _first_defined(
+    dcgm_fields,
+    "DCGM_FI_DEV_CLOCKS_EVENT_REASONS",
+    "DCGM_FI_DEV_CLOCK_THROTTLE_REASONS",
+)
+if _clocks_event_reasons_field_id is not None:
+    DCGM_FIELDS_MONITORING["gpupowerbrakemonitoringenabled"] = types.DCGMFieldMonitor(
+        field_id=_clocks_event_reasons_field_id,
+        watch_name="DCGM_HEALTH_WATCH_POWER_BRAKE",
+        violation_code="GPU_HW_POWER_BRAKE_VIOLATION",
+    )
+
+# An asserted external hardware power brake, i.e. the power delivery path telling
+# the GPU to drop clocks. Deliberately not bit 0x04 (SW power cap), which is normal
+# capping under load and carries no fault information, nor bit 0x40 (HW thermal
+# slowdown), which the thermal margin monitor already covers.
+HW_POWER_BRAKE_REASON_BIT = (
+    _first_defined(
+        dcgm_fields,
+        "DCGM_CLOCKS_EVENT_REASON_HW_POWER_BRAKE",
+        "DCGM_CLOCKS_THROTTLE_REASON_HW_POWER_BRAKE",
+    )
+    or 0x0000000000000080
+)
+
+
+class ProbeWatchdog:
+    """Reports DCGM probes that stop returning instead of failing.
+
+    A wedged NVIDIA driver parks its callers in uninterruptible sleep, so a
+    blocked DCGM call never raises and never times out — it simply never comes
+    back. The poll loop therefore cannot report its own hang: it is stuck
+    before the point where it would publish anything, and the liveness probe
+    only sees a frozen loop and restarts the container, which discards the
+    evidence and hangs again.
+
+    This watchdog closes that gap by treating "the probe did not return" as a
+    positive finding. It runs on its own thread so the driver cannot block it.
+    Delivery is retried until ``on_hang`` succeeds: a hung poll loop has no
+    "next cycle" to fall back on, so a single failed publish would otherwise
+    lose the event for the life of the process.
+
+    ``on_hang`` must complete within a bounded time. ``poll_once`` holds the
+    watchdog lock across the callback so a concurrent probe return cannot emit
+    recovery before the unhealthy event is committed. The platform connector
+    bounds critical delivery with ``CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS``.
+    """
+
+    def __init__(self, deadline_seconds: float, on_hang: Callable[[str, float], bool | None]) -> None:
+        self._deadline_seconds = deadline_seconds
+        self._on_hang = on_hang
+        self._lock = Lock()
+        self._operation: str | None = None
+        self._started_at = 0.0
+        self._detected = False
+        self._reported = False
+
+    @contextlib.contextmanager
+    def probe(self, operation: str) -> Iterator[None]:
+        """Mark a blocking DCGM call as in flight for the duration of the block."""
+        with self._lock:
+            self._operation = operation
+            self._started_at = time.monotonic()
+            self._detected = False
+            self._reported = False
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._operation = None
+
+    def poll_once(self) -> bool:
+        """Attempt to report an overdue probe. Returns True once delivery succeeds."""
+        with self._lock:
+            if self._operation is None or self._reported:
+                return False
+            elapsed = time.monotonic() - self._started_at
+            if elapsed < self._deadline_seconds:
+                return False
+            operation = self._operation
+            if not self._detected:
+                self._detected = True
+                log.error(
+                    f"DCGM probe {operation} has not returned after {elapsed:.1f}s "
+                    f"(deadline {self._deadline_seconds:.1f}s); treating the DCGM probe as unresponsive"
+                )
+                # This metric records detection, not successful event delivery.
+                metrics.dcgm_probe_hangs.labels(operation).inc()
+
+            # False means "try again later". True/None means the hang was handled
+            # (published, or already cached as active). Keep the lock while the
+            # bounded callback runs: if the probe returns concurrently, its
+            # finally block waits here, then emits recovery only after the
+            # unhealthy event is committed.
+            delivered = self._on_hang(operation, elapsed)
+            if delivered is False:
+                log.warning(
+                    f"DCGM probe {operation} unresponsive for {elapsed:.1f}s but "
+                    "the health event was not published; will retry"
+                )
+                return False
+
+            self._reported = True
+            return True
+
+    def run(self, exit: Event, interval_seconds: float = PROBE_WATCHDOG_INTERVAL_SECONDS) -> None:
+        """Poll for overdue probes until exit is set."""
+        while not exit.wait(interval_seconds):
+            try:
+                self.poll_once()
+            except Exception as e:
+                log.exception(f"Probe watchdog iteration failed: {e}")
 
 
 class DCGMWatcher:
@@ -69,6 +204,11 @@ class DCGMWatcher:
         metadata_reader: MetadataReader | None = None,
         dcgm_mode: str = "remote",
         suppressed_error_codes: frozenset[str] | None = None,
+        suppress_unbridged_pcie_nvlink_down: bool = False,
+        probe_deadline_seconds: float = 0.0,
+        power_brake_enabled: bool = False,
+        power_brake_min_consecutive_polls: int = 1,
+        health_check_min_consecutive_polls: dict[str, int] | None = None,
     ) -> None:
         self._addr = addr
         self._poll_interval_seconds = poll_interval_seconds
@@ -83,7 +223,50 @@ class DCGMWatcher:
                 "GpuThermalMarginWatch requested but DCGM_FI_DEV_GPU_TEMP_TLIMIT (field 153) is unavailable; "
                 "disabling the optional monitor"
             )
+        power_brake_supported = "gpupowerbrakemonitoringenabled" in DCGM_FIELDS_MONITORING
+        self._power_brake_enabled = power_brake_enabled and power_brake_supported
+        if power_brake_enabled and not power_brake_supported:
+            log.warning(
+                "GpuPowerBrakeWatch requested but neither DCGM_FI_DEV_CLOCKS_EVENT_REASONS nor "
+                "DCGM_FI_DEV_CLOCK_THROTTLE_REASONS is available; disabling the optional monitor"
+            )
+        # A brake asserted for a single poll can be a load transient. Requiring N
+        # consecutive observations before failing keeps that out of the event stream
+        # without hiding a sustained assertion, which is the actionable case.
+        self._power_brake_min_consecutive_polls = max(1, power_brake_min_consecutive_polls)
+        self._power_brake_streaks: dict[int, int] = {}
+        if self._power_brake_enabled:
+            log.info(
+                "GpuPowerBrakeWatch enabled: field %s, bit 0x%x, %d consecutive poll(s) to fail",
+                DCGM_FIELDS_MONITORING["gpupowerbrakemonitoringenabled"].field_id,
+                HW_POWER_BRAKE_REASON_BIT,
+                self._power_brake_min_consecutive_polls,
+            )
+        # An incident published from a single poll can be a transient: SXM NVLink
+        # links are briefly down after every boot while they train. Codes listed
+        # here must persist for N consecutive polls per GPU; anything unlisted
+        # keeps today's behaviour of publishing on the first observation.
+        # A threshold of 1 or less is today's behaviour, so those are dropped here
+        # and no streak is ever tracked for them.
+        self._health_check_min_consecutive_polls = {
+            code: polls for code, polls in (health_check_min_consecutive_polls or {}).items() if polls > 1
+        }
+        self._incident_streaks: dict[tuple[str, int], int] = {}
+        if self._health_check_min_consecutive_polls:
+            log.info(
+                "DCGM health check incident debounce: %s",
+                ", ".join(
+                    f"{code}={polls} consecutive poll(s)"
+                    for code, polls in sorted(self._health_check_min_consecutive_polls.items())
+                ),
+            )
         self._metadata_reader = metadata_reader
+        self._suppress_unbridged_pcie_nvlink_down = suppress_unbridged_pcie_nvlink_down
+        if suppress_unbridged_pcie_nvlink_down:
+            log.info(
+                "Operator opted in to suppressing DCGM_FR_NVLINK_DOWN on unbridged "
+                "bridge-capable PCIe GPUs (zero active NVLink links by design)"
+            )
         self._field_group = None
         self._dcgm_mode = dcgm_mode
 
@@ -96,6 +279,13 @@ class DCGMWatcher:
 
         self._callback_thread_pool = ThreadPoolExecutor()
         self._dcgm_k8s_service_enabled = dcgm_k8s_service_enabled
+
+        self._probe_watchdog: ProbeWatchdog | None = None
+        if probe_deadline_seconds > 0:
+            self._probe_watchdog = ProbeWatchdog(probe_deadline_seconds, self._report_probe_unresponsive)
+            log.info(f"DCGM probe watchdog enabled with a {probe_deadline_seconds:.1f}s deadline")
+        else:
+            log.warning("DCGM probe watchdog disabled; a driver that hangs instead of erroring will not be reported")
 
     def _get_available_health_watches(self) -> dict[int, str]:
         health_watches = {}
@@ -177,6 +367,107 @@ class DCGMWatcher:
             if suppressed_gpu_ids and not details.entity_failures:
                 details.status = types.HealthStatus.PASS
 
+    def _is_nvlink_down_false_positive(self, watch_name: str, gpu_id: int, error_code: str) -> bool:
+        """Return True when a DCGM_FR_NVLINK_DOWN incident is a false positive
+        because all NVLink links down is expected steady state for this GPU.
+
+        Two expected-down cases exist (see MetadataReader.classify_nvlink_down):
+          - NO_NVLINK_HARDWARE (L40, A40): unambiguous, always suppressed.
+          - UNBRIDGED_PCIE (A100/H100 PCIe with zero active links): from
+            metadata alone this is indistinguishable from a card whose NVLink
+            bridge was already dead at collection time, so it is suppressed
+            ONLY when the operator has explicitly asserted the fleet runs
+            unbridged PCIe cards (--suppress-nvlink-down-unbridged-pcie).
+
+        The check runs per incident (not on the aggregated entity failure) so
+        a genuine non-NVLINK_DOWN incident on the same GPU and watch is never
+        dropped alongside the false positive.
+
+        Fails closed: when the expectation cannot be established (no metadata
+        reader, metadata unavailable, GPU not found, malformed counts, or an
+        SXM system whose links may simply not have trained yet) the incident
+        is never suppressed.
+        """
+        if watch_name != "DCGM_HEALTH_WATCH_NVLINK" or error_code != "DCGM_FR_NVLINK_DOWN":
+            return False
+
+        if self._metadata_reader is None:
+            return False
+
+        expectation = self._metadata_reader.classify_nvlink_down(gpu_id)
+
+        if expectation is NVLinkDownExpectation.NVLINK_IN_USE:
+            return False
+
+        if expectation is NVLinkDownExpectation.UNKNOWN:
+            log.warning(
+                f"Cannot determine whether NVLink-down is expected for GPU {gpu_id}; "
+                f"not suppressing DCGM_FR_NVLINK_DOWN"
+            )
+            return False
+
+        if expectation is NVLinkDownExpectation.UNBRIDGED_PCIE and not self._suppress_unbridged_pcie_nvlink_down:
+            log.warning(
+                f"GPU {gpu_id} looks like an unbridged bridge-capable PCIe card (zero active NVLink "
+                f"links), but suppressing DCGM_FR_NVLINK_DOWN for this case requires operator opt-in "
+                f"(--suppress-nvlink-down-unbridged-pcie); not suppressing"
+            )
+            return False
+
+        log.info(f"Suppressing DCGM_FR_NVLINK_DOWN for GPU {gpu_id}: {expectation.value}")
+        metrics.dcgm_health_check_suppressed_incidents.labels(f"DCGM_FR_NVLINK_DOWN_{expectation.value.upper()}").inc()
+
+        return True
+
+    def _is_incident_debounced(self, error_code: str, gpu_id: int) -> bool:
+        """Return True when this incident has not yet persisted for the configured
+        number of consecutive polls, so it must be withheld this cycle.
+
+        The streak is keyed on ``(error_code, gpu_id)`` so a debounced code on one
+        GPU never delays a different code, or the same code on another GPU.
+        """
+        threshold = self._health_check_min_consecutive_polls.get(error_code)
+        if threshold is None:
+            return False
+
+        key = (error_code, gpu_id)
+        streak = self._incident_streaks.get(key, 0) + 1
+        self._incident_streaks[key] = streak
+
+        if streak >= threshold:
+            log.debug(
+                "Incident %s on GPU %s has persisted %d consecutive poll(s); publishing",
+                error_code,
+                gpu_id,
+                streak,
+            )
+            return False
+
+        log.debug(
+            "Incident %s on GPU %s seen %d/%d consecutive polls; withholding",
+            error_code,
+            gpu_id,
+            streak,
+            threshold,
+        )
+        metrics.dcgm_health_check_debounced_incidents.labels(error_code, str(gpu_id)).inc()
+
+        return True
+
+    def _reset_absent_incident_streaks(self, seen_this_poll: set[tuple[str, int]]) -> None:
+        """Drop the streak for every tracked incident absent from this poll.
+
+        A code that appears for a GPU on alternate polls therefore restarts from zero
+        each time and never reaches its threshold. The key is the code and GPU, not the
+        individual link, so a GPU reporting one link on one poll and another link on the
+        next keeps its streak: that GPU has had a link down continuously.
+
+        Only called after a successful health check, since a failed poll observed
+        nothing and must not clear a streak.
+        """
+        for key in [key for key in self._incident_streaks if key not in seen_this_poll]:
+            del self._incident_streaks[key]
+
     def _fire_callback_funcs(self, func_name: str, args: list[any]):
         def done_callback(class_name: str, func_name: str, future):
             e = future.exception()
@@ -191,6 +482,48 @@ class DCGMWatcher:
             self._callback_thread_pool.submit(getattr(callback, func_name), *args).add_done_callback(
                 partial(done_callback, callback.__class__.__name__, func_name)
             )
+
+    def _invoke_callback_funcs_sync(self, func_name: str, args: list[object]) -> bool:
+        """Invoke critical callbacks directly, outside the shared executor.
+
+        DCGM cleanup can block forever. Queueing a callback before cleanup is
+        insufficient because slow callbacks can saturate the executor and leave
+        the critical event queued until liveness kills the process.
+        """
+        delivered = True
+        for callback in self._callbacks:
+            try:
+                result = getattr(callback, func_name)(*args)
+                if result is False:
+                    delivered = False
+                    metrics.callback_failures.labels(callback.__class__.__name__, func_name).inc()
+                else:
+                    metrics.callback_success.labels(callback.__class__.__name__, func_name).inc()
+            except Exception as e:
+                delivered = False
+                log.exception(e)
+                metrics.callback_failures.labels(callback.__class__.__name__, func_name).inc()
+        return delivered
+
+    def _report_connectivity_failed(self) -> bool:
+        """Deliver connectivity failure before entering potentially hung cleanup."""
+        delivered = self._invoke_callback_funcs_sync(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+        if not delivered:
+            log.warning("Failed to publish DCGM connectivity failure before cleanup; will retry on next cycle")
+        return delivered
+
+    def _report_probe_unresponsive(self, operation: str, elapsed_seconds: float) -> bool:
+        """Publish the hang synchronously so the watchdog can retry on failure."""
+        return self._invoke_callback_funcs_sync(
+            types.CallbackInterface.dcgm_probe_unresponsive.__name__,
+            [operation, elapsed_seconds, self._dcgm_mode],
+        )
+
+    def _probe(self, operation: str) -> AbstractContextManager[None]:
+        """Track a blocking DCGM call, when the watchdog is enabled."""
+        if self._probe_watchdog is None:
+            return contextlib.nullcontext()
+        return self._probe_watchdog.probe(operation)
 
     def _create_dcgm_group_with_all_entities(self, dcgm_handle: pydcgm.DcgmHandle) -> pydcgm.DcgmGroup:
         dcgm_system = dcgm_handle.GetSystem()
@@ -245,6 +578,12 @@ class DCGMWatcher:
             health_status = self._get_health_status_dict()
             # Temporary dict to accumulate multiple failures per GPU
             gpu_failures_accumulator = {}
+            # One debounce decision per (error code, GPU) per poll. DCGM reports an
+            # incident per down link, so a GPU with several down links produces several
+            # records for the same code; advancing the streak once per record would
+            # reach the threshold inside a single poll. Keys also record presence,
+            # which is what keeps a streak alive.
+            debounce_decisions: dict[tuple[str, int], bool] = {}
 
             log.debug(
                 f"Health check returned: overallHealth={health_details.overallHealth}, "
@@ -270,7 +609,6 @@ class DCGMWatcher:
                     metrics.dcgm_health_check_unknown_system_skipped.inc()
                     continue
 
-                health_status[watch_name].status = types.HealthStatus(int(incident.health))
                 gpu_id = incident.entityInfo.entityId
                 fallback_error_code = self._error_codes.get(dcgm_errors.DCGM_FR_UNKNOWN, "DCGM_FR_UNKNOWN")
                 error_code = self._error_codes.get(incident.error.code, fallback_error_code)
@@ -279,6 +617,25 @@ class DCGMWatcher:
                 error_msg = incident.error.msg
 
                 log.debug(f"incident.error.code is {incident.error.code} and error msg is {error_msg}")
+
+                # Per-incident suppression: a suppressed incident must neither
+                # degrade the watch status nor land in the accumulator, while
+                # other incidents on the same GPU and watch are kept.
+                if self._is_nvlink_down_false_positive(watch_name, gpu_id, error_code):
+                    continue
+
+                # Evaluated after suppression: a suppressed incident is not an
+                # observation, so it must not build a streak.
+                debounce_key = (error_code, gpu_id)
+                if debounce_key not in debounce_decisions:
+                    debounce_decisions[debounce_key] = self._is_incident_debounced(error_code, gpu_id)
+
+                # A debounced incident must neither degrade the watch status nor
+                # land in the accumulator, exactly like a suppressed one.
+                if debounce_decisions[debounce_key]:
+                    continue
+
+                health_status[watch_name].status = types.HealthStatus(int(incident.health))
 
                 # Create a key for accumulating failures per GPU per watch
                 accumulator_key = (watch_name, gpu_id)
@@ -296,6 +653,8 @@ class DCGMWatcher:
                 health_status[watch_name].entity_failures[gpu_id] = types.ErrorDetails(
                     message=combined_message, code=failure_data["code"]
                 )
+
+            self._reset_absent_incident_streaks(set(debounce_decisions))
 
             log.debug(f"filled in health details is {health_status}")
             return health_status, True
@@ -392,6 +751,114 @@ class DCGMWatcher:
 
         return margin_details
 
+    def _evaluate_gpu_power_brake(
+        self,
+        dcgm_group: pydcgm.DcgmGroup,
+        gpu_ids: list[int],
+    ) -> types.HealthDetails | None:
+        """Evaluate the clocks-event-reasons mask for an asserted HW power brake.
+
+        Fails ``GpuPowerBrakeWatch`` for a GPU whose mask has
+        ``HW_POWER_BRAKE_REASON_BIT`` set on at least
+        ``power_brake_min_consecutive_polls`` consecutive polls. GPUs without a
+        usable sample are skipped and leave their streak untouched, so a gap in
+        DCGM data neither raises nor clears a finding.
+
+        This exists because DCGM's POWER health watch does not report the brake:
+        its dominant code, ``DCGM_FR_CLOCK_THROTTLE_POWER``, tracks power-capped
+        clock throttling, maps to ``NONE``, and is documented as a non-actionable
+        flap. A sustained brake is a power delivery fault, so it needs its own
+        signal rather than sharing that one.
+
+        Returns ``None`` when the watch is disabled, the field group is unset, or
+        no GPU produced a usable sample.
+        """
+        if not self._power_brake_enabled or self._field_group is None:
+            return None
+
+        monitor = DCGM_FIELDS_MONITORING["gpupowerbrakemonitoringenabled"]
+        brake_details = types.HealthDetails(status=types.HealthStatus.PASS, entity_failures={})
+
+        try:
+            with metrics.dcgm_api_latency.labels("dcgm_clocks_event_reasons_get_latest").time():
+                field_values = dcgm_group.samples.GetLatest(self._field_group)
+        except Exception as e:
+            log.error("Error getting latest DCGM clocks-event-reasons values for GpuPowerBrakeWatch: %s", e)
+            metrics.dcgm_api_failures.labels("dcgm_clocks_event_reasons_get_latest").inc()
+            return None
+
+        evaluated = False
+        for gpu_id in gpu_ids:
+            field_samples = field_values.values.get(gpu_id, {}).get(monitor.field_id, [])
+            if not field_samples:
+                # Debug, not warning: a GPU that never reports this field would log
+                # on every poll. The counter below keeps it observable.
+                log.debug("GPU %s clocks-event-reasons unavailable; skipping power brake evaluation", gpu_id)
+                metrics.gpu_power_brake_reasons_blank.inc()
+                continue
+
+            raw_reasons = field_samples[0].value
+            try:
+                reasons_mask = int(raw_reasons)
+            except (ValueError, TypeError):
+                log.warning(
+                    "GPU %s clocks-event-reasons value %r is not a valid integer; skipping power brake evaluation",
+                    gpu_id,
+                    raw_reasons,
+                )
+                continue
+
+            # DCGM encodes "no data" as int64 sentinels (DCGM_INT64_BLANK and
+            # friends, 0x7ffffffffffffff0..f3) whose low byte has bit 0x80 set,
+            # so an unchecked blank would count as an asserted brake. Treat it
+            # like a missing sample: skip, keep the streak.
+            if dcgmvalue.DCGM_INT64_IS_BLANK(reasons_mask):
+                # Debug, not warning: a GPU whose field is unsupported returns a
+                # blank on every poll, which would flood the log. The counter keeps
+                # it observable without the noise.
+                log.debug(
+                    "GPU %s clocks-event-reasons value is blank (0x%x); skipping power brake evaluation",
+                    gpu_id,
+                    reasons_mask,
+                )
+                metrics.gpu_power_brake_reasons_blank.inc()
+                continue
+            evaluated = True
+
+            if reasons_mask & HW_POWER_BRAKE_REASON_BIT:
+                streak = self._power_brake_streaks.get(gpu_id, 0) + 1
+                self._power_brake_streaks[gpu_id] = streak
+                if streak < self._power_brake_min_consecutive_polls:
+                    log.debug(
+                        "GPU %s HW power brake asserted (mask=0x%x), %d/%d consecutive polls; not failing yet",
+                        gpu_id,
+                        reasons_mask,
+                        streak,
+                        self._power_brake_min_consecutive_polls,
+                    )
+                    continue
+                log.debug(
+                    "GPU %s HW power brake asserted (mask=0x%x) for %d consecutive polls",
+                    gpu_id,
+                    reasons_mask,
+                    streak,
+                )
+                brake_details.status = types.HealthStatus.FAIL
+                brake_details.entity_failures[gpu_id] = types.ErrorDetails(
+                    message=(
+                        f"GPU {gpu_id} hardware power brake asserted for {streak} consecutive "
+                        f"poll(s) (clocks event reasons mask 0x{reasons_mask:x})"
+                    ),
+                    code=monitor.violation_code,
+                )
+            else:
+                self._power_brake_streaks.pop(gpu_id, None)
+
+        if not evaluated:
+            return None
+
+        return brake_details
+
     def _create_dcgm_handle(self) -> pydcgm.DcgmHandle:
         if self._dcgm_mode == "local-managed":
             host, port = self._parse_local_dcgm_addr()
@@ -458,13 +925,31 @@ class DCGMWatcher:
             gpu_serials = self._get_gpu_serial_numbers(dcgm_handle)
             log.info(f"dcgm gpu_id are {gpu_ids}")
 
+            # One field group covers every enabled field monitor; each evaluator
+            # reads back only its own field id from the samples.
+            watched_fields: list[int] = []
+            watched_descriptions: list[str] = []
             if self._thermal_margin_enabled and self._metadata_reader is not None:
-                self._field_group = pydcgm.DcgmFieldGroup(
-                    dcgm_handle, "gpu_temp_limit", [DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].field_id]
+                thermal_monitor = DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"]
+                watched_fields.append(thermal_monitor.field_id)
+                watched_descriptions.append(
+                    f"{thermal_monitor.field_id} (GPU T.Limit) for {thermal_monitor.watch_name}"
                 )
+            elif self._thermal_margin_enabled:
+                log.warning("GpuThermalMarginWatch enabled but no metadata reader configured; skipping field watch")
+
+            if self._power_brake_enabled:
+                brake_monitor = DCGM_FIELDS_MONITORING["gpupowerbrakemonitoringenabled"]
+                watched_fields.append(brake_monitor.field_id)
+                watched_descriptions.append(
+                    f"{brake_monitor.field_id} (clocks event reasons) for {brake_monitor.watch_name}"
+                )
+
+            if watched_fields:
+                self._field_group = pydcgm.DcgmFieldGroup(dcgm_handle, "nvsentinel_field_monitors", watched_fields)
                 update_freq_usec = self._poll_interval_seconds * 1_000_000
-                # We only read GetLatest, so retain a single most-recent field-153
-                # sample: max_keep_age=0.0 (no time bound), max_keep_samples=1.
+                # We only read GetLatest, so retain a single most-recent sample per
+                # field: max_keep_age=0.0 (no time bound), max_keep_samples=1.
                 max_keep_age_seconds = 0.0
                 max_keep_samples = 1
                 with metrics.dcgm_api_latency.labels("field_watch_fields").time():
@@ -475,13 +960,10 @@ class DCGMWatcher:
                         max_keep_samples,
                     )
                 log.info(
-                    "Watching DCGM field %s (GPU T.Limit) for %s at %ss interval",
-                    DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].field_id,
-                    DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].watch_name,
+                    "Watching DCGM field(s) %s at %ss interval",
+                    "; ".join(watched_descriptions),
                     self._poll_interval_seconds,
                 )
-            elif self._thermal_margin_enabled:
-                log.warning("GpuThermalMarginWatch enabled but no metadata reader configured; skipping field watch")
 
             return dcgm_group, gpu_ids, gpu_serials
         except Exception as e:
@@ -507,40 +989,59 @@ class DCGMWatcher:
         self,
         dcgm_group: pydcgm.DcgmGroup,
         dcgm_handle: pydcgm.DcgmHandle,
+        *,
+        track_probe: bool = True,
     ):
         """Clean up DCGM resources safely.
 
         Group deletion and handle shutdown are in separate try blocks so that
-        a failure in Delete() does not prevent Shutdown() from running.
+        a failure in Delete() does not prevent Shutdown() from running. When
+        ``track_probe`` is true the sequence is watchdog-tracked because every
+        call reaches the driver and Shutdown() in particular can block. Intentional
+        loop teardown passes ``track_probe=False`` so a slow cleanup during
+        rolling upgrades cannot publish a false GpuDcgmUnresponsive.
         """
-        if dcgm_group and self._field_group is not None:
-            try:
-                with metrics.dcgm_api_latency.labels("field_unwatch_fields").time():
-                    dcgm_group.samples.UnwatchFields(self._field_group)
-            except Exception as e:
-                log.warning(f"Error unwatching GPU temp limit field watch: {e}")
-                metrics.dcgm_api_failures.labels("field_unwatch_fields").inc()
-            try:
-                self._field_group.Delete()
-            except Exception as e:
-                log.warning(f"Error deleting GPU temp limit field group: {e}")
-                metrics.dcgm_api_failures.labels("field_group_delete_error").inc()
-            self._field_group = None
+        probe = self._probe("dcgm_cleanup") if track_probe else contextlib.nullcontext()
+        with probe:
+            if dcgm_group and self._field_group is not None:
+                try:
+                    with metrics.dcgm_api_latency.labels("field_unwatch_fields").time():
+                        dcgm_group.samples.UnwatchFields(self._field_group)
+                except Exception as e:
+                    log.warning(f"Error unwatching GPU temp limit field watch: {e}")
+                    metrics.dcgm_api_failures.labels("field_unwatch_fields").inc()
+                try:
+                    self._field_group.Delete()
+                except Exception as e:
+                    log.warning(f"Error deleting GPU temp limit field group: {e}")
+                    metrics.dcgm_api_failures.labels("field_group_delete_error").inc()
+                self._field_group = None
 
-        if dcgm_group:
-            try:
-                dcgm_group.Delete()
-            except Exception as e:
-                log.warning(f"Error deleting DCGM group (will still shut down handle): {e}")
-                metrics.dcgm_api_failures.labels("group_delete_error").inc()
+            if dcgm_group:
+                try:
+                    dcgm_group.Delete()
+                except Exception as e:
+                    log.warning(f"Error deleting DCGM group (will still shut down handle): {e}")
+                    metrics.dcgm_api_failures.labels("group_delete_error").inc()
 
-        if dcgm_handle:
-            dcgm_handle.Shutdown()
+            if dcgm_handle:
+                dcgm_handle.Shutdown()
 
     def start(self, fields_to_monitor: list[str], exit: Event) -> None:
         dcgm_handle = None
         dcgm_group = None
         gpu_ids = []
+
+        # Tied to loop teardown rather than to the process exit event: on SIGTERM
+        # during a hang the loop cannot return, and the stuck probe still needs
+        # reporting.
+        watchdog_exit = Event()
+        watchdog_thread = None
+        if self._probe_watchdog is not None:
+            watchdog_thread = Thread(
+                target=self._probe_watchdog.run, args=(watchdog_exit,), name="dcgm-probe-watchdog", daemon=True
+            )
+            watchdog_thread.start()
 
         # Initial DCGM handle and monitoring setup
         try:
@@ -558,35 +1059,48 @@ class DCGMWatcher:
 
                     if dcgm_handle is None:
                         try:
-                            dcgm_handle = self._get_dcgm_handle()
+                            with self._probe("dcgm_connect"):
+                                dcgm_handle = self._get_dcgm_handle()
                             if dcgm_handle is None:
-                                self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+                                self._report_connectivity_failed()
                                 self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
                                 continue
-                            dcgm_group, gpu_ids, _gpu_serials = self._initialize_dcgm_monitoring(dcgm_handle)
+                            with self._probe("dcgm_initialize_monitoring"):
+                                dcgm_group, gpu_ids, _gpu_serials = self._initialize_dcgm_monitoring(dcgm_handle)
                         except Exception as e:
                             log.error(f"Error getting DCGM handle: {e}")
-                            self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
+                            self._report_connectivity_failed()
                             self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
                             dcgm_handle = None
                             dcgm_group = None
                             gpu_ids = []
                     else:
                         log.debug("Running health check")
-                        health_status, connectivity_success = self._perform_health_check(dcgm_group)
+                        with self._probe("dcgm_health_check"):
+                            health_status, connectivity_success = self._perform_health_check(dcgm_group)
 
                         if not connectivity_success:
                             log.warning("DCGM connectivity failure detected")
+                            # Publish before cleaning up: Shutdown() calls into
+                            # DCGM as well, so an unresponsive driver would block
+                            # here and the event would never be sent.
+                            self._report_connectivity_failed()
                             self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
-                            self._fire_callback_funcs(types.CallbackInterface.dcgm_connectivity_failed.__name__, [])
                             dcgm_handle = None
                             dcgm_group = None
                             gpu_ids = []
                         else:
-                            margin_details = self._evaluate_gpu_thermal_margin(dcgm_group, gpu_ids)
+                            with self._probe("dcgm_thermal_margin"):
+                                margin_details = self._evaluate_gpu_thermal_margin(dcgm_group, gpu_ids)
                             if margin_details is not None:
                                 health_status[DCGM_FIELDS_MONITORING["gputemplimitmonitoringenabled"].watch_name] = (
                                     margin_details
+                                )
+                            with self._probe("dcgm_power_brake"):
+                                brake_details = self._evaluate_gpu_power_brake(dcgm_group, gpu_ids)
+                            if brake_details is not None:
+                                health_status[DCGM_FIELDS_MONITORING["gpupowerbrakemonitoringenabled"].watch_name] = (
+                                    brake_details
                                 )
                             self._suppress_configured_error_codes(health_status)
                             log.debug("Publish DCGM health checks")
@@ -595,8 +1109,13 @@ class DCGMWatcher:
                                 [health_status, gpu_ids],
                             )
         finally:
-            # Shutdown() stops the embedded hostengine and its loopback server.
+            # Stop the watchdog before teardown cleanup. A slow Shutdown() during
+            # rolling upgrades / DCGM restarts must not publish GpuDcgmUnresponsive.
+            # Mid-loop cleanups after connectivity failure remain probe-tracked.
+            watchdog_exit.set()
+            if watchdog_thread is not None:
+                watchdog_thread.join(timeout=PROBE_WATCHDOG_INTERVAL_SECONDS * 2)
             try:
-                self._cleanup_dcgm_resources(dcgm_group, dcgm_handle)
+                self._cleanup_dcgm_resources(dcgm_group, dcgm_handle, track_probe=False)
             finally:
                 self._callback_thread_pool.shutdown(cancel_futures=True)

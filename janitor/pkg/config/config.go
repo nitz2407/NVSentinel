@@ -25,7 +25,6 @@ import (
 	"github.com/spf13/viper"
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 
 	"github.com/nvidia/nvsentinel/janitor/pkg/gpuservices"
 )
@@ -115,6 +114,7 @@ type ResetJobConfig struct {
 	Resources        ResourceRequirements `mapstructure:"resources" json:"resources"`
 	RuntimeClassName string               `mapstructure:"runtimeClassName" json:"runtimeClassName"`
 	WriteSysLogEvent *bool                `mapstructure:"writeSysLogEvent" json:"writeSysLogEvent"`
+	UploadURL        string               `mapstructure:"uploadURL" json:"uploadURL"`
 }
 
 type ResourceRequirements struct {
@@ -148,8 +148,7 @@ func LoadConfig(configPath string, namespace string) (*Config, error) {
 	}
 
 	if err := v.ReadInConfig(); err != nil {
-		var configFileNotFound viper.ConfigFileNotFoundError
-		if errors.As(err, &configFileNotFound) {
+		if _, ok := errors.AsType[viper.ConfigFileNotFoundError](err); ok {
 			// File not found, using defaults
 		} else {
 			return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -178,14 +177,14 @@ func LoadConfig(configPath string, namespace string) (*Config, error) {
 		}
 
 		if config.GPUReset.ResetJob.WriteSysLogEvent == nil {
-			config.GPUReset.ResetJob.WriteSysLogEvent = ptr.To(true)
+			config.GPUReset.ResetJob.WriteSysLogEvent = new(true)
 		}
 
 		resetJobConfig := config.GPUReset.ResetJob
 
 		jobTemplate, err := getDefaultGPUResetJobTemplate(namespace, resetJobConfig.ImageConfig.Image,
 			resetJobConfig.ImageConfig.ImagePullSecrets, resetJobConfig.Resources, resetJobConfig.RuntimeClassName,
-			*resetJobConfig.WriteSysLogEvent)
+			*resetJobConfig.WriteSysLogEvent, resetJobConfig.UploadURL)
 		if err != nil {
 			return nil, err
 		}

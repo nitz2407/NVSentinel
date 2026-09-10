@@ -13,14 +13,17 @@
 # limitations under the License.
 
 from gpu_health_monitor.dcgm_watcher import dcgm
-from threading import Event
+from threading import Event, Thread
+import contextlib
 import grpc
 import time
 import unittest
+import unittest.mock
 import json
 import os
+import shutil
 import tempfile
-from typing import Any
+from typing import Any, Iterator
 from concurrent import futures
 from gpu_health_monitor.dcgm_watcher import types as dcgmtypes
 from gpu_health_monitor.platform_connector import platform_connector
@@ -1497,3 +1500,611 @@ class TestPlatformConnectors(unittest.TestCase):
             for p in (state_file_path, metadata_path):
                 if os.path.exists(p):
                     os.unlink(p)
+
+    def test_connectivity_failure_stale_socket_respects_delivery_budget(self) -> None:
+        """Pre-cleanup publication must remain shorter than the liveness budget."""
+        tmpdir = tempfile.mkdtemp(prefix="ghm_connectivity_stale_socket_")
+        stale_socket = os.path.join(tmpdir, "nvsentinel.sock")
+        with open(stale_socket, "w"):
+            pass
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix="_test_state") as f:
+            f.write("test_boot_id")
+            state_file_path = f.name
+        metadata_path = metadata_file()
+        original_delivery_timeout = platform_connector.CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS
+        original_rpc_timeout = platform_connector.GRPC_CALL_TIMEOUT_SECONDS
+        platform_connector.CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = 0.1
+        platform_connector.GRPC_CALL_TIMEOUT_SECONDS = 0.05
+
+        try:
+            processor = platform_connector.PlatformConnectorEventProcessor(
+                socket_path=stale_socket,
+                node_name=node_name,
+                exit=Event(),
+                dcgm_errors_info_dict={},
+                state_file_path=state_file_path,
+                metadata_path=metadata_path,
+                processing_strategy=platformconnector_pb2.STORE_ONLY,
+            )
+            started = time.monotonic()
+            assert processor.dcgm_connectivity_failed() is False
+            assert time.monotonic() - started < 1
+        finally:
+            platform_connector.CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = original_delivery_timeout
+            platform_connector.GRPC_CALL_TIMEOUT_SECONDS = original_rpc_timeout
+            for p in (stale_socket, state_file_path, metadata_path):
+                if os.path.exists(p):
+                    os.unlink(p)
+            os.rmdir(tmpdir)
+
+    def _make_processor(
+        self, state_file_path: str, metadata_path: str, **kwargs: Any
+    ) -> platform_connector.PlatformConnectorEventProcessor:
+        return platform_connector.PlatformConnectorEventProcessor(
+            socket_path=socket_path,
+            node_name=node_name,
+            exit=Event(),
+            dcgm_errors_info_dict={},
+            state_file_path=state_file_path,
+            metadata_path=metadata_path,
+            processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+            **kwargs,
+        )
+
+    @contextlib.contextmanager
+    def _running_connector(
+        self, **kwargs: Any
+    ) -> Iterator[tuple[PlatformConnectorServicer, platform_connector.PlatformConnectorEventProcessor]]:
+        """Yields (servicer, processor) with a live gRPC server on the unix socket."""
+        healthEventProcessor = PlatformConnectorServicer()
+        server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        platformconnector_pb2_grpc.add_PlatformConnectorServicer_to_server(healthEventProcessor, server)
+        server.add_insecure_port(f"unix://{socket_path}")
+        server.start()
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix="_test_state") as f:
+            f.write("test_boot_id")
+            state_file_path = f.name
+        metadata_path = metadata_file()
+
+        try:
+            yield healthEventProcessor, self._make_processor(state_file_path, metadata_path, **kwargs)
+        finally:
+            server.stop(0)
+            for p in (state_file_path, f"{state_file_path}.dcgm-unresponsive", metadata_path):
+                if os.path.exists(p):
+                    os.unlink(p)
+
+    def test_probe_unresponsive_recommends_reboot(self):
+        """A DCGM probe that never returns must publish a fatal reboot recommendation."""
+        with self._running_connector() as (servicer, processor):
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is True
+
+            assert servicer.health_events is not None
+            assert len(servicer.health_events) == 1
+            event = servicer.health_events[0]
+            assert event.checkName == "GpuDcgmUnresponsive"
+            assert event.isFatal is True
+            assert event.isHealthy is False
+            assert event.errorCode == ["DCGM_PROBE_HANG"]
+            assert event.recommendedAction == platformconnector_pb2.RESTART_BM
+            assert event.nodeName == node_name
+            assert "dcgm_health_check" in event.message
+            assert "42.5s" in event.message
+            assert event.metadata["probe_operation"] == "dcgm_health_check"
+            assert event.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+
+    def test_remote_probe_hang_is_connectivity_failure_not_reboot(self):
+        """A remote endpoint hang does not prove that this node's driver wedged."""
+        with self._running_connector() as (servicer, processor):
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "remote") is True
+
+            event = servicer.health_events[0]
+            assert event.checkName == "GpuDcgmConnectivityFailure"
+            assert event.errorCode == ["DCGM_PROBE_HANG"]
+            assert event.recommendedAction == platformconnector_pb2.CONTACT_SUPPORT
+            assert event.metadata["dcgm_mode"] == "remote"
+            assert event.processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+
+    def test_probe_unresponsive_returns_false_when_socket_missing(self):
+        """Watchdog must retry when the platform-connector socket is not yet up."""
+        tmpdir = tempfile.mkdtemp(prefix="ghm_probe_no_socket_")
+        nonexistent_socket = os.path.join(tmpdir, "nvsentinel.sock")
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix="_test_state") as f:
+            f.write("test_boot_id")
+            state_file_path = f.name
+        metadata_path = metadata_file()
+        try:
+            processor = platform_connector.PlatformConnectorEventProcessor(
+                socket_path=nonexistent_socket,
+                node_name=node_name,
+                exit=Event(),
+                dcgm_errors_info_dict={},
+                state_file_path=state_file_path,
+                metadata_path=metadata_path,
+                processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+            )
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is False
+            assert not any("GpuDcgmUnresponsive" in k for k in processor.entity_cache)
+        finally:
+            for p in (state_file_path, metadata_path):
+                if os.path.exists(p):
+                    os.unlink(p)
+            os.rmdir(tmpdir)
+
+    def test_probe_unresponsive_stale_socket_respects_delivery_budget(self):
+        """An existing but unserved socket must not consume the liveness window."""
+        tmpdir = tempfile.mkdtemp(prefix="ghm_probe_stale_socket_")
+        stale_socket = os.path.join(tmpdir, "nvsentinel.sock")
+        # Existence passes the fast-path check, while gRPC cannot connect.
+        with open(stale_socket, "w"):
+            pass
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix="_test_state") as f:
+            f.write("test_boot_id")
+            state_file_path = f.name
+        metadata_path = metadata_file()
+        original_delivery_timeout = platform_connector.CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS
+        original_rpc_timeout = platform_connector.GRPC_CALL_TIMEOUT_SECONDS
+        platform_connector.CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = 0.1
+        platform_connector.GRPC_CALL_TIMEOUT_SECONDS = 0.05
+
+        try:
+            processor = platform_connector.PlatformConnectorEventProcessor(
+                socket_path=stale_socket,
+                node_name=node_name,
+                exit=Event(),
+                dcgm_errors_info_dict={},
+                state_file_path=state_file_path,
+                metadata_path=metadata_path,
+                processing_strategy=platformconnector_pb2.EXECUTE_REMEDIATION,
+            )
+            started = time.monotonic()
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is False
+            assert time.monotonic() - started < 1
+        finally:
+            platform_connector.CRITICAL_EVENT_DELIVERY_TIMEOUT_SECONDS = original_delivery_timeout
+            platform_connector.GRPC_CALL_TIMEOUT_SECONDS = original_rpc_timeout
+            for p in (stale_socket, state_file_path, metadata_path):
+                if os.path.exists(p):
+                    os.unlink(p)
+            os.rmdir(tmpdir)
+
+    def test_probe_unresponsive_is_observe_only_when_configured(self):
+        """Shipping default: detected but kept out of the remediation pipeline."""
+        with self._running_connector(store_only_checks=frozenset({"GpuDcgmUnresponsive"})) as (
+            servicer,
+            processor,
+        ):
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is True
+
+            event = servicer.health_events[0]
+            assert event.processingStrategy == platformconnector_pb2.STORE_ONLY
+            # The recommendation still records what the node needs.
+            assert event.recommendedAction == platformconnector_pb2.RESTART_BM
+
+            # Already cached: further calls report success without republishing.
+            servicer.health_events = None
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 90.0, "local-managed") is True
+            assert servicer.health_events is None
+
+    def test_dcgm_unresponsive_clear_matches_observe_only_strategy(self):
+        """The clearing event must carry the same strategy as the event it clears."""
+        with self._running_connector(store_only_checks=frozenset({"GpuDcgmUnresponsive"})) as (
+            servicer,
+            processor,
+        ):
+            processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed")
+
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_unresponsive(timestamp)
+
+            event = servicer.health_events[0]
+            assert event.isHealthy is True
+            assert event.processingStrategy == platformconnector_pb2.STORE_ONLY
+
+    def test_probe_unresponsive_is_not_republished_while_active(self):
+        """The watchdog reports once per episode; a repeat must not duplicate the event."""
+        with self._running_connector() as (servicer, processor):
+            processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed")
+            servicer.health_events = None
+
+            processor.dcgm_probe_unresponsive("dcgm_health_check", 90.0, "local-managed")
+
+            assert servicer.health_events is None
+
+    def test_dcgm_unresponsive_state_survives_process_restart(self):
+        """Persistent wedges must not republish on every liveness restart."""
+        with self._running_connector() as (servicer, processor):
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is True
+            marker = processor._dcgm_unresponsive_state_path
+            assert os.path.exists(marker)
+            with open(marker) as marker_file:
+                assert marker_file.read().splitlines() == [
+                    "DCGM_PROBE_HANG",
+                    "EXECUTE_REMEDIATION",
+                ]
+
+            with unittest.mock.patch.object(pc_metrics, "dcgm_health_active_events") as gauge:
+                gauge_labels = unittest.mock.MagicMock()
+                gauge.labels.return_value = gauge_labels
+                restarted = self._make_processor(
+                    processor.state_file_path,
+                    processor._metadata_reader._path,
+                )
+                gauge.labels.assert_called_with(event_type="GpuDcgmUnresponsive", gpu_id="")
+                gauge_labels.set.assert_called_with(1)
+
+            servicer.health_events = None
+
+            # The persisted marker restores the active cache entry.
+            assert restarted.dcgm_probe_unresponsive("dcgm_health_check", 90.0, "local-managed") is True
+            assert servicer.health_events is None
+
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            restarted.clear_dcgm_unresponsive(timestamp)
+
+            assert servicer.health_events[0].isHealthy is True
+            assert servicer.health_events[0].processingStrategy == platformconnector_pb2.EXECUTE_REMEDIATION
+            assert not os.path.exists(marker)
+
+    def test_dcgm_unresponsive_clear_keeps_strategy_after_config_change(self):
+        """A clear after restart must use the strategy stored with the unhealthy event."""
+        with self._running_connector(store_only_checks=frozenset({"GpuDcgmUnresponsive"})) as (
+            servicer,
+            processor,
+        ):
+            assert processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed") is True
+            assert servicer.health_events[0].processingStrategy == platformconnector_pb2.STORE_ONLY
+            marker = processor._dcgm_unresponsive_state_path
+
+            # Simulate a Helm change that removes observe-only for this check
+            # before the liveness restart recreates the processor.
+            restarted = self._make_processor(
+                processor.state_file_path,
+                processor._metadata_reader._path,
+                store_only_checks=frozenset(),
+            )
+            assert restarted._dcgm_unresponsive_strategy == platformconnector_pb2.STORE_ONLY
+
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            restarted.clear_dcgm_unresponsive(timestamp)
+
+            assert servicer.health_events[0].isHealthy is True
+            assert servicer.health_events[0].processingStrategy == platformconnector_pb2.STORE_ONLY
+            assert not os.path.exists(marker)
+
+    def test_dcgm_unresponsive_cleared_when_probe_returns(self):
+        """A completed health check proves DCGM answered, so the event must clear."""
+        with self._running_connector() as (servicer, processor):
+            processor.dcgm_probe_unresponsive("dcgm_health_check", 42.5, "local-managed")
+
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_unresponsive(timestamp)
+
+            event = servicer.health_events[0]
+            assert event.checkName == "GpuDcgmUnresponsive"
+            assert event.isHealthy is True
+            assert event.isFatal is False
+            assert event.errorCode == []
+            assert event.recommendedAction == platformconnector_pb2.NONE
+
+    def test_dcgm_unresponsive_publish_and_clear_are_serialized(self):
+        """Recovery cannot observe an empty cache while unhealthy send is in flight."""
+        with self._running_connector() as (_, processor):
+            unhealthy_send_started = Event()
+            release_unhealthy_send = Event()
+            send_order = []
+
+            def controlled_send(events, delivery_timeout_seconds=None):
+                if events[0].isHealthy:
+                    send_order.append("healthy")
+                else:
+                    unhealthy_send_started.set()
+                    assert release_unhealthy_send.wait(1)
+                    send_order.append("unhealthy")
+                return True
+
+            processor.send_health_event_with_retries = controlled_send
+            unhealthy_thread = Thread(
+                target=processor.dcgm_probe_unresponsive,
+                args=("dcgm_health_check", 42.5, "local-managed"),
+            )
+            unhealthy_thread.start()
+            assert unhealthy_send_started.wait(1)
+
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            clear_thread = Thread(target=processor.clear_dcgm_unresponsive, args=(timestamp,))
+            clear_thread.start()
+            time.sleep(0.05)
+            assert clear_thread.is_alive()
+
+            release_unhealthy_send.set()
+            unhealthy_thread.join(1)
+            clear_thread.join(1)
+
+            assert send_order == ["unhealthy", "healthy"]
+
+    def test_dcgm_unresponsive_clear_is_noop_when_never_fired(self):
+        """Clearing an event that was never raised must not emit anything."""
+        with self._running_connector() as (servicer, processor):
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_unresponsive(timestamp)
+
+            assert servicer.health_events is None
+
+    def test_connectivity_failure_escalates_to_reboot_at_threshold(self):
+        """DCGM unreachable cycle after cycle is a stuck driver, which needs a reboot."""
+        with self._running_connector(connectivity_failure_escalation_threshold=3) as (servicer, processor):
+            processor.dcgm_connectivity_failed()
+            assert servicer.health_events[0].recommendedAction == platformconnector_pb2.CONTACT_SUPPORT
+
+            # Second failure is deduplicated: same action, nothing new to say.
+            servicer.health_events = None
+            processor.dcgm_connectivity_failed()
+            assert servicer.health_events is None
+
+            # Third failure crosses the threshold, so the action changes.
+            processor.dcgm_connectivity_failed()
+            event = servicer.health_events[0]
+            assert event.checkName == "GpuDcgmConnectivityFailure"
+            assert event.recommendedAction == platformconnector_pb2.RESTART_BM
+            assert "3 consecutive cycles" in event.message
+
+            # Already escalated: no further duplicates.
+            servicer.health_events = None
+            processor.dcgm_connectivity_failed()
+            assert servicer.health_events is None
+
+    def test_connectivity_failure_never_escalates_when_disabled(self):
+        """Escalation is opt-in; the default must preserve CONTACT_SUPPORT."""
+        with self._running_connector(connectivity_failure_escalation_threshold=0) as (servicer, processor):
+            for _ in range(5):
+                processor.dcgm_connectivity_failed()
+
+            assert servicer.health_events[0].recommendedAction == platformconnector_pb2.CONTACT_SUPPORT
+            assert processor._connectivity_escalated is False
+
+    def test_recovery_resets_the_escalation_counter(self):
+        """After connectivity returns, the next failure starts over at CONTACT_SUPPORT."""
+        with self._running_connector(connectivity_failure_escalation_threshold=2) as (servicer, processor):
+            processor.dcgm_connectivity_failed()
+            processor.dcgm_connectivity_failed()
+            assert servicer.health_events[0].recommendedAction == platformconnector_pb2.RESTART_BM
+
+            timestamp = Timestamp()
+            timestamp.GetCurrentTime()
+            processor.clear_dcgm_connectivity_failure(timestamp)
+            assert processor._consecutive_connectivity_failures == 0
+            assert processor._connectivity_escalated is False
+
+            processor.dcgm_connectivity_failed()
+            assert servicer.health_events[0].recommendedAction == platformconnector_pb2.CONTACT_SUPPORT
+
+
+class RpcErrorWithCode(grpc.RpcError):
+    """An RpcError carrying a status code, the way a live channel's failures do."""
+
+    def __init__(self, code: grpc.StatusCode) -> None:
+        super().__init__()
+        self._code = code
+
+    def code(self) -> grpc.StatusCode:
+        return self._code
+
+
+class TestPlatformConnectorTokenAuth(unittest.TestCase):
+    """Bearer-token call metadata attached to HealthEventOccurredV1 publishes."""
+
+    def setUp(self) -> None:
+        # Snapshot the environment so tests can set or clear the token env var
+        # without leaking into each other.
+        self._env_patcher = unittest.mock.patch.dict(os.environ)
+        self._env_patcher.start()
+        os.environ.pop("PLATFORM_CONNECTOR_TOKEN_PATH", None)
+
+        self._tmpdir = tempfile.mkdtemp(prefix="ghm_token_auth_")
+        # The availability gate only checks file presence, so a plain file
+        # stands in for the platform-connector socket.
+        self._socket_path = os.path.join(self._tmpdir, "nvsentinel.sock")
+        with open(self._socket_path, "w"):
+            pass
+        self._state_file_path = os.path.join(self._tmpdir, "statefile")
+        with open(self._state_file_path, "w") as state_file:
+            state_file.write("test_boot_id")
+        self._metadata_path = metadata_file()
+
+    def tearDown(self) -> None:
+        self._env_patcher.stop()
+        if os.path.exists(self._metadata_path):
+            os.unlink(self._metadata_path)
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def _write_token(self, contents: str) -> str:
+        token_path = os.path.join(self._tmpdir, "token")
+        with open(token_path, "w") as token_file:
+            token_file.write(contents)
+        return token_path
+
+    def _make_processor(self, token_path: str | None = None) -> platform_connector.PlatformConnectorEventProcessor:
+        return platform_connector.PlatformConnectorEventProcessor(
+            socket_path=self._socket_path,
+            node_name=node_name,
+            exit=Event(),
+            dcgm_errors_info_dict={},
+            state_file_path=self._state_file_path,
+            metadata_path=self._metadata_path,
+            processing_strategy=platformconnector_pb2.STORE_ONLY,
+            token_path=token_path,
+        )
+
+    @staticmethod
+    def _sample_events() -> list[platformconnector_pb2.HealthEvent]:
+        timestamp = Timestamp()
+        timestamp.GetCurrentTime()
+        return [
+            platformconnector_pb2.HealthEvent(
+                version=1,
+                agent="gpu-health-monitor",
+                componentClass="GPU",
+                checkName="GpuMemWatch",
+                generatedTimestamp=timestamp,
+                isFatal=False,
+                isHealthy=True,
+                nodeName=node_name,
+                processingStrategy=platformconnector_pb2.STORE_ONLY,
+            )
+        ]
+
+    def _send_with_mock_stub(
+        self, processor: platform_connector.PlatformConnectorEventProcessor
+    ) -> tuple[bool, unittest.mock.MagicMock]:
+        """Runs one send with the gRPC stub mocked out; returns (result, stub)."""
+        stub = unittest.mock.MagicMock()
+        with unittest.mock.patch.object(
+            platform_connector.platformconnector_pb2_grpc, "PlatformConnectorStub", return_value=stub
+        ):
+            result = processor.send_health_event_with_retries(self._sample_events())
+        return result, stub
+
+    def test_metadata_carries_bearer_token_from_file(self) -> None:
+        processor = self._make_processor(token_path=self._write_token("projected-token"))
+
+        result, stub = self._send_with_mock_stub(processor)
+
+        assert result is True
+        stub.HealthEventOccurredV1.assert_called_once()
+        assert stub.HealthEventOccurredV1.call_args.kwargs["metadata"] == [("authorization", "Bearer projected-token")]
+
+    def test_token_file_is_reread_on_every_call(self) -> None:
+        """The kubelet rewrites the projected token file, so every send must read it fresh."""
+        token_path = self._write_token("token-one")
+        processor = self._make_processor(token_path=token_path)
+
+        _, first_stub = self._send_with_mock_stub(processor)
+        self._write_token("token-two")
+        _, second_stub = self._send_with_mock_stub(processor)
+
+        assert first_stub.HealthEventOccurredV1.call_args.kwargs["metadata"] == [("authorization", "Bearer token-one")]
+        assert second_stub.HealthEventOccurredV1.call_args.kwargs["metadata"] == [("authorization", "Bearer token-two")]
+
+    def test_token_file_is_sent_verbatim(self) -> None:
+        """Kubelet writes the token with no surrounding whitespace, so none is removed.
+
+        Verified on-cluster: a projected token file's byte count is identical
+        before and after stripping whitespace. Trimming here would only mask a
+        mount that is not a projected token volume, and gRPC rejects a header
+        value containing a newline anyway.
+        """
+        processor = self._make_processor(token_path=self._write_token("plain-token"))
+
+        _, stub = self._send_with_mock_stub(processor)
+
+        assert stub.HealthEventOccurredV1.call_args.kwargs["metadata"] == [("authorization", "Bearer plain-token")]
+
+    def test_no_metadata_when_token_path_unconfigured(self) -> None:
+        processor = self._make_processor(token_path=None)
+
+        result, stub = self._send_with_mock_stub(processor)
+
+        assert result is True
+        stub.HealthEventOccurredV1.assert_called_once()
+        assert stub.HealthEventOccurredV1.call_args.kwargs["metadata"] is None
+
+    def test_ambient_env_var_does_not_override_an_explicit_empty_token_path(self) -> None:
+        """The CLI layer owns PLATFORM_CONNECTOR_TOKEN_PATH; the processor uses what it is given.
+
+        Resolving the environment a second time here would let ambient process
+        state re-enable token auth for a caller that explicitly disabled it.
+        """
+        os.environ["PLATFORM_CONNECTOR_TOKEN_PATH"] = self._write_token("env-token")
+        processor = self._make_processor(token_path=None)
+
+        _, stub = self._send_with_mock_stub(processor)
+
+        assert stub.HealthEventOccurredV1.call_args.kwargs["metadata"] is None
+
+    def test_missing_token_file_raises_instead_of_sending_without_token(self) -> None:
+        """A publisher configured with a token path must not publish when the read fails."""
+        processor = self._make_processor(token_path=os.path.join(self._tmpdir, "does-not-exist"))
+
+        stub = unittest.mock.MagicMock()
+        with unittest.mock.patch.object(
+            platform_connector.platformconnector_pb2_grpc, "PlatformConnectorStub", return_value=stub
+        ):
+            with self.assertRaises(OSError):
+                processor.send_health_event_with_retries(self._sample_events())
+
+        stub.HealthEventOccurredV1.assert_not_called()
+
+    def _assert_blank_token_is_not_published(self, contents: str) -> None:
+        token_path = self._write_token(contents)
+        processor = self._make_processor(token_path=token_path)
+
+        stub = unittest.mock.MagicMock()
+        with unittest.mock.patch.object(
+            platform_connector.platformconnector_pb2_grpc, "PlatformConnectorStub", return_value=stub
+        ):
+            with self.assertRaises(ValueError) as raised:
+                processor.send_health_event_with_retries(self._sample_events())
+
+        # The message must name the file, since "Bearer " would come back as a
+        # generic authentication error that says nothing about the mount.
+        assert token_path in str(raised.exception)
+        stub.HealthEventOccurredV1.assert_not_called()
+
+    def test_empty_token_file_raises_instead_of_publishing_a_blank_credential(self) -> None:
+        """An empty file is a broken mount, not a credential."""
+        self._assert_blank_token_is_not_published("")
+
+    def _send_with_failing_stub(
+        self,
+        processor: platform_connector.PlatformConnectorEventProcessor,
+        error: grpc.RpcError,
+    ) -> tuple[bool, unittest.mock.MagicMock]:
+        """Runs one send whose every attempt raises `error`; returns (result, stub)."""
+        stub = unittest.mock.MagicMock()
+        stub.HealthEventOccurredV1.side_effect = error
+        with unittest.mock.patch.object(
+            platform_connector.platformconnector_pb2_grpc, "PlatformConnectorStub", return_value=stub
+        ), unittest.mock.patch.object(platform_connector, "MAX_RETRIES", 3), unittest.mock.patch.object(
+            platform_connector, "INITIAL_DELAY", 0
+        ), unittest.mock.patch.object(
+            platform_connector, "sleep"
+        ):
+            result = processor.send_health_event_with_retries(self._sample_events())
+        return result, stub
+
+    def test_non_retryable_status_is_not_retried(self) -> None:
+        """A deterministic rejection answers the same way every time, so retrying only stalls."""
+        for code in (
+            grpc.StatusCode.PERMISSION_DENIED,
+            grpc.StatusCode.UNAUTHENTICATED,
+            grpc.StatusCode.INVALID_ARGUMENT,
+        ):
+            with self.subTest(code=code):
+                processor = self._make_processor(token_path=self._write_token("projected-token"))
+
+                result, stub = self._send_with_failing_stub(processor, RpcErrorWithCode(code))
+
+                assert result is False
+                stub.HealthEventOccurredV1.assert_called_once()
+                # The dedup cache only advances on a True return, so the event
+                # is re-emitted on the next poll rather than being swallowed.
+                assert processor.entity_cache == {}
+
+    def test_transient_status_is_retried(self) -> None:
+        for code in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED):
+            with self.subTest(code=code):
+                processor = self._make_processor(token_path=self._write_token("projected-token"))
+
+                result, stub = self._send_with_failing_stub(processor, RpcErrorWithCode(code))
+
+                assert result is False
+                assert stub.HealthEventOccurredV1.call_count > 1
+                assert processor.entity_cache == {}

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"strconv"
 	"sync"
 	"time"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
+	"github.com/nvidia/nvsentinel/store-client/pkg/lagstate"
 )
 
 const (
@@ -79,7 +81,7 @@ type PostgreSQLChangeStreamWatcher struct {
 	mu             sync.RWMutex // Protects lastEventID, lastTimestamp, and lastNotifyTime
 	pollInterval   time.Duration
 	pipelineFilter *PipelineFilter // Application-side filter (fallback for edge cases)
-	pipeline       interface{}     // Raw pipeline for SQL filter building
+	pipeline       any             // Raw pipeline for SQL filter building
 	recentEventIDs map[int64]time.Time
 	recentEventSeq []int64
 
@@ -88,6 +90,16 @@ type PostgreSQLChangeStreamWatcher struct {
 	listener       *pq.Listener // LISTEN connection for notifications
 	lastNotifyTime time.Time    // Last time we received a NOTIFY
 	connString     string       // Connection string for LISTEN
+
+	// lag carries the two timestamps change_stream_lag_seconds is derived from. See ADR-054.
+	lag lagstate.Tracker
+}
+
+// LagState reports when this poller last saw a poll return no rows and the changed_at of the
+// newest row it read. Either may be zero before the first poll completes, which callers must
+// treat as "unknown" rather than as caught up: see ADR-054.
+func (w *PostgreSQLChangeStreamWatcher) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	return w.lag.LagState()
 }
 
 // NewPostgreSQLChangeStreamWatcher creates a new PostgreSQL change stream watcher
@@ -663,7 +675,7 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) err
 	`
 
 	// Build args: base args + filter args
-	args := []interface{}{w.tableName, lastTimestamp, lastEventID}
+	args := []any{w.tableName, lastTimestamp, lastEventID}
 	args = append(args, sqlFilterArgs...)
 
 	rows, err := w.db.QueryContext(ctx, query, args...)
@@ -683,13 +695,20 @@ func (w *PostgreSQLChangeStreamWatcher) fetchNewChanges(ctx context.Context) err
 
 	slog.Debug("Fetched events from changelog", "client", w.clientName, "eventCount", len(events))
 
+	// A poll that returned nothing is the empty batch: the changelog holds no row past this
+	// consumer's position that its server-side filter would accept. Rows are recorded in
+	// processChangelogRows as they are scanned.
+	if len(events) == 0 {
+		w.lag.RecordCaughtUp(time.Now())
+	}
+
 	return w.sendEventsToChannel(ctx, events)
 }
 
 // buildSQLFilter builds a SQL WHERE clause from the pipeline filter.
 // Returns empty string and nil args if no filter is configured or conversion fails.
 // The application-side PipelineFilter remains as a fallback.
-func (w *PostgreSQLChangeStreamWatcher) buildSQLFilter() (string, []interface{}) {
+func (w *PostgreSQLChangeStreamWatcher) buildSQLFilter() (string, []any) {
 	if w.pipeline == nil {
 		return "", nil
 	}
@@ -744,6 +763,10 @@ func (w *PostgreSQLChangeStreamWatcher) processChangelogRows(rows *sql.Rows) ([]
 			return nil, fmt.Errorf("failed to scan changelog row: %w", err)
 		}
 
+		// Rows come back ordered by changed_at, and the tracker keeps the maximum, so this ends
+		// up holding the newest row read regardless of ordering.
+		w.lag.RecordEventRead(changedAt)
+
 		event := w.buildEventDocument(id, recordID, operation, oldValues, newValues, changedAt)
 		token := []byte(fmt.Sprintf("%d", id))
 
@@ -778,9 +801,9 @@ func (w *PostgreSQLChangeStreamWatcher) buildEventDocument(
 	operation string,
 	oldValues, newValues sql.NullString,
 	changedAt time.Time,
-) map[string]interface{} {
-	event := map[string]interface{}{
-		"_id": map[string]interface{}{
+) map[string]any {
+	event := map[string]any{
+		"_id": map[string]any{
 			// Use changelog ID (not recordID) for _data field to maintain consistency
 			// with resume tokens and to ensure GetDocumentID() returns an int-parseable value
 			// that can be used for metrics and resume position tracking.
@@ -798,7 +821,7 @@ func (w *PostgreSQLChangeStreamWatcher) buildEventDocument(
 
 // addDocumentDataToEvent adds document data to event based on operation type
 func (w *PostgreSQLChangeStreamWatcher) addDocumentDataToEvent(
-	event map[string]interface{},
+	event map[string]any,
 	recordID string,
 	operation string,
 	oldValues, newValues sql.NullString,
@@ -826,7 +849,7 @@ func (w *PostgreSQLChangeStreamWatcher) addDocumentDataToEvent(
 }
 
 func (w *PostgreSQLChangeStreamWatcher) handleUpdateEvent(
-	event map[string]interface{},
+	event map[string]any,
 	recordID string,
 	oldValues, newValues sql.NullString,
 ) {
@@ -837,10 +860,8 @@ func (w *PostgreSQLChangeStreamWatcher) handleUpdateEvent(
 
 	// Shallow copy: newDocForEvent gets the record ID while newDoc stays unmodified
 	// for comparison in addUpdateDescription → findUpdatedFields (read-only contract).
-	newDocForEvent := make(map[string]interface{})
-	for k, v := range newDoc {
-		newDocForEvent[k] = v
-	}
+	newDocForEvent := make(map[string]any)
+	maps.Copy(newDocForEvent, newDoc)
 
 	if innerExtracted {
 		newDocForEvent["id"] = recordID
@@ -852,9 +873,9 @@ func (w *PostgreSQLChangeStreamWatcher) handleUpdateEvent(
 }
 
 func (w *PostgreSQLChangeStreamWatcher) addUpdateDescription(
-	event map[string]interface{},
+	event map[string]any,
 	oldValues sql.NullString,
-	newDocForComparison map[string]interface{},
+	newDocForComparison map[string]any,
 	recordID string,
 ) {
 	oldDoc, _, ok := w.parseDocumentValues(oldValues)
@@ -864,7 +885,7 @@ func (w *PostgreSQLChangeStreamWatcher) addUpdateDescription(
 
 	updatedFields := w.findUpdatedFields(oldDoc, newDocForComparison)
 	if len(updatedFields) > 0 {
-		event["updateDescription"] = map[string]interface{}{
+		event["updateDescription"] = map[string]any{
 			"updatedFields": updatedFields,
 		}
 	} else {
@@ -879,7 +900,7 @@ func (w *PostgreSQLChangeStreamWatcher) addUpdateDescription(
 // the record ID.
 func (w *PostgreSQLChangeStreamWatcher) parseDocumentValues(
 	values sql.NullString,
-) (doc map[string]interface{}, innerExtracted bool, ok bool) {
+) (doc map[string]any, innerExtracted bool, ok bool) {
 	if !values.Valid {
 		return nil, false, false
 	}
@@ -891,19 +912,27 @@ func (w *PostgreSQLChangeStreamWatcher) parseDocumentValues(
 		return nil, false, false
 	}
 
+	outerDoc := doc
+
 	doc, innerExtracted = w.extractInnerDocument(doc)
+	if innerExtracted {
+		if databaseCreatedAt, exists := outerDoc["created_at"]; exists {
+			doc = maps.Clone(doc)
+			doc["createdAt"] = databaseCreatedAt
+		}
+	}
 
 	return doc, innerExtracted, true
 }
 
 func (w *PostgreSQLChangeStreamWatcher) extractInnerDocument(
-	doc map[string]interface{},
-) (map[string]interface{}, bool) {
+	doc map[string]any,
+) (map[string]any, bool) {
 	if w.tableName != healthEventsTable {
 		return doc, false
 	}
 
-	if innerDoc, ok := doc["document"].(map[string]interface{}); ok {
+	if innerDoc, ok := doc["document"].(map[string]any); ok {
 		return innerDoc, true
 	}
 
@@ -921,9 +950,9 @@ func (w *PostgreSQLChangeStreamWatcher) extractInnerDocument(
 // findUpdatedFields compares old and new documents to find changed fields
 // Returns a flattened map with dot-notation keys to match MongoDB changestream format
 func (w *PostgreSQLChangeStreamWatcher) findUpdatedFields(
-	oldDoc, newDoc map[string]interface{},
-) map[string]interface{} {
-	updatedFields := make(map[string]interface{})
+	oldDoc, newDoc map[string]any,
+) map[string]any {
+	updatedFields := make(map[string]any)
 
 	// Compare all fields in newDoc with oldDoc
 	for key, newValue := range newDoc {
@@ -934,11 +963,17 @@ func (w *PostgreSQLChangeStreamWatcher) findUpdatedFields(
 			// For nested objects, flatten them with dot notation
 			// e.g., healtheventstatus: {nodequarantined: "Quarantined"} becomes
 			// "healtheventstatus.nodequarantined": "Quarantined"
-			if newValueMap, ok := newValue.(map[string]interface{}); ok {
+			if newValueMap, ok := newValue.(map[string]any); ok {
 				w.flattenMap("", key, newValueMap, oldValue, updatedFields)
 			} else {
 				updatedFields[key] = newValue
 			}
+		}
+	}
+
+	for key := range oldDoc {
+		if _, exists := newDoc[key]; !exists {
+			updatedFields[key] = nil
 		}
 	}
 
@@ -948,13 +983,13 @@ func (w *PostgreSQLChangeStreamWatcher) findUpdatedFields(
 // flattenMap recursively flattens nested maps using dot notation
 func (w *PostgreSQLChangeStreamWatcher) flattenMap(
 	parentPrefix, currentKey string,
-	currentValue map[string]interface{},
-	oldValue interface{},
-	result map[string]interface{},
+	currentValue map[string]any,
+	oldValue any,
+	result map[string]any,
 ) {
-	var oldMap map[string]interface{}
+	var oldMap map[string]any
 	if oldValue != nil {
-		oldMap, _ = oldValue.(map[string]interface{})
+		oldMap, _ = oldValue.(map[string]any)
 	}
 
 	prefix := currentKey
@@ -962,40 +997,62 @@ func (w *PostgreSQLChangeStreamWatcher) flattenMap(
 		prefix = parentPrefix + "." + currentKey
 	}
 
+	if len(currentValue) == 0 && oldMap == nil {
+		result[prefix] = currentValue
+
+		return
+	}
+
 	for k, v := range currentValue {
 		fullKey := prefix + "." + k
 
-		var oldV interface{}
+		var oldV any
+
+		existed := false
 		if oldMap != nil {
-			oldV = oldMap[k]
+			oldV, existed = oldMap[k]
 		}
 
 		// Recursively flatten nested maps
-		if vMap, ok := v.(map[string]interface{}); ok {
+		if vMap, ok := v.(map[string]any); ok {
 			w.flattenMap(prefix, k, vMap, oldV, result)
-		} else if !w.valuesEqual(oldV, v) {
+		} else if !existed || !w.valuesEqual(oldV, v) {
 			// Only include if the value actually changed
 			result[fullKey] = v
+		}
+	}
+
+	recordRemovedMapFields(prefix, oldMap, currentValue, result)
+}
+
+func recordRemovedMapFields(
+	prefix string,
+	oldValue, currentValue map[string]any,
+	result map[string]any,
+) {
+	for key := range oldValue {
+		if _, exists := currentValue[key]; !exists {
+			result[prefix+"."+key] = nil
 		}
 	}
 }
 
 // valuesEqual compares two values for equality, recursing into maps and slices.
-func (w *PostgreSQLChangeStreamWatcher) valuesEqual(v1, v2 interface{}) bool {
+func (w *PostgreSQLChangeStreamWatcher) valuesEqual(v1, v2 any) bool {
 	if v1 == nil || v2 == nil {
 		return v1 == v2
 	}
 
 	switch val1 := v1.(type) {
-	case map[string]interface{}:
-		val2, ok := v2.(map[string]interface{})
+	case map[string]any:
+		val2, ok := v2.(map[string]any)
 		if !ok {
 			return false
 		}
 
 		return w.mapsEqual(val1, val2)
-	case []interface{}:
-		val2, ok := v2.([]interface{})
+	case []any:
+		val2, ok := v2.([]any)
 		if !ok {
 			return false
 		}
@@ -1006,7 +1063,7 @@ func (w *PostgreSQLChangeStreamWatcher) valuesEqual(v1, v2 interface{}) bool {
 	}
 }
 
-func (w *PostgreSQLChangeStreamWatcher) mapsEqual(m1, m2 map[string]interface{}) bool {
+func (w *PostgreSQLChangeStreamWatcher) mapsEqual(m1, m2 map[string]any) bool {
 	if len(m1) != len(m2) {
 		return false
 	}
@@ -1021,7 +1078,7 @@ func (w *PostgreSQLChangeStreamWatcher) mapsEqual(m1, m2 map[string]interface{})
 	return true
 }
 
-func (w *PostgreSQLChangeStreamWatcher) slicesEqual(s1, s2 []interface{}) bool {
+func (w *PostgreSQLChangeStreamWatcher) slicesEqual(s1, s2 []any) bool {
 	if len(s1) != len(s2) {
 		return false
 	}
@@ -1038,7 +1095,7 @@ func (w *PostgreSQLChangeStreamWatcher) slicesEqual(s1, s2 []interface{}) bool {
 // extractEventTimestamp extracts the timestamp from an event's clusterTime field.
 // Falls back to current time if clusterTime is not available.
 func (w *PostgreSQLChangeStreamWatcher) extractEventTimestamp(
-	eventData map[string]interface{},
+	eventData map[string]any,
 	eventID int64,
 ) time.Time {
 	if clusterTime, exists := eventData["clusterTime"]; exists {
@@ -1187,7 +1244,7 @@ func (w *PostgreSQLChangeStreamWatcher) pruneRecentEventIDsLocked(now time.Time)
 }
 
 // parseTimestampFromToken extracts the timestamp from a resume token map.
-func parseTimestampFromToken(token map[string]interface{}) (time.Time, bool) {
+func parseTimestampFromToken(token map[string]any) (time.Time, bool) {
 	timestampVal, exists := token["timestamp"]
 	if !exists {
 		return time.Time{}, false
@@ -1207,7 +1264,7 @@ func parseTimestampFromToken(token map[string]interface{}) (time.Time, bool) {
 }
 
 // parseEventIDFromToken extracts the eventID from a resume token map.
-func parseEventIDFromToken(token map[string]interface{}) (int64, bool) {
+func parseEventIDFromToken(token map[string]any) (int64, bool) {
 	eventIDVal, exists := token["eventID"]
 	if !exists {
 		return 0, false
@@ -1233,7 +1290,7 @@ func (w *PostgreSQLChangeStreamWatcher) loadResumePosition(ctx context.Context) 
 		return w.handleNoResumeToken(err)
 	}
 
-	var token map[string]interface{}
+	var token map[string]any
 	if err := json.Unmarshal(tokenJSON, &token); err != nil {
 		return fmt.Errorf("failed to unmarshal resume token: %w", err)
 	}
@@ -1311,7 +1368,7 @@ func (w *PostgreSQLChangeStreamWatcher) saveResumePosition(
 	timestamp time.Time,
 	eventID int64,
 ) error {
-	token := map[string]interface{}{
+	token := map[string]any{
 		"timestamp": timestamp.Format(time.RFC3339Nano),
 		"eventID":   eventID,
 	}
@@ -1396,8 +1453,21 @@ var _ datastore.ChangeStreamWatcher = (*PostgreSQLChangeStreamWatcher)(nil)
 // PostgreSQLEventAdapter wraps a datastore.EventWithToken and implements client.Event
 // This provides backward compatibility with services using the old EventProcessor/EventWatcher
 type PostgreSQLEventAdapter struct {
-	eventData   map[string]interface{}
+	eventData   map[string]any
 	resumeToken []byte
+}
+
+// UpdatedFields exposes the same flattened update description used by the
+// provider's pipeline filter.
+func (e *PostgreSQLEventAdapter) UpdatedFields() map[string]any {
+	updateDescription, ok := e.eventData["updateDescription"].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	updatedFields, _ := updateDescription["updatedFields"].(map[string]any)
+
+	return updatedFields
 }
 
 // GetDocumentID returns the changelog sequence ID for this event.
@@ -1415,7 +1485,7 @@ func (e *PostgreSQLEventAdapter) GetDocumentID() (string, error) {
 	// Get the changelog sequence ID from _id._data
 	// After the fix at line 256, this contains the integer changelog ID (not the document UUID)
 	if idData, exists := e.eventData["_id"]; exists {
-		if idMap, ok := idData.(map[string]interface{}); ok {
+		if idMap, ok := idData.(map[string]any); ok {
 			if dataVal, ok := idMap["_data"]; ok {
 				return fmt.Sprintf("%v", dataVal), nil
 			}
@@ -1439,7 +1509,7 @@ func (e *PostgreSQLEventAdapter) GetDocumentID() (string, error) {
 // - Business logic that needs the actual document identifier
 // - Deduplication based on document identity
 func (e *PostgreSQLEventAdapter) GetRecordUUID() (string, error) {
-	if fullDoc, ok := e.eventData["fullDocument"].(map[string]interface{}); ok {
+	if fullDoc, ok := e.eventData["fullDocument"].(map[string]any); ok {
 		// Try "id" field (PostgreSQL lowercase)
 		if id, exists := fullDoc["id"]; exists {
 			return fmt.Sprintf("%v", id), nil
@@ -1461,12 +1531,12 @@ func (e *PostgreSQLEventAdapter) GetRecordUUID() (string, error) {
 func (e *PostgreSQLEventAdapter) GetNodeName() (string, error) {
 	errNotFound := errors.New("node name not found in event")
 
-	fullDoc, ok := e.eventData["fullDocument"].(map[string]interface{})
+	fullDoc, ok := e.eventData["fullDocument"].(map[string]any)
 	if !ok {
 		return "", errNotFound
 	}
 
-	healthEvent, ok := fullDoc["healthevent"].(map[string]interface{})
+	healthEvent, ok := fullDoc["healthevent"].(map[string]any)
 	if !ok {
 		return "", errNotFound
 	}
@@ -1489,7 +1559,7 @@ func (e *PostgreSQLEventAdapter) GetResumeToken() []byte {
 }
 
 // UnmarshalDocument unmarshals the event data into the provided interface
-func (e *PostgreSQLEventAdapter) UnmarshalDocument(v interface{}) error {
+func (e *PostgreSQLEventAdapter) UnmarshalDocument(v any) error {
 	// The fullDocument contains the actual document data
 	fullDoc, ok := e.eventData["fullDocument"]
 	if !ok {
@@ -1497,7 +1567,7 @@ func (e *PostgreSQLEventAdapter) UnmarshalDocument(v interface{}) error {
 	}
 
 	// Convert to map for easier manipulation
-	docMap, ok := fullDoc.(map[string]interface{})
+	docMap, ok := fullDoc.(map[string]any)
 	if !ok {
 		slog.Error("fullDocument is not a map", "type", fmt.Sprintf("%T", fullDoc))
 
@@ -1531,8 +1601,8 @@ func (e *PostgreSQLEventAdapter) UnmarshalDocument(v interface{}) error {
 
 // extractActualDocument extracts the actual document from the nested structure
 // and preserves the top-level id field from the database row
-func (e *PostgreSQLEventAdapter) extractActualDocument(docMap map[string]interface{}) map[string]interface{} {
-	if nestedDoc, ok := docMap["document"].(map[string]interface{}); ok {
+func (e *PostgreSQLEventAdapter) extractActualDocument(docMap map[string]any) map[string]any {
+	if nestedDoc, ok := docMap["document"].(map[string]any); ok {
 		// Preserve the id field from the top-level docMap
 		if id, hasID := docMap["id"]; hasID {
 			nestedDoc["_id"] = id
@@ -1547,12 +1617,12 @@ func (e *PostgreSQLEventAdapter) extractActualDocument(docMap map[string]interfa
 // transformJSONKeys transforms lowercase JSON keys to match Go struct field names
 // This is needed because PostgreSQL stores lowercase JSON field names from bson tags
 // but protobuf fields need specific casing for proper unmarshaling
-func transformJSONKeys(doc map[string]interface{}) map[string]interface{} {
-	result := make(map[string]interface{})
+func transformJSONKeys(doc map[string]any) map[string]any {
+	result := make(map[string]any)
 
 	for key, value := range doc {
 		// Handle nested maps recursively
-		if nestedMap, ok := value.(map[string]interface{}); ok {
+		if nestedMap, ok := value.(map[string]any); ok {
 			value = transformJSONKeys(nestedMap)
 		}
 
@@ -1566,6 +1636,8 @@ func transformJSONKeys(doc map[string]interface{}) map[string]interface{} {
 }
 
 // getTransformedKey returns the transformed key for known fields
+//
+//nolint:goconst // identity/canonicalisation table; literals are the data
 func getTransformedKey(key string) string {
 	keyMap := map[string]string{
 		"healthevent":              "healthevent",
@@ -1658,6 +1730,11 @@ func (a *PostgreSQLChangeStreamAdapter) Close(ctx context.Context) error {
 	return a.watcher.Close(ctx)
 }
 
+// LagState delegates to the wrapped watcher so lag survives the adapter.
+func (a *PostgreSQLChangeStreamAdapter) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	return a.watcher.LagState()
+}
+
 // PostgreSQLChangeStreamWatcherWithUnwrap wraps PostgreSQLChangeStreamWatcher
 // and provides the Unwrap() method without creating interface conflicts.
 // This wrapper implements datastore.ChangeStreamWatcher and can be unwrapped to client.ChangeStreamWatcher.
@@ -1703,6 +1780,20 @@ func (w *PostgreSQLChangeStreamWatcherWithUnwrap) MarkProcessed(ctx context.Cont
 func (w *PostgreSQLChangeStreamWatcherWithUnwrap) Close(ctx context.Context) error {
 	return w.watcher.Close(ctx)
 }
+
+// LagState delegates to the wrapped watcher so lag survives the wrapper.
+func (w *PostgreSQLChangeStreamWatcherWithUnwrap) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	return w.watcher.LagState()
+}
+
+// Every type a consumer can be handed must report lag, or the assertion that looks for it
+// answers for the wrapper instead of the watcher underneath. Asserted here so adding a wrapper
+// without the pass-through fails the build rather than silently reporting no lag.
+var (
+	_ lagstate.Provider = (*PostgreSQLChangeStreamWatcher)(nil)
+	_ lagstate.Provider = (*PostgreSQLChangeStreamAdapter)(nil)
+	_ lagstate.Provider = (*PostgreSQLChangeStreamWatcherWithUnwrap)(nil)
+)
 
 // Unwrap returns the adapter as client.ChangeStreamWatcher for backward compatibility
 // This allows services to unwrap the PostgreSQL watcher to the legacy interface

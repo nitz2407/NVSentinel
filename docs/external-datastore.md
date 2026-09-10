@@ -208,11 +208,11 @@ Use the **exact connection string** your provider shows in its console as the **
 
 You do **not** need to manually create the `HealthEventsDatabase` database or any collections
 in any of the CSPs below. On every `helm install` or `helm upgrade`, NVSentinel automatically
-runs the `nvsentinel-external-mongodb-setup` Job which:
+runs the `<release>-external-mongodb-setup-<collectionExpirySeconds>-<scriptHash>` Job (`-l app.kubernetes.io/name=external-mongodb-setup`) which:
 
 - Creates the `HealthEventsDatabase` database (MongoDB creates it lazily on first write)
 - Creates the `HealthEvents`, `ResumeTokens`, and `MaintenanceEvents` collections if they don't exist
-- Creates TTL indexes (auto-expire old events) and query indexes on all collections
+- Creates TTL indexes from `mongodb-store.collectionExpirySeconds` (default 2592000). A TTL change recreates the setup Job and collMod's existing indexes.
 
 All you need is a cluster endpoint and a database user with read/write access.
 
@@ -244,7 +244,7 @@ In the AWS Console, navigate to **Amazon DocumentDB → Clusters → Create** wi
 
 After creation, note the **Cluster endpoint** (read/write):
 ```
-<cluster-id>.cluster-<suffix>.<region>.docdb.amazonaws.com
+{cluster-id}.cluster-{suffix}.{region}.docdb.amazonaws.com
 ```
 
 ---
@@ -307,7 +307,7 @@ DocumentDB cluster endpoints use private DNS names (e.g. `nvsentinel-test-1.clus
 
 ```bash
 kubectl run -it --rm dns-test --image=busybox --restart=Never -- \
-  nslookup <cluster-endpoint>
+  nslookup {cluster-endpoint}
 ```
 
 Expected output: a valid IP address. `NXDOMAIN` means the Route 53 hosted zone or A record is incorrect.
@@ -355,7 +355,7 @@ global:
     credentialsFromSecret:
       name: nvsentinel-datastore-mongodb-uri
     connection:
-      host: "<cluster-endpoint>"
+      host: "{cluster-endpoint}"
       port: 27017
       database: "HealthEventsDatabase"
     tls:
@@ -473,7 +473,7 @@ global:
     credentialsFromSecret:
       name: nvsentinel-datastore-mongodb-uri
     connection:
-      host: "<cluster>.mongocluster.cosmos.azure.com"
+      host: "{cluster}.mongocluster.cosmos.azure.com"
       port: 27017
       database: "HealthEventsDatabase"
     tls:
@@ -570,7 +570,7 @@ global:
     credentialsFromSecret:
       name: nvsentinel-datastore-mongodb-uri
     connection:
-      host: "<cluster>.mongodb.net"
+      host: "{cluster}.mongodb.net"
       port: 27017
       database: "HealthEventsDatabase"
     tls:

@@ -35,6 +35,7 @@ import (
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp"
 	awsclient "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/aws"
 	gcpclient "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/gcp"
+	lambdaclient "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/csp/lambda"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/datastore"
 	eventpkg "github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/event"
 	"github.com/nvidia/nvsentinel/health-monitors/csp-health-monitor/pkg/metrics"
@@ -83,11 +84,7 @@ func startActiveMonitorAndLog(
 		return
 	}
 
-	wg.Add(1)
-
-	go func() {
-		defer wg.Done()
-
+	wg.Go(func() {
 		slog.Info("Starting active monitor", "name", activeMonitor.GetName())
 
 		monitorErr := activeMonitor.StartMonitoring(ctx, eventChan)
@@ -101,7 +98,7 @@ func startActiveMonitorAndLog(
 		} else {
 			slog.Info("Monitor shut down cleanly", "name", activeMonitor.GetName())
 		}
-	}()
+	})
 }
 
 func run() error {
@@ -161,9 +158,13 @@ func run() error {
 	})
 
 	g.Go(func() error {
+		var store datastore.Store
+
 		slog.Info("Initializing datastore connection...")
 
-		store, err := datastore.NewStore(gCtx, databaseClientCertMountPath)
+		var err error
+
+		store, err = datastore.NewStore(gCtx, databaseClientCertMountPath)
 		if err != nil {
 			return fmt.Errorf("failed to initialize datastore: %w", err)
 		}
@@ -190,14 +191,10 @@ func run() error {
 
 		startActiveMonitorAndLog(gCtx, &wg, activeMonitor, eventChan)
 
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			runEventProcessorLoop(gCtx, eventChan, eventProcessor)
 			slog.Info("Event processing loop stopped.")
-		}()
+		})
 
 		wg.Wait()
 		slog.Info("CSP monitor and event processor stopped.")
@@ -259,7 +256,27 @@ func initActiveMonitor(
 		return awsMonitor
 	}
 
-	slog.Info("No CSP is explicitly enabled in the configuration (GCP or AWS).")
+	if cfg.Lambda.Enabled {
+		slog.Info("Lambda configuration is enabled.")
+
+		lambdaMonitor, err := lambdaclient.NewClient(ctx, cfg.Lambda, cfg.ClusterName, kubeconfigPath, store)
+		if err != nil {
+			metrics.CSPMonitorErrors.WithLabelValues(string(model.CSPLambda), "init_error").Inc()
+			slog.Error("Failed to initialize Lambda monitor.", "error", err)
+
+			return nil
+		}
+
+		if cfg.Lambda.MockEventsFilePath != "" {
+			slog.Info("Lambda mock monitor initialized", "eventsFile", cfg.Lambda.MockEventsFilePath)
+		} else {
+			slog.Info("Lambda monitor initialized", "endpoint", cfg.Lambda.APIEndpoint)
+		}
+
+		return lambdaMonitor
+	}
+
+	slog.Info("No CSP is explicitly enabled in the configuration (GCP, AWS, or Lambda).")
 
 	return nil
 }

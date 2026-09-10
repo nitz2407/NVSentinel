@@ -41,7 +41,6 @@ const (
 	FakeBootIDPath   = "/var/lib/nvsentinel/fake-proc/sys/kernel/random/boot_id"
 
 	fakeSysfsHostBase = "/var/lib/nvsentinel"
-	busyboxImage      = "busybox:latest"
 )
 
 // NICTestState bundles everything needed to tear down a NIC test cleanly.
@@ -245,11 +244,13 @@ for vf in mlx5_9 mlx5_10; do
   ln -s dummy "$FAKE/$vf/device/physfn"
 done
 
-# Net statistics for carrier_changes (EvaluateNetCounters path).
-# Only statistics/ is created; no operstate file, so the NUMA
-# classifier and EthernetStateCheck are unaffected.
-mkdir -p "$NET/eth0/statistics"
-echo "0" > "$NET/eth0/statistics/carrier_changes"
+# carrier_changes for the EvaluateNetCounters path. It is a
+# netdev-ROOT attribute (/sys/class/net/<iface>/carrier_changes,
+# beside operstate) — NOT under statistics/, which never held it on
+# any kernel. No operstate file is created, so the NUMA classifier
+# and EthernetStateCheck are unaffected.
+mkdir -p "$NET/eth0"
+echo "0" > "$NET/eth0/carrier_changes"
 
 mkdir -p "$PROC/sys/kernel/random"
 echo "test-boot-id-00000000-0000-0000-0000-000000000001" > "$PROC/sys/kernel/random/boot_id"
@@ -326,8 +327,9 @@ func ResetSysfsCounter(t *testing.T, ctx context.Context,
 	MutateSysfsCounter(t, ctx, client, namespace, nodeName, device, port, counterPath, "0")
 }
 
-// MutateNetCounter writes a value to a network interface statistics
-// counter under fake-net. Creates the directory if missing for
+// MutateNetCounter writes a value to a netdev-root attribute counter
+// under fake-net (e.g. carrier_changes, which lives beside operstate —
+// not under statistics/). Creates the directory if missing for
 // idempotency.
 func MutateNetCounter(t *testing.T, ctx context.Context,
 	client klient.Client, namespace, nodeName, iface, counter, value string,
@@ -335,7 +337,7 @@ func MutateNetCounter(t *testing.T, ctx context.Context,
 	t.Helper()
 
 	script := fmt.Sprintf(
-		`mkdir -p "/host/fake-net/%s/statistics" && echo '%s' > "/host/fake-net/%s/statistics/%s"`,
+		`mkdir -p "/host/fake-net/%s" && echo '%s' > "/host/fake-net/%s/%s"`,
 		iface, value, iface, counter)
 	runShellPodOnNode(t, ctx, client, namespace, nodeName, "nic-net-counter-mutator", script)
 }
@@ -350,10 +352,8 @@ func runShellPodOnNode(t *testing.T, ctx context.Context,
 	t.Helper()
 
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: namePrefix + "-",
-			Namespace:    namespace,
-		},
+		GenerateName: namePrefix + "-",
+		Namespace:    namespace,
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
 			NodeName:      nodeName,
@@ -368,11 +368,9 @@ func runShellPodOnNode(t *testing.T, ctx context.Context,
 			}},
 			Volumes: []corev1.Volume{{
 				Name: "host-run",
-				VolumeSource: corev1.VolumeSource{
-					HostPath: &corev1.HostPathVolumeSource{
-						Path: fakeSysfsHostBase,
-						Type: hostPathType(corev1.HostPathDirectoryOrCreate),
-					},
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: fakeSysfsHostBase,
+					Type: new(corev1.HostPathDirectoryOrCreate),
 				},
 			}},
 		},
@@ -406,8 +404,6 @@ func runShellPodOnNode(t *testing.T, ctx context.Context,
 		return false
 	}, EventuallyWaitTimeout, WaitInterval, "%s pod should complete", namePrefix)
 }
-
-func hostPathType(t corev1.HostPathType) *corev1.HostPathType { return &t }
 
 // clearNICConditions sends healthy events for both NIC check types
 // through the platform connector, clearing any stale conditions.
@@ -688,20 +684,20 @@ func updateConfigMapSysfsPaths(t *testing.T, ctx context.Context, client klient.
 }
 
 func replaceConfigPaths(configTOML string) string {
-	result := ""
+	var result strings.Builder
 
 	for _, line := range splitLines(configTOML) {
 		switch {
 		case containsKey(line, "sysClassInfinibandPath"):
-			result += "sysClassInfinibandPath = " + quote(FakeSysfsIBPath) + "\n"
+			result.WriteString("sysClassInfinibandPath = " + quote(FakeSysfsIBPath) + "\n")
 		case containsKey(line, "sysClassNetPath"):
-			result += "sysClassNetPath = " + quote(FakeSysfsNetPath) + "\n"
+			result.WriteString("sysClassNetPath = " + quote(FakeSysfsNetPath) + "\n")
 		default:
-			result += line + "\n"
+			result.WriteString(line + "\n")
 		}
 	}
 
-	return result
+	return result.String()
 }
 
 func splitLines(s string) []string {

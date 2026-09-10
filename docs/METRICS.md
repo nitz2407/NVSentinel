@@ -14,6 +14,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
   - [GPU Health Monitor](#gpu-health-monitor)
   - [Syslog Health Monitor](#syslog-health-monitor)
   - [CSP Health Monitor](#csp-health-monitor)
+- [Change Stream Metrics](#change-stream-metrics)
 
 ---
 
@@ -26,6 +27,8 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `fault_quarantine_events_received_total` | Counter | - | Total number of events received from the watcher |
 | `fault_quarantine_events_successfully_processed_total` | Counter | - | Total number of events successfully processed |
 | `fault_quarantine_processing_errors_total` | Counter | `error_type` | Total number of errors encountered during event processing |
+| `fault_quarantine_cold_start_events_total` | Counter | `result` | Health events examined during startup recovery, labeled `processed`, `skipped`, `superseded`, `invalid`, or `failed` |
+| `fault_quarantine_cold_start_duration_seconds` | Histogram | - | Startup recovery duration. Buckets: ExponentialBuckets(start=0.1s, factor=2, count=18), max ~3.6 hours |
 | `fault_quarantine_event_backlog_count` | Gauge | - | Number of health events which fault quarantine is yet to process |
 | `fault_quarantine_event_handling_duration_seconds` | Histogram | - | Histogram of event handling durations |
 
@@ -36,6 +39,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `fault_quarantine_nodes_quarantined_total` | Counter | `node` | Total number of nodes quarantined |
 | `fault_quarantine_nodes_unquarantined_total` | Counter | `node` | Total number of nodes unquarantined |
 | `fault_quarantine_nodes_manually_uncordoned_total` | Counter | `node` | Total number of manually uncordons for nodes |
+| `fault_quarantine_nodes_manually_untainted_total` | Counter | `node` | Total number of manual taint removals for nodes |
 | `fault_quarantine_current_quarantined_nodes` | Gauge | `node` | Current number of quarantined nodes |
 
 ### Taint and Cordon Metrics
@@ -47,8 +51,8 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `fault_quarantine_cordons_applied_total` | Counter | - | Total number of cordons applied to nodes |
 | `fault_quarantine_cordons_removed_total` | Counter | - | Total number of cordons removed from nodes |
 | `fault_quarantine_node_quarantine_duration_seconds` | Histogram | - | Time from health event generation to node quarantine completion. Buckets: Prometheus DefBuckets |
-| `fault_quarantine_node_remediation_duration_seconds` | Histogram | - | End-to-end node remediation time: `generatedTimestamp` (from original unhealthy event) to node unquarantine. Emitted on both auto unquarantine (via healthy event) and manual uncordon. Buckets: ExponentialBuckets(start=10s, factor=1.5, count=27), max ~4.4 days |
-| `fault_quarantine_node_remediation_duration_excluding_drain_seconds` | Histogram | - | Remediation time excluding node-drainer duration: `(unquarantineTime - generatedTimestamp) - (drainFinishTimestamp - quarantineFinishTimestamp)`. Emitted only when both `quarantineFinishTimestamp` and `drainFinishTimestamp` are present in the original event document. Buckets: ExponentialBuckets(start=10s, factor=1.5, count=19), max ~4.1 hours |
+| `fault_quarantine_node_remediation_duration_seconds` | Histogram | `recommended_action` | End-to-end node remediation time: `generatedTimestamp` (from original unhealthy event) to node unquarantine. Emitted on both auto unquarantine (via healthy event) and manual uncordon. Buckets: ExponentialBuckets(start=10s, factor=1.5, count=27), max ~4.4 days |
+| `fault_quarantine_node_remediation_duration_excluding_drain_seconds` | Histogram | `recommended_action` | Remediation time excluding node-drainer duration: `(unquarantineTime - generatedTimestamp) - (drainFinishTimestamp - quarantineFinishTimestamp)`. Emitted only when both `quarantineFinishTimestamp` and `drainFinishTimestamp` are present in the original event document. Buckets: ExponentialBuckets(start=10s, factor=1.5, count=19), max ~4.1 hours |
 
 ### Ruleset Evaluation Metrics
 
@@ -62,6 +66,7 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 |------------|------|--------|-------------|
 | `fault_quarantine_breaker_state` | Gauge | `state` | State of the fault quarantine breaker |
 | `fault_quarantine_breaker_utilization` | Gauge | - | Fraction of GPU nodes cordoned within the circuit breaker's sliding window |
+| `fault_quarantine_breaker_threshold_nodes` | Gauge | `bound` | Cordoned-node count that trips the circuit breaker, and which configured bound produced it (`percentage`, `maxNodes`, or `fleetSize` when clamped) |
 | `fault_quarantine_get_total_nodes_duration_seconds` | Histogram | `result` | Duration of getTotalNodesWithRetry calls in seconds |
 | `fault_quarantine_get_total_nodes_errors_total` | Counter | `error_type` | Total number of errors from getTotalNodesWithRetry |
 | `fault_quarantine_get_total_nodes_retry_attempts` | Histogram | - | Number of retry attempts needed for getTotalNodesWithRetry (buckets: 0, 1, 2, 3, 5, 10) |
@@ -157,6 +162,18 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 
 ## Platform Connectors
 
+### Health Event Authentication Metrics
+
+These track the node-binding interceptor that stops a caller on one node from
+submitting health events naming another node. See
+[Health Event Authentication](platform-connectors.md#health-event-node-binding).
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `platform_connector_auth_decisions_total` | Counter | `decision` | Health event batches by the node scope granted to the caller. Values: `node_local`, `cross_node` |
+| `platform_connector_auth_node_claim_total` | Counter | `result` | Whether an authenticated caller's token carried a node claim. `verified`: it carried one and it named this node. `absent`: it carried none, so the caller was pinned to this node — the same scope a tokenless caller gets. |
+| `platform_connector_auth_violations_total` | Counter | `reason` | Health event batches that violated the node-binding rule. Under `global.platformConnectorAuth.mode: enforce` (default) these are rejected; under `mode: audit` they are recorded here but let through. Reasons: `node_mismatch` (a node-local caller named a different node), `node_claim_mismatch` (the token was issued on another node — applies to every caller, allowlisted or not), `unbound_cross_node_token` (an allowlisted caller presented a token bound to no pod, e.g. from `kubectl create token`), `cross_node_claim_absent` (pod-bound, but the pod was never scheduled), `missing_node_name` (no node name on the event and none could be stamped), `token_invalid` (TokenReview rejected the token), `malformed_credentials` (the authorization header was duplicated or did not use the Bearer scheme). Three further reasons mean **no verdict could be reached**, not that the caller was rejected: `validator_unavailable` (the API server was unreachable), `validator_timeout` (the caller gave up or its deadline passed) and `validator_error` (an unexpected failure, typically this component's own RBAC to create TokenReviews). With `failOpenOnUnavailable: true`, `validator_unavailable` and `validator_timeout` still increment this counter but fall back to a degraded node-local scope instead of rejecting the request, in `mode: enforce` too — an outage says nothing about the caller's credential. That scope is a guess, not a verified identity: an event with a blank or matching node name is accepted and stamped as usual in either mode, but one naming a different node depends on `mode` — under `enforce` it is refused as retryable `Unavailable` rather than counted as `node_mismatch`, since the caller might really be an allowlisted cross-node publisher the outage prevented from being verified; under `audit` that same `Unavailable` is recorded and then let through like any other audited violation, so the event is forwarded with whatever node name it carried. `missing_node_name` is the one violation `mode: audit` does not let through — a blank node name from a caller resolved to **verified** cross-node scope is always rejected, in both modes, because nothing downstream can handle it. This does not cover a caller that fell back to a degraded node-local scope under `failOpenOnUnavailable`: its identity was never verified as cross-node, so a blank name from it is stamped like any other node-local caller's. Exclude those three when alerting on suspected credential abuse — a control-plane outage increments them for every in-flight request and would otherwise look identical to an attack: `sum(rate(platform_connector_auth_violations_total{reason=~"node_mismatch\|token_invalid\|node_claim_mismatch\|unbound_cross_node_token\|malformed_credentials\|cross_node_claim_absent\|missing_node_name"}[5m]))` |
+
 ### Kubernetes Connector Metrics
 
 | Metric Name | Type | Labels | Description |
@@ -166,21 +183,58 @@ This document outlines all Prometheus metrics exposed by NVSentinel components.
 | `k8s_platform_connector_node_condition_update_duration_milliseconds` | Histogram | - | Duration of node condition updates in milliseconds. Uses linear buckets (0, 10, 500) |
 | `k8s_platform_connector_node_event_update_create_duration_milliseconds` | Histogram | - | Duration of node event updates/creations in milliseconds. Uses linear buckets (0, 10, 500) |
 
+### Prometheus Connector Metrics
+
+Every health monitor publishes through the platform connector, so this one metric covers
+`gpu-health-monitor`, `syslog-health-monitor`, `nic-health-monitor`, `csp-health-monitor`,
+`kubernetes-object-monitor` and `health-events-analyzer` without per-monitor instrumentation.
+Enabled with `platformConnector.promConnector.enabled` (default `false`, like the other optional connectors).
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `health_events_total` | Counter | `node`, `agent`, `check_name`, `recommended_action`, `is_fatal`, `is_healthy` | Health events received by the platform connector. `recommended_action` is the enum name (`NONE`, `CONTACT_SUPPORT`, `RESTART_VM`, …); a `CUSTOM` action reports as `CUSTOM` rather than expanding `customRecommendedAction`, which is operator-defined and unbounded |
+
+`node` carries the **event's own** `nodeName`, not the node of the connector pod that
+received it. That distinction matters: the DaemonSet monitors publish over the node-local
+socket so the two coincide, but `health-events-analyzer` is a Deployment whose derived
+events describe other nodes, and an allowlisted cross-node publisher can name any node. An
+explicit label makes every agent correct without a `kube_pod_info` join.
+
+`errorCode` is excluded because it is unbounded: suffixed XIDs such as
+`145.RLW_SRC_TRACK` would grow the series set without limit. `node` is bounded by the fleet.
+
+`is_fatal` is kept even though producers derive it as `recommendedAction != NONE`. The
+redundancy is the point: a producer that disagrees with that derivation becomes visible
+rather than silent.
+
+Useful queries:
+
+```promql
+# Actionable event rate by action, fleet-wide
+sum by (recommended_action) (rate(health_events_total{recommended_action!="NONE"}[5m]))
+
+# Which agent and check is producing the actionable events
+sum by (agent, check_name) (rate(health_events_total{recommended_action!="NONE",is_healthy="false"}[1h]))
+
+# Per node, correct for every agent including health-events-analyzer
+sum by (node) (rate(health_events_total{recommended_action!="NONE"}[1h]))
+```
+
 ### Workqueue Metrics
 
 These metrics track the internal ring buffer workqueue performance:
 
 | Metric Name | Type | Labels | Description |
 |------------|------|--------|-------------|
-| `platform_connector_workqueue_depth_<name>` | Gauge | `workqueue` | Current depth of Platform connector workqueue |
-| `platform_connector_workqueue_adds_total_<name>` | Counter | `workqueue` | Total number of adds handled by Platform connector workqueue |
-| `platform_connector_workqueue_latency_seconds_<name>` | Histogram | `workqueue` | How long an item stays in Platform connector workqueue before being requested. Uses linear buckets (0, 10, 500) |
-| `platform_connector_workqueue_work_duration_seconds_<name>` | Histogram | `workqueue` | How long processing an item from Platform connector workqueue takes. Uses linear buckets (0, 10, 500) |
-| `platform_connector_workqueue_retries_total_<name>` | Counter | `workqueue` | Total number of retries handled by Platform connector workqueue |
-| `platform_connector_workqueue_longest_running_processor_seconds_<name>` | Gauge | `workqueue` | How many seconds the longest running processor for Platform connector workqueue has been running |
-| `platform_connector_workqueue_unfinished_work_seconds_<name>` | Gauge | `workqueue` | The total time in seconds of work in progress in Platform connector workqueue |
+| `platform_connector_workqueue_depth_{name}` | Gauge | `workqueue` | Current depth of Platform connector workqueue |
+| `platform_connector_workqueue_adds_total_{name}` | Counter | `workqueue` | Total number of adds handled by Platform connector workqueue |
+| `platform_connector_workqueue_latency_seconds_{name}` | Histogram | `workqueue` | How long an item stays in Platform connector workqueue before being requested. Uses linear buckets (0, 10, 500) |
+| `platform_connector_workqueue_work_duration_seconds_{name}` | Histogram | `workqueue` | How long processing an item from Platform connector workqueue takes. Uses linear buckets (0, 10, 500) |
+| `platform_connector_workqueue_retries_total_{name}` | Counter | `workqueue` | Total number of retries handled by Platform connector workqueue |
+| `platform_connector_workqueue_longest_running_processor_seconds_{name}` | Gauge | `workqueue` | How many seconds the longest running processor for Platform connector workqueue has been running |
+| `platform_connector_workqueue_unfinished_work_seconds_{name}` | Gauge | `workqueue` | The total time in seconds of work in progress in Platform connector workqueue |
 
-**Note:** `<name>` in the metric names is replaced with the actual workqueue name at runtime.
+**Note:** `{name}` in the metric names is replaced with the actual workqueue name at runtime.
 
 ---
 
@@ -195,7 +249,7 @@ These metrics track GPU health events detected via DCGM (Data Center GPU Manager
 | `dcgm_health_events_publish_time_to_grpc_channel` | Histogram | `operation_name`                   | Amount of time spent in publishing DCGM health events on the gRPC channel                                 |
 | `health_events_insertion_to_uds_succeed`          | Counter   | -                                  | Total number of successful insertions of health events to UDS                                             |
 | `health_events_insertion_to_uds_error`            | Counter   | -                                  | Total number of failed insertions of health events to UDS                                                 |
-| `dcgm_health_active_events`                       | Gauge     | `event_type`, `gpu_id`, `severity` | Total number of active health events at any given time by severity. Severity values: `fatal`, `non_fatal` |
+| `dcgm_health_active_events`                       | Gauge     | `event_type`, `gpu_id` | Total number of active health events at any given time |
 | `dcgm_api_latency`                                | Histogram | `operation_name`                   | Amount of time spent calling DCGM APIs                                                                    |
 | `dcgm_reconcile_time`                             | Histogram | -                                  | Amount of time spent running a single DCGM reconcile loop                                                 |
 | `number_of_health_watches`                        | Gauge     | -                                  | Number of DCGM health watches available                                                                   |
@@ -204,6 +258,7 @@ These metrics track GPU health events detected via DCGM (Data Center GPU Manager
 | `callback_success`                                | Counter   | `class_name`, `func_name`          | Number of times a callback function has successfully completed                                            |
 | `dcgm_api_failures`                               | Counter   | `error_name`                       | Number of DCGM API errors                                                                                 |
 | `dcgm_health_check_unknown_system_skipped`        | Counter   | -                                  | Number of DCGM health check incidents skipped due to unrecognized system value                            |
+| `dcgm_probe_hangs`                                | Counter   | `operation_name`                   | Number of DCGM probes that exceeded the watchdog deadline without returning                                |
 
 ---
 
@@ -287,6 +342,58 @@ The CSP health monitor tracks cloud provider maintenance events and node health 
 | `csp_health_monitor_trigger_uds_send_errors_total` | Counter | - | Total number of errors encountered when sending events via UDS |
 | `csp_health_monitor_node_not_ready_timeout_total` | Counter | `node_name` | Total number of nodes that remained not ready after the timeout period |
 | `csp_health_monitor_node_readiness_monitoring_started_total` | Counter | `node_name` | Total number of times background node readiness monitoring was started |
+
+---
+
+## Change Stream Metrics
+
+Emitted by `store-client`, so they appear on every module that reads the change stream:
+`event-exporter`, `fault-quarantine`, `health-events-analyzer`, `node-drainer`, and
+`fault-remediation`, on both the MongoDB and PostgreSQL providers. The `client` label is the
+consumer's name.
+
+`fault-remediation` serves only controller-runtime's registry, so it passes that registry
+explicitly; the others use the default registry.
+
+| Metric Name | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `change_stream_lag_seconds` | Gauge | `client` | Seconds since this consumer last had evidence it was caught up with its own change stream, from either an empty batch or the server-side timestamp of the last event it read. Absent until one of those has been observed |
+| `change_stream_lag_known` | Gauge | `client` | 1 once `change_stream_lag_seconds` can be computed for this consumer, 0 before then |
+| `change_stream_resume_token_recoveries_total` | Counter | `client`, `phase` | Times a stale or invalid resume token was deleted, restarting the stream from the current position |
+
+Lag is measured against the consumer's **own filtered stream**, so a module whose pipeline
+admits nothing still reports zero lag while it is caught up. See
+[ADR-054](designs/054-changestream-lag-metrics.md).
+
+### Suggested alerts
+
+```yaml
+# A consumer is behind. Tune the threshold per fleet; no lag_known qualifier is needed,
+# because the series is absent rather than zero while lag is unknown.
+- alert: ChangeStreamConsumerBehind
+  expr: change_stream_lag_seconds > 900
+  for: 10m
+
+# A watcher that never started, or is wedged before its first read. The grace period covers
+# normal startup, which closes in milliseconds on a live stream.
+- alert: ChangeStreamLagUnknown
+  expr: change_stream_lag_known == 0
+  for: 10m
+```
+
+### What zero lag does not tell you
+
+Each of these is a way a consumer can be behind while the gauge reads zero.
+
+1. **Replication lag.** The MongoDB stream is opened `SecondaryPreferred` with no max staleness,
+   so an empty batch means "caught up with the secondary I am reading", not with the primary.
+2. **Data skipped after a resume-token recovery.** When a stored token is too old for the oplog
+   the watcher reopens from now, so lag reads near zero precisely when the most was skipped.
+   Read `change_stream_lag_seconds` together with `change_stream_resume_token_recoveries_total`:
+   a lag of zero is only reassuring if the recoveries counter has not moved.
+3. **Durable position.** This measures the watcher's progress against its own stream, not
+   whether its position was persisted. A consumer that reads an event and dies before
+   `MarkProcessed` succeeds looks healthy here, because the read did happen.
 
 ---
 

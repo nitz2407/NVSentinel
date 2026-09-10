@@ -26,6 +26,8 @@ import (
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/gcp"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/generic"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/kind"
+	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/labelprovider"
+	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/lambda"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/nebius"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/csp/oci"
 	"github.com/nvidia/nvsentinel/janitor-provider/pkg/model"
@@ -38,7 +40,9 @@ const (
 	ProviderAzure   Provider = "azure"
 	ProviderOCI     Provider = "oci"
 	ProviderNebius  Provider = "nebius"
+	ProviderLambda  Provider = "lambda"
 	ProviderGeneric Provider = "generic"
+	ProviderLabel   Provider = "label"
 )
 
 // Provider defines the supported cloud service providers.
@@ -85,8 +89,12 @@ func NewWithProvider(ctx context.Context, provider Provider) (model.CSPClient, e
 		return oci.NewClientFromEnv(ctx)
 	case ProviderNebius:
 		return nebius.NewClientFromEnv(ctx)
+	case ProviderLambda:
+		return lambda.NewClientFromEnv(ctx)
 	case ProviderGeneric:
 		return generic.NewClient(ctx)
+	case ProviderLabel:
+		return labelprovider.NewClient(ctx)
 	default:
 		return nil, fmt.Errorf("unsupported CSP provider: %s", provider)
 	}
@@ -118,8 +126,12 @@ func GetProviderFromString(providerStr string) (Provider, error) {
 		return ProviderOCI, nil
 	case "nebius":
 		return ProviderNebius, nil
+	case "lambda":
+		return ProviderLambda, nil
 	case "generic":
 		return ProviderGeneric, nil
+	case "label":
+		return ProviderLabel, nil
 	default:
 		return "", fmt.Errorf("unsupported CSP provider: %s", providerStr)
 	}
