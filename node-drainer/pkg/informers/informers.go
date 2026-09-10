@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -31,35 +32,38 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/utils/ptr"
+	"k8s.io/client-go/tools/record"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/model"
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/node-drainer/pkg/metrics"
 )
 
 const (
-	NodeIndex            = "node"
-	NamespaceNodeIndex   = "namespace-node"
-	NodeEventReasonIndex = "node-event-reason"
+	NodeIndex          = "node"
+	NamespaceNodeIndex = "namespace-node"
 )
 
 type Informers struct {
 	podInformer            cache.SharedIndexInformer
-	eventInformer          cache.SharedIndexInformer
 	nodeInformer           cache.SharedIndexInformer
+	eventBroadcaster       record.EventBroadcaster
+	eventRecorder          record.EventRecorder
 	clientset              kubernetes.Interface
 	notReadyTimeoutMinutes *int
 	drainGPUPods           bool
 	dryRunMode             []string
-	namespace              string
 }
 
 func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
-	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool) (*Informers, error) {
+	notReadyTimeoutMinutes *int, drainGPUPods bool, dryRun bool, systemNamespaces string) (*Informers, error) {
 	informerFactory := informers.NewSharedInformerFactoryWithOptions(
 		clientset,
 		resyncPeriod,
@@ -67,7 +71,16 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 
 	podInformer := informerFactory.Core().V1().Pods().Informer()
 
-	err := podInformer.GetIndexer().AddIndexers(
+	systemNamespacesRegex, err := compileExcludePattern(systemNamespaces)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compile system namespaces regex: %w", err)
+	}
+
+	if err := podInformer.SetTransform(excludedPodTransform(systemNamespacesRegex)); err != nil {
+		return nil, fmt.Errorf("failed to set pod informer transform: %w", err)
+	}
+
+	err = podInformer.GetIndexer().AddIndexers(
 		cache.Indexers{
 			NodeIndex:          NodeIndexFunc,
 			NamespaceNodeIndex: NamespaceNodeIndexFunc,
@@ -76,23 +89,12 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 		return nil, fmt.Errorf("failed to add indexer: %w", err)
 	}
 
-	eventInformerFactory := informers.NewSharedInformerFactoryWithOptions(
-		clientset,
-		resyncPeriod,
-		informers.WithNamespace(metav1.NamespaceDefault),
-	)
-
-	eventInformer := eventInformerFactory.Core().V1().Events().Informer()
-
-	err = eventInformer.GetIndexer().AddIndexers(
-		cache.Indexers{
-			NodeEventReasonIndex: NodeEventReasonIndexFunc,
-		})
-	if err != nil {
-		return nil, fmt.Errorf("failed to add event indexer: %w", err)
+	nodeInformer := informerFactory.Core().V1().Nodes().Informer()
+	if err := nodeInformer.SetTransform(nodeTransform); err != nil {
+		return nil, fmt.Errorf("failed to set node informer transform: %w", err)
 	}
 
-	nodeInformer := informerFactory.Core().V1().Nodes().Informer()
+	eventBroadcaster := record.NewBroadcaster()
 
 	dryRunMode := []string{}
 	if dryRun {
@@ -100,19 +102,168 @@ func NewInformers(clientset kubernetes.Interface, resyncPeriod time.Duration,
 	}
 
 	return &Informers{
-		clientset:              clientset,
-		podInformer:            podInformer,
-		eventInformer:          eventInformer,
-		nodeInformer:           nodeInformer,
+		clientset:        clientset,
+		podInformer:      podInformer,
+		nodeInformer:     nodeInformer,
+		eventBroadcaster: eventBroadcaster,
+		eventRecorder: eventBroadcaster.NewRecorder(
+			scheme.Scheme,
+			v1.EventSource{Component: "nvsentinel-node-drainer"},
+		),
 		notReadyTimeoutMinutes: notReadyTimeoutMinutes,
 		drainGPUPods:           drainGPUPods,
 		dryRunMode:             dryRunMode,
-		namespace:              metav1.NamespaceDefault,
 	}, nil
 }
 
+func excludedPodTransform(systemNamespacesRegex *regexp.Regexp) cache.TransformFunc {
+	return func(obj any) (any, error) {
+		pod, ok := obj.(*v1.Pod)
+		if !ok {
+			return obj, nil
+		}
+
+		isSystemNamespace := systemNamespacesRegex != nil && systemNamespacesRegex.MatchString(pod.Namespace)
+		if !isSystemNamespace && !isDaemonSetOwned(pod.OwnerReferences) {
+			return drainEligiblePodCacheObject(pod), nil
+		}
+
+		return &v1.Pod{
+			ObjectMeta: identityObjectMeta(
+				pod.Name,
+				pod.Namespace,
+				pod.UID,
+				pod.ResourceVersion,
+				nil,
+			),
+		}, nil
+	}
+}
+
+// drainEligiblePodCacheObject retains only fields used by pod indexes and drain decisions.
+// Keep this contract in sync with the cached Pod reads in this package.
+func drainEligiblePodCacheObject(pod *v1.Pod) *v1.Pod {
+	var annotations map[string]string
+	if devices, exists := pod.Annotations[model.PodDeviceAnnotationName]; exists {
+		annotations = map[string]string{model.PodDeviceAnnotationName: devices}
+	}
+
+	ownerReferences := make([]metav1.OwnerReference, len(pod.OwnerReferences))
+	for idx, owner := range pod.OwnerReferences {
+		ownerReferences[idx] = metav1.OwnerReference{Kind: owner.Kind}
+	}
+
+	var deletionTimestamp *metav1.Time
+	if pod.DeletionTimestamp != nil {
+		deletionTimestamp = pod.DeletionTimestamp.DeepCopy()
+	}
+
+	var terminationGracePeriodSeconds *int64
+	if pod.Spec.TerminationGracePeriodSeconds != nil {
+		terminationGracePeriodSeconds = new(*pod.Spec.TerminationGracePeriodSeconds)
+	}
+
+	return &v1.Pod{
+		TypeMeta:          pod.TypeMeta,
+		Name:              pod.Name,
+		Namespace:         pod.Namespace,
+		UID:               pod.UID,
+		ResourceVersion:   pod.ResourceVersion,
+		Annotations:       annotations,
+		OwnerReferences:   ownerReferences,
+		DeletionTimestamp: deletionTimestamp,
+		Spec: v1.PodSpec{
+			NodeName:                      pod.Spec.NodeName,
+			TerminationGracePeriodSeconds: terminationGracePeriodSeconds,
+			Containers:                    trimContainers(pod.Spec.Containers),
+			InitContainers:                trimContainers(pod.Spec.InitContainers),
+		},
+		Status: v1.PodStatus{
+			Phase:      pod.Status.Phase,
+			Conditions: trimPodReadyConditions(pod.Status.Conditions),
+		},
+	}
+}
+
+func trimContainers(containers []v1.Container) []v1.Container {
+	cached := make([]v1.Container, len(containers))
+	for idx, container := range containers {
+		limits := make(v1.ResourceList, len(container.Resources.Limits))
+		for resourceName, quantity := range container.Resources.Limits {
+			limits[resourceName] = quantity.DeepCopy()
+		}
+
+		cached[idx].Resources.Limits = limits
+	}
+
+	return cached
+}
+
+func trimPodReadyConditions(conditions []v1.PodCondition) []v1.PodCondition {
+	var cached []v1.PodCondition
+
+	for _, condition := range conditions {
+		if condition.Type != v1.PodReady {
+			continue
+		}
+
+		cached = append(cached, v1.PodCondition{
+			Type:               condition.Type,
+			Status:             condition.Status,
+			LastTransitionTime: condition.LastTransitionTime,
+		})
+	}
+
+	return cached
+}
+
+func nodeTransform(obj any) (any, error) {
+	node, ok := obj.(*v1.Node)
+	if !ok {
+		return obj, nil
+	}
+
+	var annotations map[string]string
+	if quarantineHealthEvent, exists := node.Annotations[common.QuarantineHealthEventAnnotationKey]; exists {
+		annotations = map[string]string{
+			common.QuarantineHealthEventAnnotationKey: quarantineHealthEvent,
+		}
+	}
+
+	return &v1.Node{
+		ObjectMeta: identityObjectMeta(
+			node.Name,
+			"",
+			node.UID,
+			node.ResourceVersion,
+			annotations,
+		),
+	}, nil
+}
+
+func identityObjectMeta(name, namespace string, uid types.UID, resourceVersion string,
+	annotations map[string]string) metav1.ObjectMeta {
+	return metav1.ObjectMeta{
+		Name:            name,
+		Namespace:       namespace,
+		UID:             uid,
+		ResourceVersion: resourceVersion,
+		Annotations:     annotations,
+	}
+}
+
+func isDaemonSetOwned(ownerReferences []metav1.OwnerReference) bool {
+	for _, owner := range ownerReferences {
+		if owner.Kind == "DaemonSet" {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (i *Informers) HasSynced() bool {
-	return i.podInformer.HasSynced() && i.eventInformer.HasSynced() && i.nodeInformer.HasSynced()
+	return i.podInformer.HasSynced() && i.nodeInformer.HasSynced()
 }
 
 func NodeIndexFunc(obj any) ([]string, error) {
@@ -143,25 +294,17 @@ func NamespaceNodeIndexFunc(obj any) ([]string, error) {
 	return []string{compositeKey}, nil
 }
 
-func NodeEventReasonIndexFunc(obj any) ([]string, error) {
-	event, ok := obj.(*v1.Event)
-	if !ok {
-		return []string{}, nil
-	}
-
-	if event.InvolvedObject.Kind != "Node" {
-		return []string{}, nil
-	}
-
-	compositeKey := fmt.Sprintf("%s/%s", event.InvolvedObject.Name, event.Reason)
-
-	return []string{compositeKey}, nil
-}
-
 func (i *Informers) Run(ctx context.Context) error {
+	i.eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{
+		Interface: i.clientset.CoreV1().Events(metav1.NamespaceDefault),
+	})
+
 	go i.podInformer.Run(ctx.Done())
-	go i.eventInformer.Run(ctx.Done())
 	go i.nodeInformer.Run(ctx.Done())
+	go func() {
+		<-ctx.Done()
+		i.eventBroadcaster.Shutdown()
+	}()
 
 	if ok := cache.WaitForCacheSync(ctx.Done(),
 		i.HasSynced); !ok {
@@ -304,10 +447,8 @@ func isPodUsingPartialDrainEntity(deviceAnnotation model.DeviceAnnotation, resou
 	partialDrainEntity *protos.Entity) bool {
 	for _, resourceName := range resourceNames {
 		if devicesForResource, ok := deviceAnnotation.Devices[resourceName]; ok {
-			for _, device := range devicesForResource {
-				if device == partialDrainEntity.EntityValue {
-					return true
-				}
+			if slices.Contains(devicesForResource, partialDrainEntity.EntityValue) {
+				return true
 			}
 		}
 	}
@@ -383,15 +524,13 @@ func (i *Informers) filterPodsWithGPURequests(pods []*v1.Pod) []*v1.Pod {
 }
 
 func (i *Informers) isDaemonSetPod(pod *v1.Pod) bool {
-	for _, owner := range pod.OwnerReferences {
-		if owner.Kind == "DaemonSet" {
-			slog.Info("Ignoring DaemonSet pod in namespace on node during eviction check",
-				"pod", pod.Name,
-				"namespace", pod.Namespace,
-				"node", pod.Spec.NodeName)
+	if isDaemonSetOwned(pod.OwnerReferences) {
+		slog.Info("Ignoring DaemonSet pod in namespace on node during eviction check",
+			"pod", pod.Name,
+			"namespace", pod.Namespace,
+			"node", pod.Spec.NodeName)
 
-			return true
-		}
+		return true
 	}
 
 	return false
@@ -529,12 +668,10 @@ func (i *Informers) evictPodsInNamespaceAndNode(ctx context.Context,
 func (i *Informers) sendEvictionRequestForPod(ctx context.Context, namespace string,
 	timeout time.Duration, pod *v1.Pod) error {
 	eviction := &policyv1.Eviction{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      pod.Name,
-			Namespace: namespace,
-		},
+		Name:      pod.Name,
+		Namespace: namespace,
 		DeleteOptions: &metav1.DeleteOptions{
-			GracePeriodSeconds: ptr.To(int64(timeout.Seconds())),
+			GracePeriodSeconds: new(int64(timeout.Seconds())),
 			DryRun:             i.dryRunMode,
 		},
 	}
@@ -555,70 +692,14 @@ func (i *Informers) sendEvictionRequestForPod(ctx context.Context, namespace str
 	return nil
 }
 
-func (i *Informers) UpdateNodeEvent(ctx context.Context, nodeName string, reason string, message string) error {
-	compositeKey := fmt.Sprintf("%s/%s", nodeName, reason)
-
-	cachedEvents, err := i.eventInformer.GetIndexer().ByIndex(NodeEventReasonIndex, compositeKey)
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to query event cache", "error", err)
-		return fmt.Errorf("error querying event cache: %w", err)
-	}
-
-	now := metav1.NewTime(time.Now())
-	eventsClient := i.clientset.CoreV1().Events(i.namespace)
-
-	for _, obj := range cachedEvents {
-		existingEvent, ok := obj.(*v1.Event)
-		if !ok {
-			continue
-		}
-
-		if existingEvent.Message == message {
-			eventCopy := existingEvent.DeepCopy()
-			eventCopy.Count++
-			eventCopy.LastTimestamp = now
-
-			_, err = eventsClient.Update(ctx, eventCopy, metav1.UpdateOptions{})
-			if err != nil {
-				slog.ErrorContext(ctx, "Failed to update event occurrence count", "error", err)
-				return fmt.Errorf("error in updating event occurrence count: %w", err)
-			}
-
-			return nil
-		}
-	}
-
-	// Get node from informer cache to retrieve its UID for proper event association
+// UpdateNodeEvent records a normal event for the named node.
+func (i *Informers) UpdateNodeEvent(_ context.Context, nodeName string, reason string, message string) error {
 	node, err := i.GetNode(nodeName)
 	if err != nil {
 		return fmt.Errorf("error getting node from cache %s: %w", nodeName, err)
 	}
 
-	newEvent := &v1.Event{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: nodeName + "-",
-			Namespace:    i.namespace,
-		},
-		InvolvedObject: v1.ObjectReference{
-			Kind:       "Node",
-			Name:       nodeName,
-			UID:        node.UID,
-			APIVersion: "v1",
-		},
-		Reason:         reason,
-		Message:        message,
-		Type:           "NodeDraining",
-		Source:         v1.EventSource{Component: "nvsentinel-node-drainer"},
-		FirstTimestamp: now,
-		LastTimestamp:  now,
-		Count:          1,
-	}
-
-	_, err = eventsClient.Create(ctx, newEvent, metav1.CreateOptions{})
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to create event", "error", err, "node", nodeName, "reason", reason)
-		return fmt.Errorf("error in creating event: %w", err)
-	}
+	i.eventRecorder.Event(node, v1.EventTypeNormal, reason, message)
 
 	return nil
 }
@@ -798,6 +879,10 @@ func (i *Informers) GetNamespacesMatchingPattern(ctx context.Context,
 }
 
 func (i *Informers) compileExcludePattern(excludePattern string) (*regexp.Regexp, error) {
+	return compileExcludePattern(excludePattern)
+}
+
+func compileExcludePattern(excludePattern string) (*regexp.Regexp, error) {
 	if excludePattern == "" {
 		return nil, nil
 	}

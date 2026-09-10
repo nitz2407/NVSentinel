@@ -22,18 +22,39 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/informer"
 	"github.com/nvidia/nvsentinel/store-client/pkg/testutils"
 )
+
+type directNodeReaderStub struct {
+	node  *corev1.Node
+	err   error
+	calls int
+}
+
+func (s *directNodeReaderStub) GetNodeDirect(context.Context, string) (*corev1.Node, error) {
+	s.calls++
+	if s.err != nil {
+		return nil, s.err
+	}
+
+	return s.node.DeepCopy(), nil
+}
 
 var (
 	testClient *kubernetes.Clientset
@@ -72,11 +93,9 @@ func createTestNode(ctx context.Context, t *testing.T, name string, labels map[s
 	labels[informer.GPUNodeLabel] = "true"
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   name,
-			Labels: labels,
-		},
-		Spec: corev1.NodeSpec{},
+		Name:   name,
+		Labels: labels,
+		Spec:   corev1.NodeSpec{},
 		Status: corev1.NodeStatus{
 			Conditions: []corev1.NodeCondition{
 				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
@@ -88,6 +107,124 @@ func createTestNode(ctx context.Context, t *testing.T, name string, labels map[s
 	if err != nil {
 		t.Fatalf("Failed to create test node %s: %v", name, err)
 	}
+}
+
+func TestNodeRuleEvaluatorWithMetadataAndSpecOnly(t *testing.T) {
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	node := &corev1.Node{
+		Name:        "slim-node",
+		Labels:      map[string]string{"environment": "production"},
+		Annotations: map[string]string{"maintenance": "false"},
+		Spec: corev1.NodeSpec{
+			Unschedulable: true,
+			Taints: []corev1.Taint{{
+				Key:    "dedicated",
+				Value:  "gpu",
+				Effect: corev1.TaintEffectNoSchedule,
+			}},
+		},
+	}
+	if err := indexer.Add(node); err != nil {
+		t.Fatalf("indexer.Add() error = %v", err)
+	}
+
+	evaluator, err := NewNodeRuleEvaluator(
+		`node.metadata.name == "slim-node" &&
+		 node.metadata.labels["environment"] == "production" &&
+		 node.metadata.annotations["maintenance"] == "false" &&
+		 node.spec.unschedulable &&
+		 node.spec.taints.exists(t, t.key == "dedicated")`,
+		corelisters.NewNodeLister(indexer),
+	)
+	if err != nil {
+		t.Fatalf("NewNodeRuleEvaluator() error = %v", err)
+	}
+
+	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "slim-node"})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if result != common.RuleEvaluationSuccess {
+		t.Fatalf("Evaluate() = %v, want success", result)
+	}
+}
+
+func TestNodeRuleEvaluator_RecoveryRead_UsesCurrentNode(t *testing.T) {
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	if err := indexer.Add(&corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-a",
+			Labels: map[string]string{"state": "stale"},
+		},
+	}); err != nil {
+		t.Fatalf("indexer.Add() error = %v", err)
+	}
+
+	reader := &directNodeReaderStub{node: &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-a",
+			Labels: map[string]string{"state": "current"},
+		},
+	}}
+	evaluator, err := newNodeRuleEvaluator(
+		`node.metadata.labels["state"] == "current"`,
+		corelisters.NewNodeLister(indexer),
+		reader,
+	)
+	if err != nil {
+		t.Fatalf("newNodeRuleEvaluator() error = %v", err)
+	}
+
+	result, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{NodeName: "node-a"})
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if result != common.RuleEvaluationFailed || reader.calls != 0 {
+		t.Fatalf("normal evaluation result/calls = %v/%d, want failed/0", result, reader.calls)
+	}
+
+	recoveryCtx := coldstart.WithRecoveryContext(context.Background())
+	result, err = evaluator.Evaluate(
+		recoveryCtx,
+		&protos.HealthEvent{NodeName: "node-a"},
+	)
+	if err != nil {
+		t.Fatalf("recovery Evaluate() error = %v", err)
+	}
+	if result != common.RuleEvaluationSuccess || reader.calls != 1 {
+		t.Fatalf("recovery evaluation result/calls = %v/%d, want success/1", result, reader.calls)
+	}
+
+	result, err = evaluator.Evaluate(recoveryCtx, &protos.HealthEvent{NodeName: "node-a"})
+	if err != nil {
+		t.Fatalf("second recovery Evaluate() error = %v", err)
+	}
+	if result != common.RuleEvaluationSuccess || reader.calls != 1 {
+		t.Fatalf("second recovery evaluation result/calls = %v/%d, want success/1", result, reader.calls)
+	}
+}
+
+func TestNodeRuleEvaluator_DeletedNodeDuringRecovery_ReturnsPermanentError(t *testing.T) {
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	reader := &directNodeReaderStub{
+		err: apierrors.NewNotFound(schema.GroupResource{Resource: "nodes"}, "deleted-node"),
+	}
+	evaluator, err := newNodeRuleEvaluator(
+		`node.metadata.name == "deleted-node"`,
+		corelisters.NewNodeLister(indexer),
+		reader,
+	)
+	require.NoError(t, err)
+
+	result, err := evaluator.Evaluate(
+		coldstart.WithRecoveryContext(context.Background()),
+		&protos.HealthEvent{NodeName: "deleted-node"},
+	)
+
+	assert.Equal(t, common.RuleEvaluationFailed, result)
+	require.Error(t, err)
+	assert.True(t, coldstart.IsPermanentError(err))
+	assert.Equal(t, 1, reader.calls)
 }
 
 func TestEvaluate(t *testing.T) {
@@ -103,7 +240,7 @@ func TestEvaluate(t *testing.T) {
 		ErrorCode: []string{"31"},
 	}
 
-	result, err := evaluator.Evaluate(eventTrue)
+	result, err := evaluator.Evaluate(context.Background(), eventTrue)
 	if err != nil {
 		t.Fatalf("Failed to evaluate expression: %v", err)
 	}
@@ -118,7 +255,7 @@ func TestEvaluate(t *testing.T) {
 		ErrorCode: []string{"50"},
 	}
 
-	result, err = evaluator.Evaluate(eventFalse)
+	result, err = evaluator.Evaluate(context.Background(), eventFalse)
 	if err != nil {
 		t.Fatalf("Failed to evaluate expression: %v", err)
 	}
@@ -126,6 +263,17 @@ func TestEvaluate(t *testing.T) {
 	if result != common.RuleEvaluationFailed {
 		t.Errorf("Expected evaluation result to be false, got true")
 	}
+}
+
+func TestHealthEventRuleEvaluator_EvaluationError_ReturnsPermanentError(t *testing.T) {
+	ruleEvaluator, err := NewHealthEventRuleEvaluator(
+		`event.metadata["missing"].startsWith("value")`,
+	)
+	require.NoError(t, err)
+
+	_, err = ruleEvaluator.Evaluate(context.Background(), &protos.HealthEvent{})
+	require.Error(t, err)
+	assert.True(t, coldstart.IsPermanentError(err))
 }
 
 func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
@@ -168,6 +316,63 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 			expectEvaluate: common.RuleEvaluationFailed,
 			expectError:    true,
 		},
+		// ADR-040: nvsentinel.dgxc.nvidia.com/managed=false skips quarantine.
+		{
+			name:       "ADR-040 managed=false skips quarantine",
+			expression: `!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels: map[string]string{
+				"nvsentinel.dgxc.nvidia.com/managed": "false",
+			},
+			expectEvaluate: common.RuleEvaluationFailed,
+			expectError:    false,
+		},
+		{
+			name:           "ADR-040 managed label absent — quarantine proceeds",
+			expression:     `!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels:     map[string]string{},
+			expectEvaluate: common.RuleEvaluationSuccess,
+			expectError:    false,
+		},
+		{
+			name:       "ADR-040 managed=true — quarantine proceeds (only 'false' opts out)",
+			expression: `!('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels: map[string]string{
+				"nvsentinel.dgxc.nvidia.com/managed": "true",
+			},
+			expectEvaluate: common.RuleEvaluationSuccess,
+			expectError:    false,
+		},
+		// Combined expression matching the default rulesets: both old and ADR-040 labels respected.
+		{
+			name: "combined expression: ADR-040 managed=false skips even if k8saas label absent",
+			expression: `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels: map[string]string{
+				"nvsentinel.dgxc.nvidia.com/managed": "false",
+			},
+			expectEvaluate: common.RuleEvaluationFailed,
+			expectError:    false,
+		},
+		{
+			name: "combined expression: no opt-out labels — quarantine proceeds",
+			expression: `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels:     map[string]string{},
+			expectEvaluate: common.RuleEvaluationSuccess,
+			expectError:    false,
+		},
+		{
+			// Verifies the legacy k8saas compatibility clause still skips quarantine
+			// independently of the ADR-040 label, so removing it would break this test.
+			name: "combined expression: legacy k8saas=false skips quarantine (backwards compat)",
+			expression: `!('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false") &&
+            !('nvsentinel.dgxc.nvidia.com/managed' in node.metadata.labels && node.metadata.labels['nvsentinel.dgxc.nvidia.com/managed'] == "false")`,
+			nodeLabels: map[string]string{
+				"k8saas.nvidia.com/ManagedByNVSentinel": "false",
+			},
+			expectEvaluate: common.RuleEvaluationFailed,
+			expectError:    false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -201,7 +406,7 @@ func TestNodeToSkipLabelRuleEvaluator(t *testing.T) {
 				t.Fatalf("Failed to create NodeToSkipLabelRuleEvaluator: %v", err)
 			}
 			if evaluator != nil {
-				isEvaluated, err := evaluator.Evaluate(&protos.HealthEvent{
+				isEvaluated, err := evaluator.Evaluate(context.Background(), &protos.HealthEvent{
 					NodeName: nodeName,
 				})
 				if (err != nil) != tt.expectError {
@@ -240,7 +445,7 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatalf("Failed to roundtrip event: %v", err)
 	}
 
-	expectedMap := map[string]interface{}{
+	expectedMap := map[string]any{
 		"id":                "123",
 		"version":           float64(1),
 		"agent":             "test-agent",
@@ -250,23 +455,23 @@ func TestRoundTrip(t *testing.T) {
 		"isHealthy":         false,
 		"message":           "test-message",
 		"recommendedAction": float64(protos.RecommendedAction_RESTART_VM),
-		"errorCode":         []interface{}{"E001", "E002"},
-		"entitiesImpacted": []interface{}{
-			map[string]interface{}{
+		"errorCode":         []any{"E001", "E002"},
+		"entitiesImpacted": []any{
+			map[string]any{
 				"entityType":  "GPU",
 				"entityValue": "GPU-0",
 			},
 		},
-		"metadata": map[string]interface{}{"key1": "value1"},
-		"generatedTimestamp": map[string]interface{}{
+		"metadata": map[string]any{"key1": "value1"},
+		"generatedTimestamp": map[string]any{
 			"seconds": float64(eventTime.GetSeconds()),
 			"nanos":   float64(eventTime.GetNanos()),
 		},
-		"nodeName":                 "test-node",
-		"processingStrategy":        float64(0),
-		"quarantineOverrides":       nil,
-		"drainOverrides":            nil,
-		"customRecommendedAction":   "",
+		"nodeName":                "test-node",
+		"processingStrategy":      float64(0),
+		"quarantineOverrides":     nil,
+		"drainOverrides":          nil,
+		"customRecommendedAction": "",
 	}
 
 	if !reflect.DeepEqual(result, expectedMap) {

@@ -24,11 +24,11 @@ Defines CPU and memory resource requests and limits for the node-drainer pod.
 node-drainer:
   resources:
     limits:
-      cpu: "2"
-      memory: "2Gi"
+      cpu: "200m"
+      memory: "300Mi"
     requests:
-      cpu: "1"
-      memory: "1Gi"
+      cpu: "200m"
+      memory: "300Mi"
 ```
 
 ### Logging
@@ -39,6 +39,18 @@ Sets the verbosity level for node-drainer logs.
 node-drainer:
   logLevel: info  # Options: debug, info, warn, error
 ```
+
+### Kubernetes API Rate Limits
+
+Node Drainer inherits the Kubernetes client limits from `global.qps` and `global.burst` (defaults: `5` and `10`). Set component values only when Node Drainer needs different limits:
+
+```yaml
+node-drainer:
+  qps: 40
+  burst: 80
+```
+
+Positive `qps` values enable client-side throttling, `0` uses the client-go default, and a negative value disables client-side throttling. `burst` must be non-negative; `0` uses the client-go default.
 
 > Note: This module depends on the results from fault-quarantine. It also depends on the datastore being enabled. Therefore, ensure the datastore and the other modules are also enabled.
 
@@ -86,7 +98,7 @@ Regular expression pattern matching system namespaces that are skipped during no
 
 ```yaml
 node-drainer:
-  systemNamespaces: "^(nvsentinel|kube-system|gpu-operator|gmp-system|network-operator)$"
+  systemNamespaces: "^(nvsentinel|kube-system|gpu-operator|gmp-system|network-operator|skyhook)$"
 ```
 
 Pods in namespaces matching this regex are not evicted during drain operations.
@@ -234,7 +246,7 @@ userNamespaces:
 On a quarantined node with workloads still scheduled:
 
 ```bash
-NODE=<cordoned-node>
+NODE={cordoned-node}
 
 kubectl get pods -A --field-selector "spec.nodeName=$NODE" -w
 kubectl get node "$NODE" -L dgxc.nvidia.com/nvsentinel-state
@@ -242,7 +254,7 @@ kubectl get events -n default \
   --field-selector "involvedObject.kind=Node,involvedObject.name=$NODE"
 ```
 
-Node Drainer events are created in the **`default`** namespace (`Type=NodeDraining`,
+Node Drainer events are created in the **`default`** namespace (`Type=Normal`,
 `Source=nvsentinel-node-drainer`). Example output for a pod `training-job-0` in namespace
 `batch-jobs` on node `gpu-node-42`:
 
@@ -271,7 +283,7 @@ database    postgres-0        1/1     Running   0          2h
 
 # kubectl get events -n default --field-selector "involvedObject.name=gpu-node-42"
 LAST SEEN   TYPE          REASON                  OBJECT           MESSAGE
-2m          NodeDraining  AwaitingPodCompletion   Node/gpu-node-42 Waiting for following pods to finish: [database/postgres-0]
+2m          Normal        AwaitingPodCompletion   Node/gpu-node-42 Waiting for following pods to finish: [database/postgres-0]
 ```
 
 #### `DeleteAfterTimeout`
@@ -283,7 +295,7 @@ batch-jobs  training-job-0    1/1     Running   0          2h
 
 # kubectl get events -n default --field-selector "involvedObject.name=gpu-node-42"
 LAST SEEN   TYPE          REASON                    OBJECT           MESSAGE
-1m          NodeDraining  WaitingBeforeForceDelete  Node/gpu-node-42 Waiting for following pods to finish: [training-job-0] in namespace: [batch-jobs] or they will be force deleted on: 2026-07-01 18:30:00 +0000 UTC
+1m          Normal        WaitingBeforeForceDelete  Node/gpu-node-42 Waiting for following pods to finish: [training-job-0] in namespace: [batch-jobs] or they will be force deleted on: 2026-07-01 18:30:00 +0000 UTC
 ```
 
 After the deadline, the pod is force-deleted and `kubectl get pods` shows it gone.

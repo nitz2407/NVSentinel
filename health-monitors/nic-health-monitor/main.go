@@ -16,6 +16,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -31,6 +32,7 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
 	pb "github.com/nvidia/nvsentinel/data-models/pkg/protos"
@@ -55,10 +57,15 @@ var (
 	date    = "unknown"
 
 	checksList = flag.String("checks",
-		"InfiniBandStateCheck,InfiniBandDegradationCheck,EthernetStateCheck,EthernetDegradationCheck",
+		"InfiniBandStateCheck,InfiniBandDegradationCheck,InfiniBandCharDeviceCheck,"+
+			"EthernetStateCheck,EthernetDegradationCheck",
 		"Comma-separated list of checks to enable.")
 	platformConnectorSocket = flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock",
 		"Path to the platform-connector UDS socket")
+	platformConnectorTokenPath = flag.String("platform-connector-token-path", "",
+		"Path to a projected ServiceAccount token presented to platform-connector. "+
+			"This monitor reports health events only for the node it runs on; the token "+
+			"lets platform-connector confirm that placement. Empty disables token authentication.")
 	nodeNameEnv = flag.String("node-name", os.Getenv("NODE_NAME"),
 		"Node name. Defaults to NODE_NAME env var.")
 	statePollingIntervalFlag = flag.String("state-polling-interval", defaultStatePollingInterval,
@@ -124,8 +131,12 @@ func run() error {
 
 	stateManager, rebooted, scopeChanged := loadStateManager(rc.cfg)
 
-	conn, err := dialWithRetry(ctx, *platformConnectorSocket,
-		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	dialOpts := append(
+		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
+		grpcclient.DialOptions(*platformConnectorTokenPath)...,
+	)
+
+	conn, err := dialWithRetry(ctx, *platformConnectorSocket, dialOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to create gRPC client after retries: %w", err)
 	}
@@ -145,7 +156,8 @@ func run() error {
 		rc.processingStrategy, stateManager, rebooted || scopeChanged, rebooted)
 	if len(enabledChecks) == 0 {
 		return fmt.Errorf("no checks enabled — set --checks to include at least one of: " +
-			"InfiniBandStateCheck, InfiniBandDegradationCheck, EthernetStateCheck, EthernetDegradationCheck")
+			"InfiniBandStateCheck, InfiniBandDegradationCheck, InfiniBandCharDeviceCheck, " +
+			"EthernetStateCheck, EthernetDegradationCheck")
 	}
 
 	nicMonitor := monitor.NewNICHealthMonitor(rc.nodeName, client, *platformConnectorSocket,
@@ -215,7 +227,10 @@ func parseRuntimeConfig() (*runtimeConfig, error) {
 		"processingStrategy", *processingStrategyFlag,
 	)
 
-	cfg := loadConfigOrDefault(*configPath)
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		return nil, err
+	}
 
 	slog.Info("Configuration loaded",
 		"sysClassNetPath", cfg.SysClassNetPath,
@@ -250,23 +265,29 @@ func parseRuntimeConfig() (*runtimeConfig, error) {
 	}, nil
 }
 
-// loadConfigOrDefault reads the TOML config and falls back to in-memory
-// defaults on any error. The fallback preserves current deployments that
-// don't ship the ConfigMap yet.
-func loadConfigOrDefault(path string) *config.Config {
+// loadConfig reads the TOML config. Only a missing file falls back to
+// in-memory defaults — that preserves deployments that don't ship the
+// ConfigMap. Every other error (malformed TOML, invalid regex, invalid
+// counter configuration) fails startup: a silent fallback would disable
+// counter monitoring and drop the discovery-scope regexes while the pod
+// keeps reporting healthy, and the documented contract for invalid
+// configuration is "reject".
+func loadConfig(path string) (*config.Config, error) {
 	cfg, err := config.LoadConfig(path)
 	if err == nil {
-		return cfg
+		return cfg, nil
 	}
 
-	slog.Warn("Failed to load config file, using defaults", "error", err, "path", path)
+	if errors.Is(err, os.ErrNotExist) {
+		slog.Warn("Config file not found, using default configuration", "path", path)
 
-	slog.Info("Using default configuration with CLI flags")
-
-	return &config.Config{
-		SysClassInfinibandPath: "/nvsentinel/sys/class/infiniband",
-		SysClassNetPath:        "/nvsentinel/sys/class/net",
+		return &config.Config{
+			SysClassInfinibandPath: "/nvsentinel/sys/class/infiniband",
+			SysClassNetPath:        "/nvsentinel/sys/class/net",
+		}, nil
 	}
+
+	return nil, fmt.Errorf("invalid configuration at %s (fix or remove the file): %w", path, err)
 }
 
 // loadClassifier wraps topology.LoadFromMetadata with an actionable
@@ -353,43 +374,63 @@ func buildChecks(
 ) []checks.TransactionalCheck {
 	var result []checks.TransactionalCheck
 
-	for _, c := range strings.Split(*checksList, ",") {
+	for c := range strings.SplitSeq(*checksList, ",") {
 		c = strings.TrimSpace(c)
 		if c == "" {
 			continue
 		}
 
-		switch c {
-		case checks.InfiniBandStateCheckName:
-			result = append(result, state.NewInfiniBandStateCheck(
-				nodeName, reader, cfg, classifier, processingStrategy,
-				stateManager, stateBaselines,
-			))
-		case checks.InfiniBandDegradationCheckName:
-			if cfg.CounterDetection.Enabled {
-				result = append(result, counter.NewInfiniBandDegradationCheck(
-					nodeName, reader, cfg, processingStrategy,
-					stateManager, counterBaselines,
-				))
-			}
-		case checks.EthernetStateCheckName:
-			result = append(result, state.NewEthernetStateCheck(
-				nodeName, reader, cfg, classifier, processingStrategy,
-				stateManager, stateBaselines,
-			))
-		case checks.EthernetDegradationCheckName:
-			if cfg.CounterDetection.Enabled {
-				result = append(result, counter.NewEthernetDegradationCheck(
-					nodeName, reader, cfg, processingStrategy,
-					stateManager, counterBaselines,
-				))
-			}
-		default:
-			slog.Warn("Unknown check, skipping", "check", c)
+		if chk := buildCheck(c, nodeName, reader, cfg, classifier,
+			processingStrategy, stateManager, stateBaselines, counterBaselines); chk != nil {
+			result = append(result, chk)
 		}
 	}
 
 	return result
+}
+
+// buildCheck instantiates a single check by name, or returns nil when the
+// name is unknown or a counter check is requested while counter detection
+// is disabled.
+func buildCheck(
+	name, nodeName string,
+	reader sysfs.Reader,
+	cfg *config.Config,
+	classifier *topology.Classifier,
+	processingStrategy pb.ProcessingStrategy,
+	stateManager *statefile.Manager,
+	stateBaselines, counterBaselines bool,
+) checks.TransactionalCheck {
+	switch name {
+	case checks.InfiniBandStateCheckName:
+		return state.NewInfiniBandStateCheck(
+			nodeName, reader, cfg, classifier, processingStrategy, stateManager, stateBaselines)
+	case checks.InfiniBandCharDeviceCheckName:
+		return state.NewInfiniBandCharDeviceCheck(
+			nodeName, reader, cfg, classifier, processingStrategy, stateManager, stateBaselines)
+	case checks.EthernetStateCheckName:
+		return state.NewEthernetStateCheck(
+			nodeName, reader, cfg, classifier, processingStrategy, stateManager, stateBaselines)
+	case checks.InfiniBandDegradationCheckName:
+		if !cfg.CounterDetection.Enabled {
+			slog.Warn("Skipping requested check: counterDetection.enabled is false", "check", name)
+			return nil
+		}
+
+		return counter.NewInfiniBandDegradationCheck(
+			nodeName, reader, cfg, classifier, processingStrategy, stateManager, counterBaselines)
+	case checks.EthernetDegradationCheckName:
+		if !cfg.CounterDetection.Enabled {
+			slog.Warn("Skipping requested check: counterDetection.enabled is false", "check", name)
+			return nil
+		}
+
+		return counter.NewEthernetDegradationCheck(
+			nodeName, reader, cfg, classifier, processingStrategy, stateManager, counterBaselines)
+	default:
+		slog.Warn("Unknown check, skipping", "check", name)
+		return nil
+	}
 }
 
 // parseProcessingStrategy maps the string flag to the protobuf enum.
@@ -470,8 +511,8 @@ func dialWithRetry(ctx context.Context, target string, opts ...grpc.DialOption) 
 func tryDial(
 	ctx context.Context, target string, timeout time.Duration, opts ...grpc.DialOption,
 ) (*grpc.ClientConn, error) {
-	if strings.HasPrefix(target, "unix://") {
-		socketPath := strings.TrimPrefix(target, "unix://")
+	if after, ok := strings.CutPrefix(target, "unix://"); ok {
+		socketPath := after
 		if _, err := os.Stat(socketPath); err != nil {
 			return nil, fmt.Errorf("socket file not found: %w", err)
 		}

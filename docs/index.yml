@@ -16,6 +16,8 @@ navigation:
 
   - section: Tutorials
     contents:
+      - page: Integrating Node Problem Detector
+        path: tutorials/integrating-node-problem-detector.md
       - page: Writing a Health Monitor
         path: tutorials/writing-a-health-monitor.md
       - page: Writing a Preflight Check
@@ -29,6 +31,8 @@ navigation:
     contents:
       - page: Data Flow
         path: DATA_FLOW.md
+      - page: HealthEvent Data Model
+        path: health-event-data-model.md
       - page: External Datastore
         path: external-datastore.md
 
@@ -40,18 +44,12 @@ navigation:
         path: syslog-health-monitor.md
       - page: CSP Health Monitor IAM
         path: csp-health-monitor-iam.md
-      - section: NIC Health Monitor
-        contents:
-          - page: Overview
-            path: nic-health-monitor/Overview.md
-          - page: Link State Detection
-            path: nic-health-monitor/link-state-detection.md
-          - page: Link Counter Detection
-            path: nic-health-monitor/link-counter-detection.md
-          - page: Syslog Detection and Correlation
-            path: nic-health-monitor/syslog-detection-correlation.md
+      - page: NIC Health Monitor
+        path: nic-health-monitor.md
       - page: Kubernetes Object Monitor
         path: kubernetes-object-monitor.md
+      - page: NVCRE Certification Monitor
+        path: nvcre-certification-monitor.md
       - page: Event Exporter
         path: event-exporter.md
       - page: Metadata Collector
@@ -70,6 +68,10 @@ navigation:
         path: fault-quarantine.md
       - page: Fault Remediation
         path: fault-remediation.md
+      - page: Health Events Analyzer
+        path: health-events-analyzer.md
+      - page: Janitor
+        path: janitor.md
       - page: Circuit Breaker
         path: circuit-breaker.md
       - page: Cancelling Breakfix
@@ -80,6 +82,8 @@ navigation:
         path: monitoring-critical-operators.md
       - page: PostgreSQL Provider
         path: postgresql-provider.md
+      - page: Slurm Drain Monitor
+        path: slurm-drain-monitor.md
 
   - section: Observability
     contents:
@@ -92,22 +96,36 @@ navigation:
 
   - section: Configuration
     contents:
+      - page: Configuration Overview
+        path: configuration/README.md
       - page: GPU Health Monitor
         path: configuration/gpu-health-monitor.md
       - page: Syslog Health Monitor
         path: configuration/syslog-health-monitor.md
       - page: CSP Health Monitor
         path: configuration/csp-health-monitor.md
+      - page: NIC Health Monitor
+        path: configuration/nic-health-monitor.md
       - page: Kubernetes Object Monitor
         path: configuration/kubernetes-object-monitor.md
+      - page: NVCRE Certification Monitor
+        path: configuration/nvcre-certification-monitor.md
       - page: Fault Quarantine
         path: configuration/fault-quarantine.md
       - page: Node Drainer
         path: configuration/node-drainer.md
       - page: Fault Remediation
         path: configuration/fault-remediation.md
+      - page: Health Events Analyzer
+        path: configuration/health-events-analyzer.md
+      - page: Janitor
+        path: configuration/janitor.md
+      - page: Janitor Provider
+        path: configuration/janitor-provider.md
       - page: Event Exporter
         path: configuration/event-exporter.md
+      - page: In-Cluster File Server
+        path: configuration/incluster-file-server.md
       - page: Metadata Collector
         path: configuration/metadata-collector.md
       - page: Labeler
@@ -116,6 +134,8 @@ navigation:
         path: configuration/platform-connectors.md
       - page: Preflight
         path: configuration/preflight.md
+      - page: Slurm Drain Monitor
+        path: configuration/slurm-drain-monitor.md
       - page: MongoDB Store
         path: configuration/mongodb-store.md
       - page: PostgreSQL Store
@@ -143,6 +163,8 @@ navigation:
         path: runbooks/log-collection-job-failures.md
       - page: Log Rotation Failures
         path: runbooks/log-rotation-failures.md
+      - page: MongoDB Bitnami to Percona Migration
+        path: runbooks/mongodb-bitnami-to-percona-migration.md
       - page: MongoDB Connection Error
         path: runbooks/mongodb-connection-error.md
       - page: Node Conditions
@@ -151,5 +173,7 @@ navigation:
         path: runbooks/node-condition-update-failures.md
       - page: Node Event Creation Failures
         path: runbooks/node-event-creation-failures.md
+      - page: GPU Thermal Margin
+        path: runbooks/gpu-thermal-margin.md
       - page: Stale Events
         path: runbooks/stale-events.md

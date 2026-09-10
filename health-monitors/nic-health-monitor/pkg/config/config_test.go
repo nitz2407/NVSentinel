@@ -66,6 +66,24 @@ func TestValidateInclusionRegexList_AllowsUnsetAndUsablePatterns(t *testing.T) {
 	}
 }
 
+func TestValidateIssmMode_AcceptsSupportedValues(t *testing.T) {
+	for _, mode := range []string{IssmModeNever, IssmModeAlways} {
+		t.Run(mode, func(t *testing.T) {
+			assert.NoError(t, validateIssmMode(mode))
+		})
+	}
+}
+
+func TestValidateIssmMode_RejectsUnknownValue(t *testing.T) {
+	for _, mode := range []string{"", "auto", "on", "off", "Always", "enabled"} {
+		t.Run(mode, func(t *testing.T) {
+			err := validateIssmMode(mode)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "must be one of")
+		})
+	}
+}
+
 func TestValidateCounterDetection_DisabledSkipsValidation(t *testing.T) {
 	cd := CounterDetectionConfig{
 		Enabled:  false,
@@ -266,4 +284,27 @@ func TestValidateCounterDetection_DuplicateNamesSkipsDisabled(t *testing.T) {
 func TestValidateCounterDetection_MultipleValidCounters(t *testing.T) {
 	cd := counterDetection(validDeltaCounter(), validVelocityCounter())
 	assert.NoError(t, validateCounterDetection(&cd))
+}
+
+func TestCounterNames_AreEventCodeSafe(t *testing.T) {
+	// Counter names double as event ErrorCodes and as segments of the
+	// persisted `<device>:<port>:<counter>` keys. The platform-connector
+	// tokenizes codes into space-delimited, semicolon-separated condition
+	// messages, and the key format splits on colons — so a name
+	// containing any of those characters would corrupt downstream
+	// parsing or key handling.
+	for name := range counterDefinitions {
+		assert.NotContains(t, name, " ", "counter %q: spaces break message tokenization", name)
+		assert.NotContains(t, name, ";", "counter %q: semicolons break message splitting", name)
+		assert.NotContains(t, name, ":", "counter %q: colons break the persisted key format", name)
+	}
+}
+
+func TestCarrierChanges_UsesNetdevRootPath(t *testing.T) {
+	// carrier_changes lives at /sys/class/net/<iface>/carrier_changes,
+	// NOT under statistics/. The old "statistics/carrier_changes" path
+	// never existed on any kernel, so the counter silently never worked.
+	c := &CounterConfig{Name: "carrier_changes", Enabled: true, ThresholdType: "delta", Threshold: 0}
+	require.NoError(t, validateCounter(c))
+	assert.Equal(t, "netdev/carrier_changes", c.Path)
 }

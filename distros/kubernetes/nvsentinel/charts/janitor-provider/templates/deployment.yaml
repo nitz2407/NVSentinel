@@ -26,9 +26,20 @@ spec:
       {{- include "provider.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with ((.Values.global).podAnnotations | default .Values.podAnnotations) }}
+      {{- $lambdaIdentityLRN := "" }}
+      {{- if eq (lower (.Values.csp.provider | default "kind")) "lambda" }}
+      {{- $lambdaIdentityLRN = ((.Values.csp.lambda).workloadIdentity).identityLRN }}
+      {{- end }}
+      {{- if or ((.Values.global).podAnnotations | default .Values.podAnnotations) $lambdaIdentityLRN }}
       annotations:
+        {{- if $lambdaIdentityLRN }}
+        # Force pod restart when identityLRN changes; it lives on the
+        # ServiceAccount annotation, which the pod template doesn't reference.
+        checksum/lambda-workload-identity: {{ $lambdaIdentityLRN | sha256sum }}
+        {{- end }}
+        {{- with ((.Values.global).podAnnotations | default .Values.podAnnotations) }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
       labels:
         {{- include "provider.selectorLabels" . | nindent 8 }}
@@ -88,10 +99,19 @@ spec:
               value: {{ .Values.csp.generic.rebootJobNamespace | default .Release.Namespace | quote }}
             - name: GENERIC_REBOOT_JOB_TTL
               value: {{ .Values.csp.generic.rebootJobTTLSeconds | quote }}
+            - name: GENERIC_REBOOT_WRITE_SYSLOG
+              value: {{ if hasKey .Values.csp.generic "writeSyslog" }}{{ .Values.csp.generic.writeSyslog | quote }}{{ else }}"false"{{ end }}
             {{- if .Values.csp.generic.imagePullSecrets }}
             - name: GENERIC_REBOOT_IMAGE_PULL_SECRETS
               value: {{ .Values.csp.generic.imagePullSecrets | quote }}
             {{- end }}
+            {{- end }}
+            {{- if eq (lower (.Values.csp.provider | default "kind")) "label" }}
+            # Label provider environment variables (key=value specs)
+            - name: LABEL_REBOOT_KEY
+              value: {{ ((.Values.csp.label).rebootKey) | default "nke.nvidia.com/reboot=requested-by-nvsentinel" | quote }}
+            - name: LABEL_TERMINATE_KEY
+              value: {{ ((.Values.csp.label).terminateKey) | default "nke.nvidia.com/terminate=requested-by-nvsentinel" | quote }}
             {{- end }}
             {{- if eq (.Values.csp.provider | default "kind") "aws" }}
             # AWS-specific environment variables
@@ -167,6 +187,25 @@ spec:
               value: {{ .Values.csp.nebius.iamToken | quote }}
             {{- end }}
             {{- end }}
+            {{- if eq (lower (.Values.csp.provider | default "kind")) "lambda" }}
+            # Lambda-specific environment variables
+            {{- if .Values.csp.lambda.apiEndpoint }}
+            # Validated in code against a fixed host allowlist, an unapproved
+            # host fails at startup rather than on the first remediation.
+            - name: LAMBDA_API_ENDPOINT
+              value: {{ .Values.csp.lambda.apiEndpoint | quote }}
+            {{- end }}
+            {{- if not $lambdaIdentityLRN }}
+            - name: LAMBDA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "csp.lambda.apiKeySecretRef.name must be set when csp.provider=lambda and csp.lambda.workloadIdentity.identityLRN is empty" .Values.csp.lambda.apiKeySecretRef.name }}
+                  key: {{ .Values.csp.lambda.apiKeySecretRef.key | default "LAMBDA_API_KEY" }}
+            {{- end }}
+            {{- /* With workload identity the credential env vars and the token
+                   volume are injected by lambda-pod-identity-webhook, keyed off
+                   the ServiceAccount annotation, so nothing is declared here. */}}
+            {{- end }}
             {{- if .Values.tls.enabled }}
             - name: TLS_CERT_PATH
               value: "{{ .Values.tls.certDir }}/tls.crt"
@@ -234,4 +273,7 @@ spec:
       {{- with (((.Values.global).systemNodeTolerations) | default .Values.tolerations) }}
       tolerations:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (((.Values.global).systemPriorityClassName) | default .Values.priorityClassName) }}
+      priorityClassName: {{ . | quote }}
       {{- end }}

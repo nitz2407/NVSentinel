@@ -48,6 +48,7 @@ Controls behavior of the Kubernetes controller watching resources.
 kubernetes-object-monitor:
   maxConcurrentReconciles: 1
   resyncPeriod: 5m
+  cacheSyncTimeout: 10m
 ```
 
 #### maxConcurrentReconciles
@@ -56,9 +57,20 @@ Maximum number of concurrent reconciliation workers. Higher values allow paralle
 #### resyncPeriod
 How often the controller re-evaluates all watched resources even without changes.
 
+#### cacheSyncTimeout
+Maximum time to wait for informer caches to synchronize on startup. Increase this value for large clusters where the initial cache population takes longer.
+
 ## Policies Configuration
 
 Policies define which Kubernetes resources to monitor and when to generate health events.
+
+The default chart configures only the `ReplaceNotReadyNode` policy. NPD condition
+policies are intentionally opt-in because NVSentinel does not install or own
+the cluster's NPD configuration. See the
+[NPD integration tutorial](../tutorials/integrating-node-problem-detector.md)
+and
+[NPD remediation values](../../distros/kubernetes/nvsentinel/values-npd-remediation.yaml)
+before making NPD conditions actionable.
 
 ### Policy Structure
 
@@ -384,7 +396,7 @@ For a fatal GPU-runtime Event policy, see the `NVMLError` example in
 ### Observe a policy
 
 ```bash
-NODE=<test-node>
+NODE={test-node}
 
 # Example 4 — Pod exits immediately; the generated Warning events also exercise Example 3
 kubectl run kom-pod-fail --restart=Never -n default --image=busybox \

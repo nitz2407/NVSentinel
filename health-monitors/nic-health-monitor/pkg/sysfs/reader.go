@@ -41,6 +41,14 @@ func NewReader(ibBase, netBase string) Reader {
 func (r *fsReader) IBBasePath() string  { return r.ibBase }
 func (r *fsReader) NetBasePath() string { return r.netBase }
 
+// IBMadBasePath and IBVerbsBasePath derive the sibling MAD/verbs class
+// directories from the IB base. The kernel exposes them alongside
+// /sys/class/infiniband as /sys/class/infiniband_mad and
+// /sys/class/infiniband_verbs, so under a container mount they are
+// simply the IB base with the "_mad"/"_verbs" suffix.
+func (r *fsReader) IBMadBasePath() string   { return r.ibBase + "_mad" }
+func (r *fsReader) IBVerbsBasePath() string { return r.ibBase + "_verbs" }
+
 func (r *fsReader) IBPortPath(device string, port int) string {
 	return filepath.Join(r.ibBase, device, "ports", strconv.Itoa(port))
 }
@@ -100,6 +108,10 @@ func (r *fsReader) ReadNetStatistic(iface, counter string) (uint64, error) {
 	return readUint64(filepath.Join(r.netBase, iface, "statistics", counter))
 }
 
+func (r *fsReader) ReadNetAttribute(iface, attr string) (uint64, error) {
+	return readUint64(filepath.Join(r.netBase, iface, attr))
+}
+
 func readUint64(path string) (uint64, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -129,9 +141,9 @@ func (r *fsReader) ReadPCIAddress(device string) (string, error) {
 		return "", err
 	}
 
-	for _, line := range strings.Split(uevent, "\n") {
-		if strings.HasPrefix(line, "PCI_SLOT_NAME=") {
-			return strings.TrimPrefix(line, "PCI_SLOT_NAME="), nil
+	for line := range strings.SplitSeq(uevent, "\n") {
+		if after, ok := strings.CutPrefix(line, "PCI_SLOT_NAME="); ok {
+			return after, nil
 		}
 	}
 
@@ -152,8 +164,8 @@ func (r *fsReader) IsVirtualFunction(device string) bool {
 // as "4: ACTIVE" → "ACTIVE" or "5: LinkUp" → "LinkUp". Inputs without a
 // colon are returned unchanged (after whitespace trimming).
 func ParsePortState(raw string) string {
-	if idx := strings.Index(raw, ":"); idx >= 0 {
-		return strings.TrimSpace(raw[idx+1:])
+	if _, after, ok := strings.Cut(raw, ":"); ok {
+		return strings.TrimSpace(after)
 	}
 
 	return strings.TrimSpace(raw)

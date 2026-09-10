@@ -73,7 +73,9 @@ func deleteTestNode(t *testing.T, nodeName string) {
 	assert.NoError(t, err, "failed to delete test node")
 }
 
-func createTestAugmentor(config *Config) *Augmentor {
+func createTestAugmentor(t *testing.T, config *Config) *Augmentor {
+	t.Helper()
+
 	if config == nil {
 		config = &Config{
 			CacheSize:     100,
@@ -81,6 +83,9 @@ func createTestAugmentor(config *Config) *Augmentor {
 			AllowedLabels: []string{},
 		}
 	}
+
+	require.NoError(t, config.Validate(), "test config must be valid")
+
 	cache := expirable.NewLRU[string, *NodeMetadata](
 		config.CacheSize,
 		nil,
@@ -108,13 +113,11 @@ func TestAugmentorTransform(t *testing.T) {
 		{
 			name: "successful augmentation with labels",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node-1",
-					Labels: map[string]string{
-						"topology.kubernetes.io/zone":      "us-west-2a",
-						"topology.kubernetes.io/region":    "us-west-2",
-						"node.kubernetes.io/instance-type": "p4d.24xlarge",
-					},
+				Name: "test-node-1",
+				Labels: map[string]string{
+					"topology.kubernetes.io/zone":      "us-west-2a",
+					"topology.kubernetes.io/region":    "us-west-2",
+					"node.kubernetes.io/instance-type": "p4d.24xlarge",
 				},
 				Spec: corev1.NodeSpec{
 					ProviderID: "aws:///us-west-2a/i-1234567890abcdef0",
@@ -144,16 +147,20 @@ func TestAugmentorTransform(t *testing.T) {
 			expectError:   true,
 		},
 		{
-			name:          "node not found",
+			name:          "node not found fails open",
 			node:          nil,
 			eventNodeName: "non-existent-node",
-			expectError:   true,
+			expectError:   false,
+			validateResult: func(t *testing.T, event *pb.HealthEvent) {
+				assert.NotEqual(t, pb.ProcessingStrategy_STORE_ONLY, event.ProcessingStrategy,
+					"lookup failure should fail open and not gate the event")
+			},
 		},
 		{
 			name: "nil metadata initialization",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-node-2"},
-				Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-abc123"},
+				Name: "test-node-2",
+				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-abc123"},
 			},
 			eventNodeName: "test-node-2",
 			existingMeta:  nil,
@@ -166,8 +173,8 @@ func TestAugmentorTransform(t *testing.T) {
 		{
 			name: "existing metadata preservation",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-node-3"},
-				Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-def456"},
+				Name: "test-node-3",
+				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-def456"},
 			},
 			eventNodeName: "test-node-3",
 			existingMeta:  map[string]string{"existing-key": "existing-value"},
@@ -180,11 +187,9 @@ func TestAugmentorTransform(t *testing.T) {
 		{
 			name: "no provider ID",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "test-node-4",
-					Labels: map[string]string{"test-label": "test-value"},
-				},
-				Spec: corev1.NodeSpec{},
+				Name:   "test-node-4",
+				Labels: map[string]string{"test-label": "test-value"},
+				Spec:   corev1.NodeSpec{},
 			},
 			config: &Config{
 				CacheSize:     100,
@@ -201,8 +206,8 @@ func TestAugmentorTransform(t *testing.T) {
 		{
 			name: "no allowed labels configured",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-node-5"},
-				Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-ghi789"},
+				Name: "test-node-5",
+				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-ghi789"},
 			},
 			eventNodeName: "test-node-5",
 			expectError:   false,
@@ -214,16 +219,14 @@ func TestAugmentorTransform(t *testing.T) {
 		{
 			name: "cloud-specific topology labels",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node-6",
-					Labels: map[string]string{
-						"topology.k8s.aws/capacity-block-id":    "cbr-01234567",
-						"topology.k8s.aws/network-node-layer-1": "nn-abcd",
-						"oci.oraclecloud.com/host.id":           "971b2",
-						"cloud.google.com/gce-topology-block":   "9b6c",
-						"cloud.google.com/gce-topology-host":    "7007",
-						"node.kubernetes.io/instance-type":      "p4d.24xlarge",
-					},
+				Name: "test-node-6",
+				Labels: map[string]string{
+					"topology.k8s.aws/capacity-block-id":    "cbr-01234567",
+					"topology.k8s.aws/network-node-layer-1": "nn-abcd",
+					"oci.oraclecloud.com/host.id":           "971b2",
+					"cloud.google.com/gce-topology-block":   "9b6c",
+					"cloud.google.com/gce-topology-host":    "7007",
+					"node.kubernetes.io/instance-type":      "p4d.24xlarge",
 				},
 				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-cloud123"},
 			},
@@ -253,15 +256,13 @@ func TestAugmentorTransform(t *testing.T) {
 		{
 			name: "topograph topology labels",
 			node: &corev1.Node{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-node-7",
-					Labels: map[string]string{
-						"network.topology.nvidia.com/accelerator": "clique-7",
-						"network.topology.nvidia.com/leaf":        "leaf-42",
-						"network.topology.nvidia.com/spine":       "spine-3",
-						"network.topology.nvidia.com/core":        "core-1",
-						"node.kubernetes.io/instance-type":        "p5.48xlarge",
-					},
+				Name: "test-node-7",
+				Labels: map[string]string{
+					"accelerator.topograph.run/domain": "clique-7",
+					"fabric.topograph.run/tier-0":      "leaf-42",
+					"fabric.topograph.run/tier-1":      "spine-3",
+					"fabric.topograph.run/tier-2":      "core-1",
+					"node.kubernetes.io/instance-type": "p5.48xlarge",
 				},
 				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-topograph1"},
 			},
@@ -269,43 +270,160 @@ func TestAugmentorTransform(t *testing.T) {
 				CacheSize: 100,
 				CacheTTL:  1 * time.Hour,
 				AllowedLabels: []string{
-					"network.topology.nvidia.com/accelerator",
-					"network.topology.nvidia.com/leaf",
-					"network.topology.nvidia.com/spine",
-					"network.topology.nvidia.com/core",
+					"accelerator.topograph.run/domain",
+					"fabric.topograph.run/tier-0",
+					"fabric.topograph.run/tier-1",
+					"fabric.topograph.run/tier-2",
 				},
 			},
 			eventNodeName: "test-node-7",
 			expectError:   false,
 			validateResult: func(t *testing.T, event *pb.HealthEvent) {
 				assert.Equal(t, "aws:///us-west-2a/i-topograph1", event.Metadata["providerID"])
-				assert.Equal(t, "clique-7", event.Metadata["network.topology.nvidia.com/accelerator"])
-				assert.Equal(t, "leaf-42", event.Metadata["network.topology.nvidia.com/leaf"])
-				assert.Equal(t, "spine-3", event.Metadata["network.topology.nvidia.com/spine"])
-				assert.Equal(t, "core-1", event.Metadata["network.topology.nvidia.com/core"])
+				assert.Equal(t, "clique-7", event.Metadata["accelerator.topograph.run/domain"])
+				assert.Equal(t, "leaf-42", event.Metadata["fabric.topograph.run/tier-0"])
+				assert.Equal(t, "spine-3", event.Metadata["fabric.topograph.run/tier-1"])
+				assert.Equal(t, "core-1", event.Metadata["fabric.topograph.run/tier-2"])
 				assert.NotContains(t, event.Metadata, "node.kubernetes.io/instance-type", "should not include non-allowed labels")
+			},
+		},
+		{
+			name: "skip label match gates event to STORE_ONLY",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "skip-label-node-1",
+					Labels: map[string]string{
+						"nvsentinel.dgxc.nvidia.com/managed": "false",
+						"topology.kubernetes.io/zone":        "us-west-2a",
+					},
+				},
+				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-skip1"},
+			},
+			config: &Config{
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				AllowedLabels: []string{"topology.kubernetes.io/zone"},
+				SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false",
+			},
+			eventNodeName: "skip-label-node-1",
+			expectError:   false,
+			validateResult: func(t *testing.T, event *pb.HealthEvent) {
+				assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, event.ProcessingStrategy)
+				assert.Equal(t, "aws:///us-west-2a/i-skip1", event.Metadata["providerID"],
+					"gated events should still get metadata enrichment")
+				assert.Equal(t, "us-west-2a", event.Metadata["topology.kubernetes.io/zone"],
+					"gated events should still get label enrichment")
+			},
+		},
+		{
+			name: "no skip label match passes through",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "skip-label-node-2",
+					Labels: map[string]string{
+						"topology.kubernetes.io/zone": "us-east-1a",
+					},
+				},
+				Spec: corev1.NodeSpec{ProviderID: "aws:///us-east-1a/i-noskip1"},
+			},
+			config: &Config{
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				AllowedLabels: []string{"topology.kubernetes.io/zone"},
+				SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false",
+			},
+			eventNodeName: "skip-label-node-2",
+			expectError:   false,
+			validateResult: func(t *testing.T, event *pb.HealthEvent) {
+				assert.NotEqual(t, pb.ProcessingStrategy_STORE_ONLY, event.ProcessingStrategy,
+					"event without skip label should not be gated")
+				assert.Equal(t, "aws:///us-east-1a/i-noskip1", event.Metadata["providerID"])
+			},
+		},
+		{
+			name: "skip label with wrong value passes through",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "skip-label-node-3",
+					Labels: map[string]string{
+						"nvsentinel.dgxc.nvidia.com/managed": "true",
+					},
+				},
+				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-wrongval1"},
+			},
+			config: &Config{
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false",
+			},
+			eventNodeName: "skip-label-node-3",
+			expectError:   false,
+			validateResult: func(t *testing.T, event *pb.HealthEvent) {
+				assert.NotEqual(t, pb.ProcessingStrategy_STORE_ONLY, event.ProcessingStrategy,
+					"label with wrong value should not gate")
+			},
+		},
+		{
+			name: "empty skip label key and value disables gate",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "skip-label-node-4",
+					Labels: map[string]string{
+						"nvsentinel.dgxc.nvidia.com/managed": "false",
+					},
+				},
+				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-nogate1"},
+			},
+			config: &Config{
+				CacheSize: 100,
+				CacheTTL:  1 * time.Hour,
+			},
+			eventNodeName: "skip-label-node-4",
+			expectError:   false,
+			validateResult: func(t *testing.T, event *pb.HealthEvent) {
+				assert.NotEqual(t, pb.ProcessingStrategy_STORE_ONLY, event.ProcessingStrategy,
+					"empty skip key should disable gate")
+			},
+		},
+		{
+			name: "skip label gates healthy events too",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "skip-label-node-5",
+					Labels: map[string]string{
+						"nvsentinel.dgxc.nvidia.com/managed": "false",
+					},
+				},
+				Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-healthy1"},
+			},
+			config: &Config{
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false",
+			},
+			eventNodeName: "skip-label-node-5",
+			expectError:   false,
+			validateResult: func(t *testing.T, event *pb.HealthEvent) {
+				assert.Equal(t, pb.ProcessingStrategy_STORE_ONLY, event.ProcessingStrategy,
+					"healthy events should also be gated")
 			},
 		},
 		{
 			name: "multiple nodes enrichment",
 			nodes: []*corev1.Node{
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "multi-test-node-1",
-						Labels: map[string]string{
-							"topology.kubernetes.io/zone": "us-west-2a",
-						},
+					Name: "multi-test-node-1",
+					Labels: map[string]string{
+						"topology.kubernetes.io/zone": "us-west-2a",
 					},
 					Spec: corev1.NodeSpec{
 						ProviderID: "aws:///us-west-2a/i-test1",
 					},
 				},
 				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "multi-test-node-2",
-						Labels: map[string]string{
-							"topology.kubernetes.io/zone": "us-west-2b",
-						},
+					Name: "multi-test-node-2",
+					Labels: map[string]string{
+						"topology.kubernetes.io/zone": "us-west-2b",
 					},
 					Spec: corev1.NodeSpec{
 						ProviderID: "aws:///us-west-2b/i-test2",
@@ -329,7 +447,7 @@ func TestAugmentorTransform(t *testing.T) {
 					defer deleteTestNode(t, node.Name)
 				}
 
-				p := createTestAugmentor(tt.config)
+				p := createTestAugmentor(t, tt.config)
 				ctx := context.Background()
 
 				for _, node := range tt.nodes {
@@ -350,7 +468,7 @@ func TestAugmentorTransform(t *testing.T) {
 				defer deleteTestNode(t, tt.node.Name)
 			}
 
-			p := createTestAugmentor(tt.config)
+			p := createTestAugmentor(t, tt.config)
 
 			ctx := context.Background()
 			event := &pb.HealthEvent{
@@ -378,8 +496,8 @@ func TestAugmentorTransform(t *testing.T) {
 
 func TestProcessorCachingBehavior(t *testing.T) {
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "cache-test-node"},
-		Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-cache123"},
+		Name: "cache-test-node",
+		Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-cache123"},
 	}
 
 	createTestNode(t, node)
@@ -389,7 +507,7 @@ func TestProcessorCachingBehavior(t *testing.T) {
 		CacheTTL:  1 * time.Hour,
 	}
 
-	p := createTestAugmentor(config)
+	p := createTestAugmentor(t, config)
 	ctx := context.Background()
 
 	event1 := &pb.HealthEvent{
@@ -414,8 +532,8 @@ func TestProcessorCachingBehavior(t *testing.T) {
 
 func TestProcessorContextCancellation(t *testing.T) {
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "context-test-node"},
-		Spec:       corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-ctx123"},
+		Name: "context-test-node",
+		Spec: corev1.NodeSpec{ProviderID: "aws:///us-west-2a/i-ctx123"},
 	}
 
 	createTestNode(t, node)
@@ -426,7 +544,7 @@ func TestProcessorContextCancellation(t *testing.T) {
 		CacheTTL:  1 * time.Hour,
 	}
 
-	p := createTestAugmentor(config)
+	p := createTestAugmentor(t, config)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -437,18 +555,14 @@ func TestProcessorContextCancellation(t *testing.T) {
 	}
 
 	err := p.Transform(ctx, event)
-	if err != nil {
-		assert.Contains(t, err.Error(), "context")
-	}
+	assert.NoError(t, err, "lookup failure should fail open and return nil")
 }
 
 func TestProcessorConcurrentAugmentations(t *testing.T) {
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "concurrent-test-node",
-			Labels: map[string]string{
-				"test-label": "test-value",
-			},
+		Name: "concurrent-test-node",
+		Labels: map[string]string{
+			"test-label": "test-value",
 		},
 		Spec: corev1.NodeSpec{
 			ProviderID: "aws:///us-west-2a/i-concurrent123",
@@ -464,14 +578,12 @@ func TestProcessorConcurrentAugmentations(t *testing.T) {
 		AllowedLabels: []string{"test-label"},
 	}
 
-	p := createTestAugmentor(config)
+	p := createTestAugmentor(t, config)
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 10 {
+		wg.Go(func() {
 			event := &pb.HealthEvent{
 				NodeName: "concurrent-test-node",
 				Metadata: make(map[string]string),
@@ -480,7 +592,7 @@ func TestProcessorConcurrentAugmentations(t *testing.T) {
 			assert.NoError(t, err)
 			assert.Equal(t, "aws:///us-west-2a/i-concurrent123", event.Metadata["providerID"])
 			assert.Equal(t, "test-value", event.Metadata["test-label"])
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -512,6 +624,72 @@ func TestNewProcessorValidation(t *testing.T) {
 			},
 			clientset:   testClient,
 			expectError: false,
+		},
+		{
+			name: "skipNodeLabel missing equals sign is invalid",
+			config: &Config{
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed",
+			},
+			clientset:   testClient,
+			expectError: true,
+			errorMsg:    "skipNodeLabel must be in key=value format",
+		},
+		{
+			name: "skipNodeLabel with empty value is invalid",
+			config: &Config{
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=",
+			},
+			clientset:   testClient,
+			expectError: true,
+			errorMsg:    "skipNodeLabel must be in key=value format",
+		},
+		{
+			name: "skipNodeLabel with empty key is invalid",
+			config: &Config{
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "=false",
+			},
+			clientset:   testClient,
+			expectError: true,
+			errorMsg:    "skipNodeLabel must be in key=value format",
+		},
+		{
+			name: "skipNodeLabel with invalid Kubernetes label key is rejected",
+			config: &Config{
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "!!!invalid/key=false",
+			},
+			clientset:   testClient,
+			expectError: true,
+			errorMsg:    "not a valid Kubernetes label name",
+		},
+		{
+			name: "skipNodeLabel with invalid Kubernetes label value is rejected",
+			config: &Config{
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=.starts-with-dot",
+			},
+			clientset:   testClient,
+			expectError: true,
+			errorMsg:    "not a valid Kubernetes label value",
+		},
+		{
+			name: "skipNodeLabel with equals in value is rejected",
+			config: &Config{
+				CacheSize:     100,
+				CacheTTL:      1 * time.Hour,
+				SkipNodeLabel: "valid/key=val=ue",
+			},
+			clientset:   testClient,
+			expectError: true,
+			errorMsg:    "not a valid Kubernetes label value",
 		},
 	}
 

@@ -21,11 +21,13 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/nvidia/nvsentinel/store-client/pkg/client"
 	"github.com/nvidia/nvsentinel/store-client/pkg/config"
 	"github.com/nvidia/nvsentinel/store-client/pkg/datastore"
 	"github.com/nvidia/nvsentinel/store-client/pkg/factory"
+	"github.com/nvidia/nvsentinel/store-client/pkg/lagstate"
 )
 
 // AdaptedMongoStore adapts our existing MongoDB client to implement the new DataStore interface
@@ -151,7 +153,7 @@ func (a *AdaptedMongoStore) GetCollectionClient() client.CollectionClient {
 
 // CreateChangeStreamWatcher creates a change stream watcher
 func (a *AdaptedMongoStore) CreateChangeStreamWatcher(ctx context.Context, clientName string,
-	pipeline interface{}) (datastore.ChangeStreamWatcher, error) {
+	pipeline any) (datastore.ChangeStreamWatcher, error) {
 	// Use our existing factory to create a change stream watcher
 	// Note: Token configuration is loaded from environment variables by the factory
 	// via config.TokenConfigFromEnv(clientName). To customize token collection,
@@ -163,6 +165,8 @@ func (a *AdaptedMongoStore) CreateChangeStreamWatcher(ctx context.Context, clien
 		return nil, fmt.Errorf("failed to create change stream watcher: %w", err)
 	}
 
+	client.RegisterChangeStreamLag(a.config.MetricsRegisterer, clientName, watcher)
+
 	// Adapt the existing watcher to the new interface
 	return NewAdaptedChangeStreamWatcher(watcher), nil
 }
@@ -170,17 +174,17 @@ func (a *AdaptedMongoStore) CreateChangeStreamWatcher(ctx context.Context, clien
 // NewChangeStreamWatcher creates a new change stream watcher for the MongoDB datastore
 // This method makes MongoDB compatible with the datastore abstraction layer using a config map
 func (a *AdaptedMongoStore) NewChangeStreamWatcher(
-	ctx context.Context, config interface{},
+	ctx context.Context, config any,
 ) (datastore.ChangeStreamWatcher, error) {
 	// Convert the generic config to MongoDB-specific parameters
 	var clientName string
 
-	var pipeline interface{}
+	var pipeline any
 
 	// Handle different config types that might be passed
 
 	switch c := config.(type) {
-	case map[string]interface{}:
+	case map[string]any:
 		// Support generic config format from factory
 		if clientNameVal, ok := c["ClientName"].(string); ok {
 			clientName = clientNameVal
@@ -226,7 +230,7 @@ func (a *AdaptedChangeStreamWatcher) Events() <-chan datastore.EventWithToken {
 
 			for event := range a.watcher.Events() {
 				// Convert from our existing Event interface to the new EventWithToken
-				eventMap := make(map[string]interface{})
+				eventMap := make(map[string]any)
 
 				// Extract the event data
 				if err := event.UnmarshalDocument(&eventMap); err != nil {
@@ -234,10 +238,14 @@ func (a *AdaptedChangeStreamWatcher) Events() <-chan datastore.EventWithToken {
 					continue
 				}
 
-				// Create EventWithToken
+				// Create EventWithToken carrying the per-event resume token so
+				// consumers (e.g. fault-remediation's safeMarkProcessed) can
+				// checkpoint exactly at the event they processed. Events that
+				// carry no token (e.g. synthesized cold-start events) yield an
+				// empty slice, which consumers treat as "do not checkpoint".
 				eventWithToken := datastore.EventWithToken{
 					Event:       eventMap,
-					ResumeToken: []byte(""), // We'll need to extract the resume token properly
+					ResumeToken: event.GetResumeToken(),
 				}
 
 				a.eventChan <- eventWithToken
@@ -265,6 +273,19 @@ func (a *AdaptedChangeStreamWatcher) MarkProcessed(ctx context.Context, token []
 func (a *AdaptedChangeStreamWatcher) Close(ctx context.Context) error {
 	return a.watcher.Close(ctx)
 }
+
+// LagState delegates to the wrapped watcher so lag survives the adapter. The wrapped value is
+// an interface, so a watcher that does not report lag yields two zero times, which callers read
+// as "unknown" rather than as caught up.
+func (a *AdaptedChangeStreamWatcher) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	if provider, ok := a.watcher.(lagstate.Provider); ok {
+		return provider.LagState()
+	}
+
+	return time.Time{}, time.Time{}
+}
+
+var _ lagstate.Provider = (*AdaptedChangeStreamWatcher)(nil)
 
 // Unwrap returns the underlying client.ChangeStreamWatcher
 // This is needed for services that still use the old EventWatcher/EventProcessor

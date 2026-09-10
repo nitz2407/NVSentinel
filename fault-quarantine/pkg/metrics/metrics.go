@@ -21,6 +21,9 @@ import (
 
 // Status constants for metrics
 const (
+	// labelNode is the node-name label shared by the metrics below.
+	labelNode = "node"
+
 	StatusPassed = "passed"
 	StatusFailed = "failed"
 )
@@ -46,6 +49,20 @@ var (
 		},
 		[]string{"error_type"},
 	)
+	ColdStartEvents = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "fault_quarantine_cold_start_events_total",
+			Help: "Health events examined during fault-quarantine cold start.",
+		},
+		[]string{"result"},
+	)
+	ColdStartDuration = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "fault_quarantine_cold_start_duration_seconds",
+			Help:    "Time spent recovering unresolved events during fault-quarantine startup.",
+			Buckets: prometheus.ExponentialBuckets(0.1, 2, 18),
+		},
+	)
 
 	// Node Quarantine Metrics
 	TotalNodesQuarantined = promauto.NewCounterVec(
@@ -53,21 +70,21 @@ var (
 			Name: "fault_quarantine_nodes_quarantined_total",
 			Help: "Total number of nodes quarantined.",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 	TotalNodesUnquarantined = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_quarantine_nodes_unquarantined_total",
 			Help: "Total number of nodes unquarantined.",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 	TotalNodesManuallyUncordoned = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "fault_quarantine_nodes_manually_uncordoned_total",
 			Help: "Total number of nodes manually uncordoned.",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 
 	TotalNodesManuallyUntainted = promauto.NewCounterVec(
@@ -75,14 +92,14 @@ var (
 			Name: "fault_quarantine_nodes_manually_untainted_total",
 			Help: "Total number of nodes manually untainted",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 	CurrentQuarantinedNodes = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "fault_quarantine_current_quarantined_nodes",
 			Help: "Nodes which are currently quarantined and undergoing breakfix",
 		},
-		[]string{"node"},
+		[]string{labelNode},
 	)
 
 	// Taint and Cordon Metrics
@@ -99,6 +116,20 @@ var (
 			Help: "Total number of taints removed from nodes.",
 		},
 		[]string{"taint_key", "taint_effect"},
+	)
+	LabelsApplied = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "fault_quarantine_labels_applied_total",
+			Help: "Total number of quarantine labels applied to nodes.",
+		},
+		[]string{"label_key"},
+	)
+	LabelsRemoved = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "fault_quarantine_labels_removed_total",
+			Help: "Total number of quarantine labels removed from nodes.",
+		},
+		[]string{"label_key"},
 	)
 	CordonsApplied = promauto.NewCounter(
 		prometheus.CounterOpts{
@@ -182,6 +213,13 @@ var (
 			Help: "Utilization of the fault quarantine breaker.",
 		},
 	)
+	FaultQuarantineBreakerThresholdNodes = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "fault_quarantine_breaker_threshold_nodes",
+			Help: "Effective trip threshold of the fault quarantine breaker in nodes, by binding bound.",
+		},
+		[]string{"bound"},
+	)
 	FaultQuarantineGetTotalNodesDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "fault_quarantine_get_total_nodes_duration_seconds",
@@ -208,6 +246,13 @@ var (
 
 func SetFaultQuarantineBreakerUtilization(utilization float64) {
 	FaultQuarantineBreakerUtilization.Set(utilization)
+}
+
+// SetFaultQuarantineBreakerThresholdNodes reports the effective threshold and which bound
+// produced it. Reset first so a change of binding bound leaves no stale series behind.
+func SetFaultQuarantineBreakerThresholdNodes(threshold float64, bound string) {
+	FaultQuarantineBreakerThresholdNodes.Reset()
+	FaultQuarantineBreakerThresholdNodes.WithLabelValues(bound).Set(threshold)
 }
 
 func SetFaultQuarantineBreakerState(state string) {

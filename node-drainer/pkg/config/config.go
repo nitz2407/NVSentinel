@@ -66,6 +66,9 @@ type TomlConfig struct {
 	UserNamespaces         []UserNamespace   `toml:"userNamespaces"`
 	CustomDrain            CustomDrainConfig `toml:"customDrain"`
 	PartialDrainEnabled    bool              `toml:"partialDrainEnabled"`
+	// Registers node_drainer_partial_drains_total, which labels partial drains with the
+	// entity they targeted. Off by default because entity_value is a GPU UUID.
+	PartialDrainEntityMetricEnabled bool `toml:"partialDrainEntityMetricEnabled"`
 }
 
 func (d *Duration) UnmarshalTOML(text any) error {
@@ -236,7 +239,7 @@ func NewTokenConfig(envConfig *EnvConfig) client.TokenConfig {
 
 // NewQuarantinePipeline creates the database change stream pipeline for watching quarantine events
 // This uses the provider-specific pipeline builder for optimal performance with both MongoDB and PostgreSQL
-func NewQuarantinePipeline() interface{} {
+func NewQuarantinePipeline() any {
 	builder := client.GetPipelineBuilder()
 	return builder.BuildNodeQuarantineStatusPipeline()
 }

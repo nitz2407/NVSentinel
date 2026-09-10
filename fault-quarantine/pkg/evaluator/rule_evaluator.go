@@ -15,6 +15,7 @@
 package evaluator
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -23,10 +24,13 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	corelisters "k8s.io/client-go/listers/core/v1"
 
 	"github.com/nvidia/nvsentinel/data-models/pkg/protos"
+	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/coldstart"
 	"github.com/nvidia/nvsentinel/fault-quarantine/pkg/common"
 )
 
@@ -36,7 +40,7 @@ const (
 )
 
 type RuleEvaluator interface {
-	Evaluate(healthEvent *protos.HealthEvent) (common.RuleEvaluationResult, error)
+	Evaluate(context.Context, *protos.HealthEvent) (common.RuleEvaluationResult, error)
 }
 
 type HealthEventRuleEvaluator struct {
@@ -48,6 +52,11 @@ type NodeRuleEvaluator struct {
 	expression string
 	program    cel.Program
 	nodeLister corelisters.NodeLister
+	nodeReader nodeReader
+}
+
+type nodeReader interface {
+	GetNodeDirect(context.Context, string) (*corev1.Node, error)
 }
 
 // NewHealthEventRuleEvaluator creates a new HealthEventRuleEvaluator with dynamic declarations
@@ -85,22 +94,26 @@ func NewHealthEventRuleEvaluator(expression string) (*HealthEventRuleEvaluator, 
 
 // evaluates the CEL expression against the provided HealthEvent
 func (he *HealthEventRuleEvaluator) Evaluate(
+	_ context.Context,
 	event *protos.HealthEvent) (common.RuleEvaluationResult, error) {
 	obj, err := RoundTrip(event)
 	if err != nil {
-		return common.RuleEvaluationFailed, fmt.Errorf("error roundtripping event: %w", err)
+		return common.RuleEvaluationFailed, coldstart.PermanentError(
+			fmt.Errorf("error roundtripping event: %w", err))
 	}
 
-	out, _, err := he.program.Eval(map[string]interface{}{
+	out, _, err := he.program.Eval(map[string]any{
 		eventObjKey: obj,
 	})
 	if err != nil {
-		return common.RuleEvaluationFailed, fmt.Errorf("failed to evaluate expression: %w", err)
+		return common.RuleEvaluationFailed, coldstart.PermanentError(
+			fmt.Errorf("failed to evaluate expression: %w", err))
 	}
 
 	result, ok := out.Value().(bool)
 	if !ok {
-		return common.RuleEvaluationFailed, fmt.Errorf("expression did not return a boolean: %v", out)
+		return common.RuleEvaluationFailed, coldstart.PermanentError(
+			fmt.Errorf("expression did not return a boolean: %v", out))
 	}
 
 	if result {
@@ -112,9 +125,17 @@ func (he *HealthEventRuleEvaluator) Evaluate(
 
 // NewNodeRuleEvaluator creates a new NodeRuleEvaluator
 func NewNodeRuleEvaluator(expression string, nodeLister corelisters.NodeLister) (*NodeRuleEvaluator, error) {
+	return newNodeRuleEvaluator(expression, nodeLister, nil)
+}
+
+func newNodeRuleEvaluator(
+	expression string,
+	nodeLister corelisters.NodeLister,
+	nodeReader nodeReader,
+) (*NodeRuleEvaluator, error) {
 	slog.Info("Creating NodeRuleEvaluator", "expression", expression)
 
-	// Create a CEL environment with declarations for node.labels and node.annotations
+	// Create a CEL environment for the cached Node metadata and spec.
 	env, err := cel.NewEnv(
 		cel.Variable(nodeObjKey, cel.AnyType),
 		ext.Strings(),
@@ -143,26 +164,33 @@ func NewNodeRuleEvaluator(expression string, nodeLister corelisters.NodeLister) 
 		expression: expression,
 		program:    program,
 		nodeLister: nodeLister,
+		nodeReader: nodeReader,
 	}, nil
 }
 
-// Evaluate the CEL expression against node metadata (labels and annotations)
-func (nm *NodeRuleEvaluator) Evaluate(event *protos.HealthEvent) (common.RuleEvaluationResult, error) {
+// Evaluate the CEL expression against node metadata and spec. Recovery reads
+// directly from the API server; live processing uses the informer cache.
+func (nm *NodeRuleEvaluator) Evaluate(
+	ctx context.Context,
+	event *protos.HealthEvent,
+) (common.RuleEvaluationResult, error) {
 	slog.Info("Evaluating NodeRuleEvaluator for node", "node", event.NodeName)
 
-	nodeInfo, err := nm.getNode(event.NodeName)
+	nodeInfo, err := nm.getNode(ctx, event.NodeName)
 	if err != nil {
 		return common.RuleEvaluationFailed, fmt.Errorf("failed to get node metadata: %w", err)
 	}
 
 	out, _, err := nm.program.Eval(nodeInfo)
 	if err != nil {
-		return common.RuleEvaluationFailed, fmt.Errorf("failed to evaluate expression: %w", err)
+		return common.RuleEvaluationFailed, coldstart.PermanentError(
+			fmt.Errorf("failed to evaluate expression: %w", err))
 	}
 
 	result, ok := out.Value().(bool)
 	if !ok {
-		return common.RuleEvaluationFailed, fmt.Errorf("expression did not return a boolean: %v", out)
+		return common.RuleEvaluationFailed, coldstart.PermanentError(
+			fmt.Errorf("expression did not return a boolean: %v", out))
 	}
 
 	if result {
@@ -172,11 +200,30 @@ func (nm *NodeRuleEvaluator) Evaluate(event *protos.HealthEvent) (common.RuleEva
 	return common.RuleEvaluationFailed, nil
 }
 
-// getNode gets both labels and annotations from a node using the informer lister
-func (nm *NodeRuleEvaluator) getNode(nodeName string) (map[string]interface{}, error) {
-	node, err := nm.nodeLister.Get(nodeName)
+// getNode bypasses the informer during recovery so rules see current node state.
+// A node deleted before replay is a permanent event error.
+func (nm *NodeRuleEvaluator) getNode(ctx context.Context, nodeName string) (map[string]any, error) {
+	var (
+		node *corev1.Node
+		err  error
+	)
+
+	isRecoveryRead := coldstart.IsRecoveryContext(ctx) && nm.nodeReader != nil
+	if isRecoveryRead {
+		node, err = coldstart.GetRecoveryNode(ctx, nodeName, func() (*corev1.Node, error) {
+			return nm.nodeReader.GetNodeDirect(ctx, nodeName)
+		})
+	} else {
+		node, err = nm.nodeLister.Get(nodeName)
+	}
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to get node %s from informer cache: %w", nodeName, err)
+		wrappedErr := fmt.Errorf("failed to get node %s: %w", nodeName, err)
+		if isRecoveryRead && apierrors.IsNotFound(err) {
+			return nil, coldstart.PermanentError(wrappedErr)
+		}
+
+		return nil, wrappedErr
 	}
 
 	unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(node)
@@ -184,7 +231,7 @@ func (nm *NodeRuleEvaluator) getNode(nodeName string) (map[string]interface{}, e
 		return nil, fmt.Errorf("failed to convert node %s to unstructured: %w", nodeName, err)
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"node": unstructuredObj,
 	}, nil
 }
@@ -212,7 +259,7 @@ var primitiveKinds = map[reflect.Kind]bool{
 // recursively converts any Go value into a JSON-compatible structure
 // with all fields present. Structs become map[string]interface{}, slices become []interface{},
 // maps become map[string]interface{}. Zero-values or nil pointers appear as null in the final map
-func structToInterface(v reflect.Value) interface{} {
+func structToInterface(v reflect.Value) any {
 	if !v.IsValid() {
 		return nil
 	}
@@ -226,9 +273,9 @@ func structToInterface(v reflect.Value) interface{} {
 	return handleComplexType(v, kind)
 }
 
-func handleComplexType(v reflect.Value, kind reflect.Kind) interface{} {
+func handleComplexType(v reflect.Value, kind reflect.Kind) any {
 	switch kind {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		return handlePointer(v)
 	case reflect.Struct:
 		return handleStruct(v)
@@ -252,7 +299,7 @@ func handleComplexType(v reflect.Value, kind reflect.Kind) interface{} {
 	}
 }
 
-func handlePointer(v reflect.Value) interface{} {
+func handlePointer(v reflect.Value) any {
 	if v.IsNil() {
 		return nil
 	}
@@ -260,8 +307,8 @@ func handlePointer(v reflect.Value) interface{} {
 	return structToInterface(v.Elem())
 }
 
-func handleStruct(v reflect.Value) interface{} {
-	result := make(map[string]interface{})
+func handleStruct(v reflect.Value) any {
+	result := make(map[string]any)
 	typ := v.Type()
 
 	for i := 0; i < typ.NumField(); i++ {
@@ -297,12 +344,12 @@ func extractJSONFieldName(jsonTag, fieldName string) string {
 	return name
 }
 
-func handleSliceOrArray(v reflect.Value) interface{} {
+func handleSliceOrArray(v reflect.Value) any {
 	if v.Kind() == reflect.Slice && v.IsNil() {
 		return nil
 	}
 
-	sliceResult := make([]interface{}, v.Len())
+	sliceResult := make([]any, v.Len())
 
 	for i := 0; i < v.Len(); i++ {
 		sliceResult[i] = structToInterface(v.Index(i))
@@ -311,12 +358,12 @@ func handleSliceOrArray(v reflect.Value) interface{} {
 	return sliceResult
 }
 
-func handleMap(v reflect.Value) interface{} {
+func handleMap(v reflect.Value) any {
 	if v.IsNil() {
 		return nil
 	}
 
-	mapResult := make(map[string]interface{})
+	mapResult := make(map[string]any)
 
 	for _, key := range v.MapKeys() {
 		mapResult[key.String()] = structToInterface(v.MapIndex(key))
@@ -325,7 +372,7 @@ func handleMap(v reflect.Value) interface{} {
 	return mapResult
 }
 
-func handleInterface(v reflect.Value) interface{} {
+func handleInterface(v reflect.Value) any {
 	if v.IsNil() {
 		return nil
 	}
@@ -334,7 +381,7 @@ func handleInterface(v reflect.Value) interface{} {
 }
 
 // uses structToInterface for recursive processing
-func RoundTrip(v interface{}) (map[string]interface{}, error) {
+func RoundTrip(v any) (map[string]any, error) {
 	val := reflect.ValueOf(v)
 	obj := structToInterface(val)
 
@@ -343,12 +390,12 @@ func RoundTrip(v interface{}) (map[string]interface{}, error) {
 		return nil, fmt.Errorf("failed to marshal intermediate object: %w", err)
 	}
 
-	var j interface{}
+	var j any
 	if err := json.Unmarshal(b, &j); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal JSON back to map: %w", err)
 	}
 
-	m, ok := j.(map[string]interface{})
+	m, ok := j.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("expected JSON object after roundtrip")
 	}

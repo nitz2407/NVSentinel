@@ -20,9 +20,11 @@ metadata:
     {{- include "nic-health-monitor.labels" . | nindent 4 }}
 spec:
   updateStrategy:
-    type: RollingUpdate
+    type: {{ .Values.updateStrategy.type }}
+    {{- if eq .Values.updateStrategy.type "RollingUpdate" }}
     rollingUpdate:
-      maxUnavailable: 5%
+      maxUnavailable: {{ .Values.updateStrategy.rollingUpdate.maxUnavailable }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "nic-health-monitor.selectorLabels" . | nindent 6 }}
@@ -39,12 +41,49 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      containers:
-        - name: nic-health-monitor
+      initContainers:
+        # The state hostPath is created root-owned by the kubelet
+        # (DirectoryOrCreate), and Kubernetes does not apply fsGroup to
+        # hostPath volumes — so ownership is handed to the monitor's
+        # non-root UID here. Root with every capability dropped except
+        # the CHOWN this container exists to perform.
+        - name: fix-state-permissions
+          image: "{{ .Values.global.initContainerImage.repository }}:{{ .Values.global.initContainerImage.tag }}"
+          imagePullPolicy: {{ .Values.global.initContainerImage.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - chown -R 65532:65532 /var/run/nic_health_monitor
           securityContext:
             runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
             capabilities:
-              add: ["SYS_ADMIN"]
+              drop: ["ALL"]
+              add: ["CHOWN"]
+          volumeMounts:
+            - name: nic-state-vol
+              mountPath: /var/run/nic_health_monitor
+      containers:
+        - name: nic-health-monitor
+          # The monitor only reads sysfs/procfs (mounted read-only),
+          # writes its state file into a hostPath volume (ownership
+          # fixed by the init container above), and dials the
+          # platform-connector Unix socket (chmod 0666 by
+          # platform-connectors). No capability and no root required;
+          # 65532 is the ko/chainguard-static "nonroot" user.
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default ((.Values.global).image).tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
@@ -64,6 +103,11 @@ spec:
             - "/var/run/nic_health_monitor/state.json"
             - "--boot-id-path"
             - "/nvsentinel/proc/sys/kernel/random/boot_id"
+            {{- if include "nic-health-monitor.pcAuth.enabled" . }}
+            {{- /* Node-local monitor: it reports only its own node, and the token
+                 lets platform-connector confirm that placement. */}}
+            - "--platform-connector-token-path={{ include "nic-health-monitor.pcAuth.tokenPath" . }}"
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           ports:
@@ -110,6 +154,9 @@ spec:
             - name: proc-vol
               mountPath: /nvsentinel/proc
               readOnly: true
+            {{- if include "nic-health-monitor.pcAuth.enabled" . }}
+            {{- include "nic-health-monitor.pcAuth.volumeMount" . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: var-run-vol
           hostPath:
@@ -134,6 +181,9 @@ spec:
           hostPath:
             path: /proc
             type: Directory
+        {{- if include "nic-health-monitor.pcAuth.enabled" . }}
+        {{- include "nic-health-monitor.pcAuth.volume" . | nindent 8 }}
+        {{- end }}
       nodeSelector:
         nvsentinel.dgxc.nvidia.com/driver.installed: "true"
         {{- with (.Values.global.nodeSelector | default .Values.nodeSelector) }}
@@ -146,4 +196,7 @@ spec:
       {{- with (.Values.global.tolerations | default .Values.tolerations) }}
       tolerations:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.global.priorityClassName | default .Values.priorityClassName) }}
+      priorityClassName: {{ . | quote }}
       {{- end }}

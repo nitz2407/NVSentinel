@@ -24,7 +24,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
@@ -71,7 +70,7 @@ func NewClient(ctx context.Context) (*Client, error) {
 }
 
 // SendRebootSignal sends a reboot signal to Azure for the node.
-func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node) (model.ResetSignalRequestRef, error) {
+func (c *Client) SendRebootSignal(ctx context.Context, node corev1.Node, _ string) (model.ResetSignalRequestRef, error) {
 	// Get the Azure client
 	vmssClient, err := c.getVMSSClient(ctx)
 	if err != nil {
@@ -206,9 +205,7 @@ func createDefaultVMSSClient(ctx context.Context) (VMSSClientInterface, error) {
 	transport := auditlogger.NewAuditingRoundTripper(http.DefaultTransport)
 
 	vmssClient, err := armcompute.NewVirtualMachineScaleSetVMsClient(subscriptionID, cred, &arm.ClientOptions{
-		ClientOptions: azcore.ClientOptions{
-			Transport: &http.Client{Transport: transport},
-		},
+		Transport: &http.Client{Transport: transport},
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to create Azure client", "error", err)

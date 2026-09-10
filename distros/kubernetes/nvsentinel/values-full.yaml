@@ -38,6 +38,37 @@
 # These can be overridden per-module in their individual sections.
 ################################################################################
 global:
+  # ---------------------------------------------------------------------------
+  # Platform-connector authentication.
+  #
+  # Publishers present a projected ServiceAccount token; platform-connector
+  # verifies it with TokenReview and binds each event to the node the caller
+  # actually runs on. See docs/platform-connectors.md.
+  # ---------------------------------------------------------------------------
+  platformConnectorAuth:
+    # Must be a real boolean. A quoted "false" is refused rather than read as
+    # true. Disabling lets any caller that reaches the socket name any node.
+    enabled: true
+    # "enforce" (default) rejects a violating request. "audit" records the
+    # same violation counters by reason but lets the request through.
+    mode: enforce
+    # When true, a validator that never reached a verdict (API server
+    # unreachable or timed out) falls back to node-local scope instead of
+    # rejecting the request. A rejected credential is always rejected.
+    failOpenOnUnavailable: false
+    # Audience the tokens are minted for and TokenReview must echo back.
+    audience: "platform-connector.nvsentinel.nvidia.com"
+    # Token lifetime. Kubernetes requires 600 <= x <= 2^32, and the chart
+    # enforces that range and whole-number values at render time.
+    tokenExpirationSeconds: 3600
+    # Directory each publisher mounts the token at.
+    tokenMountPath: "/var/run/secrets/nvsentinel/platform-connector"
+    # ADDITIONAL callers permitted to report about nodes other than their own.
+    # The bundled cluster-scoped monitors are derived from the release namespace
+    # for whichever are enabled, so they do not belong here — list only
+    # publishers this chart does not ship. Absent means none; null is refused.
+    crossNodeServiceAccounts: []
+
   # Docker image configuration
   image:
     # Image tag to use for all NVSentinel containers
@@ -49,6 +80,14 @@ global:
   # All components expose health and metrics endpoints on this port unless using ctrl-runtime mgmt
   # Prometheus should scrape these endpoints to monitor NVSentinel
   metricsPort: 2112
+
+  # Default Kubernetes API client rate limits for core controllers
+  # Individual fault-quarantine, node-drainer, labeler, and preflight values
+  # override these defaults when configured.
+  # Positive qps values throttle requests; a negative value disables
+  # client-side throttling. Zero qps or burst uses the client-go default.
+  qps: 5
+  burst: 10
 
   # Health Check port for healthz and readyz scraping
   # This port is only used when using ctrl-runtime
@@ -228,6 +267,13 @@ global:
   preflight:
     enabled: false
 
+  # NVCRE Certification Monitor - publishes health events for nodes that failed
+  # an NVCRE Certification, one per (node, variant, reason)
+  # Requires: cluster-readiness-engine installed (Certification CRD present),
+  # fault-quarantine enabled for the taint to be applied
+  nvcreCertificationMonitor:
+    enabled: false
+
 ################################################################################
 # PLATFORM CONNECTOR CONFIGURATION
 #
@@ -308,7 +354,7 @@ platformConnector:
   pipeline:
     # Metadata augmentor - enriches events with node labels and provider info
     - name: MetadataAugmentor
-      enabled: false  # Disabled by default
+      enabled: true
       config: /etc/config/metadata.toml
     
     # Property overrides - uses CEL expressions to override event properties
@@ -326,7 +372,12 @@ platformConnector:
       cacheSize: 50
       # Cache TTL in seconds (supports duration strings like "1h", "30m")
       # How long to cache node metadata before refreshing
-      cacheTTLSeconds: 3600
+      cacheTTLSeconds: 60
+      # Managed-label gate: when a node carries this label, its events are set
+      # to STORE_ONLY (stored for audit but no remediation or Kubernetes side
+      # effects). Format is "key=value". Leave empty to disable.
+      # Must match commons/pkg/managed.ManagedLabelKey and ManagedLabelValueFalse.
+      skipNodeLabel: "nvsentinel.dgxc.nvidia.com/managed=false"
       # Node labels to include in health event metadata
       # Only these labels will be copied from nodes to events
       # This allows CEL rules to match on topology, instance type, etc.
@@ -354,10 +405,10 @@ platformConnector:
         - "cloud.google.com/gce-topology-subblock"
         # Topograph-applied topology labels (present when Topograph is deployed in the cluster;
         # see https://github.com/NVIDIA/topograph/blob/main/docs/reference/node-labels.md)
-        - "network.topology.nvidia.com/accelerator"
-        - "network.topology.nvidia.com/leaf"
-        - "network.topology.nvidia.com/spine"
-        - "network.topology.nvidia.com/core"
+        - "accelerator.topograph.run/domain"
+        - "fabric.topograph.run/tier-0"
+        - "fabric.topograph.run/tier-1"
+        - "fabric.topograph.run/tier-2"
 
     # Property overrides configuration
     # Uses CEL expressions to modify health event properties
@@ -404,6 +455,11 @@ fault-quarantine:
   # error: Error conditions only
   logLevel: info
 
+  # Optional Kubernetes API client rate-limit overrides.
+  # Omit these values to inherit global.qps and global.burst.
+  # qps: 5
+  # burst: 10
+
   # Container image configuration
   image:
     repository: ghcr.io/nvidia/nvsentinel/fault-quarantine
@@ -447,7 +503,15 @@ fault-quarantine:
     # Example: 50 means if 50% or more GPU nodes are already cordoned,
     # no new quarantines will be allowed
     # Range: 1-100
+    # Set to 0 to bound by maxNodes alone.
     percentage: 50
+    # Absolute ceiling on cordoned nodes within the window, independent of cluster size.
+    # 0 disables this bound. When both are set the lower one binds, so percentage: 5 with
+    # maxNodes: 10 means 5% but never more than 10 nodes. Prefer it when the blast radius
+    # you care about is a number of machines rather than a share of the fleet, since a
+    # percentage silently changes meaning as the fleet grows. At least one of percentage
+    # and maxNodes must be positive.
+    maxNodes: 0
     # Cooldown period after circuit breaker trips
     # Circuit breaker waits this long before attempting to close again
     # Even if node count drops below threshold during cooldown, it stays open
@@ -566,6 +630,28 @@ fault-quarantine:
       cordon:
         shouldCordon: true
 
+    # Example rule 6: Taint nodes that failed an NVCRE certification
+    # NVCRE does not run on cordoned nodes (it reports them as
+    # HardwareFailureDetected and skips them), so a cordoned node could never be
+    # re-certified. Taint instead: ordinary workloads stay off the node while
+    # certification pods tolerate the taint and can rerun.
+    - enabled: true
+      version: "1"
+      name: "NVCRE certification monitor failure ruleset"
+      match:
+        all:
+          - kind: "HealthEvent"
+            expression: "event.agent == 'nvcre-certification-monitor' && event.checkName == 'NVCRECertFailed' && event.isFatal == true"
+          - kind: "Node"
+            expression: |
+              !('k8saas.nvidia.com/ManagedByNVSentinel' in node.metadata.labels && node.metadata.labels['k8saas.nvidia.com/ManagedByNVSentinel'] == "false")
+      cordon:
+        shouldCordon: false
+      taint:
+        key: "nvsentinel.dgxc.nvidia.com/nvcre-cert-failed"
+        value: "true"
+        effect: "NoSchedule"
+
 ################################################################################
 # NODE-DRAINER MODULE CONFIGURATION
 #
@@ -581,6 +667,11 @@ node-drainer:
 
   # Log level for debugging and monitoring
   logLevel: info
+
+  # Optional Kubernetes API client rate-limit overrides.
+  # Omit these values to inherit global.qps and global.burst.
+  # qps: 5
+  # burst: 10
 
   # Container image configuration
   image:
@@ -853,6 +944,34 @@ fault-remediation:
     enableAwsSosCollection: false
 
 ################################################################################
+# KUBERNETES-OBJECT-MONITOR CONFIGURATION
+#
+# Watches configured Kubernetes resources and generates health events when
+# policy predicates identify unhealthy objects.
+################################################################################
+kubernetes-object-monitor:
+  # Maximum time to wait for informer caches to synchronize on startup.
+  # Large clusters may require a longer timeout while caches are populated.
+  cacheSyncTimeout: 10m
+
+################################################################################
+# NVCRE-CERTIFICATION-MONITOR CONFIGURATION
+#
+# Watches NVIDIA Cluster Readiness Engine (NVCRE) Certification CRs and
+# publishes one health event per (node, variant, reason) failure. Requires the
+# cluster-readiness-engine operator and its Certification CRD to be installed.
+################################################################################
+nvcre-certification-monitor:
+  # How often a full reconciliation of all Certification CRs runs.
+  resyncInterval: 15m
+
+  # CEL policies evaluated against every (category, failedNode) entry of a
+  # failed Certification; a true result publishes an unhealthy event.
+  policies:
+    - name: certification-failures
+      match: "(failedNode.reason == 'ThresholdViolation') || (failedNode.reason == 'WorkloadFailed')"
+
+################################################################################
 # GPU-HEALTH-MONITOR CONFIGURATION
 #
 # Monitors GPU hardware health using NVIDIA DCGM (Data Center GPU Manager).
@@ -886,6 +1005,37 @@ gpu-health-monitor:
       # Default DCGM port is 5555
       port: 5555
 
+    # DCGM poll interval (also drives /healthz staleness and the default
+    # probe deadline via pollIntervalSeconds * 3).
+    pollIntervalSeconds: 15
+
+    # Seconds a single DCGM probe may run before the watchdog reports
+    # GpuDcgmUnresponsive (RESTART_BM) in embedded mode. A hung probe never
+    # errors and never times out; without this the poll loop blocks and the hang
+    # is never published. When null/omitted, defaults to pollIntervalSeconds * 3.
+    # Set to 0 to disable (0 is not treated as unset).
+    probeDeadlineSeconds: null
+
+    # Dry-run for the embedded-mode GpuDcgmUnresponsive event. While true the
+    # check is persisted/exported but kept out of remediation. Remote modes emit
+    # GpuDcgmConnectivityFailure with CONTACT_SUPPORT regardless of this setting.
+    # Set to false only after validating embedded-mode detections on your fleet.
+    probeStoreOnly: true
+
+  # DCGM connection lifecycle configuration
+  dcgmConnectivity:
+    # Optional startup gate for remote DCGM modes. The init container waits
+    # indefinitely until a functional DCGM API request succeeds. It is disabled
+    # by default for backward compatibility and cannot be used in embedded-mode.
+    startupGate:
+      # Enables the startup gate. This value must be a YAML boolean.
+      enabled: false
+      # Seconds to wait between failed readiness attempts.
+      retryIntervalSeconds: 5
+      # Maximum seconds allowed for one DCGM connection and discovery attempt.
+      # A timed-out attempt is terminated before the next retry begins.
+      connectTimeoutSeconds: 10
+
   # Use host networking for GPU health monitor pods
   # Required when:
   # - DCGM is running as hostProcess (not as service)
@@ -901,8 +1051,29 @@ gpu-health-monitor:
   dcgmHealthCheck:
     # List of error code names to suppress (native DCGM codes like
     # DCGM_FR_CLOCK_THROTTLE_POWER, or custom field-monitor codes like
-    # GPU_TEMP_HW_SLOWDOWN_VIOLATION). Empty by default (no suppression).
-    suppressedErrorCodes: []
+    # GPU_TEMP_HW_SLOWDOWN_VIOLATION). Defaults to POWER/THERMAL watch
+    # throttling, under both its canonical and deprecated alias names.
+    # Set to [] to report throttling too.
+    suppressedErrorCodes:
+      - DCGM_FR_CLOCK_THROTTLE_POWER
+      - DCGM_FR_CLOCKS_EVENT_POWER
+      - DCGM_FR_CLOCK_THROTTLE_THERMAL
+      - DCGM_FR_CLOCKS_EVENT_THERMAL
+
+    # Consecutive GpuDcgmConnectivityFailure cycles after which the recommended
+    # action escalates from CONTACT_SUPPORT to RESTART_BM. Enable only for a
+    # node-local endpoint where repeated unreachability is known to indicate a
+    # driver wedge; shared-service and network failures are not fixed by reboot.
+    # 0 disables escalation.
+    connectivityFailureEscalationThreshold: 0
+
+    # Consecutive polls an incident must persist, per error code and GPU, before it
+    # is published. Codes left out publish on first observation. Motivating case:
+    # SXM DCGM_FR_NVLINK_DOWN is briefly asserted after every boot while links train.
+    # Example:
+    #   minConsecutivePolls:
+    #     DCGM_FR_NVLINK_DOWN: 2
+    minConsecutivePolls: {}
 
   # Additional volume mounts for GPU health monitor
   # Use when monitor needs access to host files
@@ -932,6 +1103,20 @@ gpu-health-monitor:
       cpu: 100m
       memory: 128Mi
 
+  # Keep enough liveness budget after /healthz becomes stale for bounded
+  # critical-event delivery to complete.
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
   # Scheduling configuration
   nodeSelector: {}
   affinity: {}
@@ -951,6 +1136,11 @@ labeler:
 
   # Log level for debugging
   logLevel: info
+
+  # Optional Kubernetes API client rate-limit overrides.
+  # Omit these values to inherit global.qps and global.burst.
+  # qps: 5
+  # burst: 10
 
   # Container image configuration
   image:
@@ -1051,7 +1241,7 @@ labeler:
 # Watches maintenance CRDs created by fault-remediation and performs the
 # actual infrastructure operations.
 #
-# Supports: AWS, GCP, Azure, OCI, kind (for testing), kwok (for testing)
+# Supports: AWS, GCP, Azure, OCI, generic, label, kind (for testing), kwok (for testing)
 ################################################################################
 janitor:
   # Number of pod replicas (recommend 1 for consistency)
@@ -1218,6 +1408,9 @@ janitor:
       
       # Comma-separated image pull secret names for the reboot Job
       imagePullSecrets: ""
+      
+      # Write a reboot attribution message to the node's syslog before rebooting
+      writeSyslog: false
     
     # AWS-specific configuration (only needed when provider=aws)
     aws:
@@ -1415,12 +1608,30 @@ janitor:
 # Required by: fault-quarantine, node-drainer, fault-remediation
 ################################################################################
 mongodb-store:
+  # TTL expireAfterSeconds. Default 2592000 (30d); production often 604800 (7d).
+  # In-cluster and external Mongo. Job name includes this value so helm/argo rerun collMod.
+  collectionExpirySeconds: 2592000
+
+  # Oplog size in MiB (MongoDB minimum 990). Set this from the sizing
+  # guidance in docs/configuration/mongodb-store.md; the chart does not
+  # derive it from the PVC. In-cluster init Job only.
+  # Never shrinks a live oplog unless oplogAllowShrink is true.
+  # Must match mongodb.extraFlags --oplogSize= (Bitnami) and, when Percona
+  # is on, psmdb-db.replsets.rs0.configuration replication.oplogSizeMB.
+  oplogSizeMB: 990
+  oplogAllowShrink: false
+
   # MongoDB replica configuration
   mongodb:
+    # Bitnami PVC size (default 8Gi). Percona: psmdb-db.replsets.rs0.volumeSpec.pvc.resources.requests.storage
+    # Existing Bound PVCs do not grow on upgrade.
+    persistence:
+      size: "8Gi"
+
     # Number of MongoDB replicas
     # Recommend 1 for development, 3 for production
     replicaCount: 1
-    
+
     # Node selector for MongoDB pods
     # Example - run on control plane:
     # nodeSelector:
@@ -1626,6 +1837,21 @@ event-exporter:
       # Recommended: 2.0 for standard exponential backoff
       backoffMultiplier: 2.0
 
+    # Selects which events reach the sink. Empty exports everything, which is the
+    # default and matches previous behaviour.
+    filter:
+      # CEL over the health event, and must evaluate to a boolean. Compiled at
+      # startup, so a syntax error or a non-boolean expression stops the exporter
+      # rather than silently dropping events. Write a comparison, not a bare field:
+      # `event.isFatal == true`, not `event.isFatal`.
+      #
+      # Note errorCode is a list, so match it with membership:
+      #   expression: "event.recommendedAction != 'NONE' && !('45' in event.errorCode)"
+      #
+      # Filtered events still advance the resume token, so the stream keeps progressing.
+      # See docs/configuration/event-exporter.md for the available fields.
+      expression: ""
+
 ################################################################################
 # PREFLIGHT CONFIGURATION
 #
@@ -1638,6 +1864,11 @@ event-exporter:
 ################################################################################
 preflight:
   replicaCount: 1
+
+  # Optional Kubernetes API client rate-limit overrides.
+  # Omit these values to inherit global.qps and global.burst.
+  # qps: 5
+  # burst: 10
 
   # Container image configuration for the webhook server
   image:
@@ -1967,3 +2198,16 @@ preflight:
 ################################################################################
 # END OF CONFIGURATION
 ################################################################################
+
+janitor-provider:
+  auth:
+    audience: "nvsentinel-csp-provider"
+    allowedUsernames: []
+  janitorServiceAccountName: "janitor"
+  csp:
+    # Set provider to "label" on Forge/NKE (or any platform that remediates from node labels).
+    # After reboot completion, the external controller MUST remove the reboot label.
+    # provider: "label"
+    label:
+      rebootKey: "nke.nvidia.com/reboot=requested-by-nvsentinel"
+      terminateKey: "nke.nvidia.com/terminate=requested-by-nvsentinel"

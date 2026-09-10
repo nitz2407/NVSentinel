@@ -15,6 +15,7 @@
 package evaluator
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -31,7 +32,10 @@ type MockRuleEvaluator struct {
 	err    error
 }
 
-func (m *MockRuleEvaluator) Evaluate(healthEvent *protos.HealthEvent) (common.RuleEvaluationResult, error) {
+func (m *MockRuleEvaluator) Evaluate(
+	_ context.Context,
+	healthEvent *protos.HealthEvent,
+) (common.RuleEvaluationResult, error) {
 	if m.result {
 		return common.RuleEvaluationSuccess, m.err
 	}
@@ -102,14 +106,12 @@ func TestAnyRuleSetEvaluator_Evaluate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			evaluator := &AnyRuleSetEvaluator{
 				evaluators: tt.evaluators,
-				baseRuleSetEvaluator: baseRuleSetEvaluator{
-					Name:     "TestAnyRuleSet",
-					Version:  "1",
-					Priority: 1,
-				},
+				Name:       "TestAnyRuleSet",
+				Version:    "1",
+				Priority:   1,
 			}
 
-			result, err := evaluator.Evaluate(tt.event)
+			result, err := evaluator.Evaluate(context.Background(), tt.event)
 			if result != tt.expected {
 				t.Errorf("Expected result %v, got %v", tt.expected, result)
 			}
@@ -191,14 +193,12 @@ func TestAllRuleSetEvaluator_Evaluate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			evaluator := &AllRuleSetEvaluator{
 				evaluators: tt.evaluators,
-				baseRuleSetEvaluator: baseRuleSetEvaluator{
-					Name:     "TestAllRuleSet",
-					Version:  "1",
-					Priority: 1,
-				},
+				Name:       "TestAllRuleSet",
+				Version:    "1",
+				Priority:   1,
 			}
 
-			result, err := evaluator.Evaluate(tt.event)
+			result, err := evaluator.Evaluate(context.Background(), tt.event)
 			if result != tt.expected {
 				t.Errorf("Expected result %v, got %v", tt.expected, result)
 			}

@@ -25,7 +25,7 @@ Health monitors (GPU, NVSwitch, syslog, CSP) publish events via gRPC over Unix D
 kubectl get pods -n nvsentinel -l app.kubernetes.io/name=gpu-health-monitor -o wide
 
 # Check health monitor logs for UDS errors
-kubectl logs -n nvsentinel <HEALTH_MONITOR_POD>
+kubectl logs -n nvsentinel {HEALTH_MONITOR_POD}
 ```
 
 Look for:
@@ -37,10 +37,10 @@ Look for:
 
 ```bash
 # Find platform-connector pod on the same node
-kubectl get pods -n nvsentinel -l app.kubernetes.io/name=nvsentinel -o wide | grep <NODE_NAME>
+kubectl get pods -n nvsentinel -l app.kubernetes.io/name=nvsentinel -o wide | grep {NODE_NAME}
 
 # Check platform-connector logs
-kubectl logs -n nvsentinel <PLATFORM_CONNECTOR_POD>
+kubectl logs -n nvsentinel {PLATFORM_CONNECTOR_POD}
 ```
 
 Look for errors:
@@ -65,17 +65,15 @@ kubectl get certificates -n nvsentinel
 kubectl get pods -n cert-manager
 
 # Check MongoDB database creation job
-kubectl get job -n nvsentinel create-mongodb-database
+kubectl get job -n nvsentinel -l app.kubernetes.io/name=create-mongodb-database
 # Should show COMPLETIONS: 1/1
 ```
 
 If the MongoDB job needs to be rerun:
 
 ```bash
-# Save and recreate the job
-kubectl get job create-mongodb-database -n nvsentinel -o yaml > create-mongodb-database.yaml
-kubectl delete job -n nvsentinel create-mongodb-database
-kubectl apply -f create-mongodb-database.yaml
+# Delete by label (name is create-mongodb-database-<seconds>-<scriptHash>), then re-sync / helm upgrade
+kubectl delete job -n nvsentinel -l app.kubernetes.io/name=create-mongodb-database
 ```
 
 Platform-connector connects to MongoDB on port 27017 with TLS. Check network policies:
@@ -100,5 +98,5 @@ Both should be mounted from hostPath at `/var/run/nvsentinel`.
 
 ```bash
 # Watch health monitor logs for successful sends
-kubectl logs -n nvsentinel <GPU_MONITOR_POD> -f
+kubectl logs -n nvsentinel {HEALTH_MONITOR_POD} -f
 ```

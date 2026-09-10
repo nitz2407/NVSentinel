@@ -4,9 +4,9 @@ dependencies:
   version: 16.2.2
 - name: psmdb-operator
   repository: ""
-  version: 1.21.1
+  version: 1.23.0
 - name: psmdb-db
   repository: ""
-  version: 1.21.1
-digest: sha256:52544f60c2e88079cc18da78164440e042103e5adc065668a648864e2ad938b9
-generated: "2025-11-19T15:26:21.985280107+05:30"
+  version: 1.23.0
+digest: sha256:af2e8470595645bb968aa5cd04d3dc637452e316bae4d632a740f4e49b5ff14c
+generated: "2026-09-03T18:22:37.316596472+05:30"

@@ -65,6 +65,9 @@ enableRepeatedNICDegradationRule: true
 # Client certificate mount path for database connections
 clientCertMountPath: /etc/ssl/client-certs
 
+# Pod priority for this component. Overridden by the matching global when that is set.
+priorityClassName: ""
+
 config: |
   # The node condition for these rules needs to be removed manually because health-events-analyzer does not publish healthy events to clear it.
   # Please run the command below to remove the node condition:
@@ -112,7 +115,7 @@ config: |
 
   [[rules]]
   name = "RepeatedXIDErrorOnSameGPU"
-  description = "Detect occurrence of fatal XIDs 5 times within 24 hours where the burst window is 3 minutes and sticky XIDs window is 3 hours"
+  description = "Detect occurrence of XID errors (any XID except 31 and 45) on the same GPU 5 times within 24 hours where the burst window is 3 minutes and sticky XIDs window is 3 hours"
   recommended_action = "CONTACT_SUPPORT"
   evaluate_rule = {{ .Values.enableRepeatedXIDErrorOnSameGPURule }}
   stage = [
@@ -160,6 +163,10 @@ config: |
     ''',
     # Candidate docs must also be XID events so non-XID unhealthy events on
     # the same node are not merged into GPU burst counts.
+    #
+    # Excluded codes: 31 has its own dedicated rules; 45 is preemptive channel cleanup that
+    # the Xid catalogue resolves as "Not Solo: IGNORE (follow other Xid)", and a repeat is
+    # never solo.
     '''
     {
       "$match": {
@@ -168,7 +175,7 @@ config: |
         "healthevent.nodename": "this.healthevent.nodename",
         "$expr": {
           "$and": [
-            {"$ne": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, "31"]},
+            {"$not": [{"$in": [{"$arrayElemAt": ["$healthevent.errorcode", 0]}, ["31", "45"]]}]},
             {
               "$gt": [
                 {
@@ -1816,7 +1823,7 @@ config: |
               {
                 "$in": [
                   "this.healthevent.errorcode.0",
-                  ["netdev_watchdog", "port_module_high_temp", "pci_power_insufficient", "module_unplugged"]
+                  ["netdev_watchdog", "port_module_high_temp", "pci_power_insufficient", "module_unplugged", "mlx5_tx_timeout_detected", "mlx5_rx_timeout_detected"]
                 ]
               }
             ]

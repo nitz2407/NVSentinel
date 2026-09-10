@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -28,18 +29,31 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/mongo/readconcern"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
-	"go.mongodb.org/mongo-driver/mongo/writeconcern"
-	"go.opentelemetry.io/contrib/instrumentation/go.mongodb.org/mongo-driver/mongo/otelmongo"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo/readconcern"
+	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
+	"go.mongodb.org/mongo-driver/v2/mongo/writeconcern"
+	"go.opentelemetry.io/contrib/instrumentation/go.mongodb.org/mongo-driver/v2/mongo/otelmongo"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 
 	"github.com/nvidia/nvsentinel/commons/pkg/tracing"
+	"github.com/nvidia/nvsentinel/store-client/pkg/lagstate"
 )
+
+// fieldClientName is the resume-token document field identifying the watcher.
+const fieldClientName = "clientName"
+
+// changeStreamMaxAwaitTime is how long the server holds a getMore with nothing to deliver.
+// It bounds both the idle cost of the TryNext loop and the resolution of the caught-up
+// timestamp behind change_stream_lag_seconds, so it wants to be well under any lag alert
+// threshold without making the loop chatty.
+const changeStreamMaxAwaitTime = 1 * time.Second
+
+// errChangeStreamClosed reports a server-closed cursor, which TryNext signals as "no event
+// and no error". Treated as an error so the stream is reopened rather than spun on.
+var errChangeStreamClosed = errors.New("change stream cursor closed by server")
 
 var resumeTokenRecoveries = promauto.NewCounterVec(
 	prometheus.CounterOpts{
@@ -51,7 +65,7 @@ var resumeTokenRecoveries = promauto.NewCounterVec(
 )
 
 // Event represents a database-agnostic event that abstracts away provider-specific types
-type Event map[string]interface{}
+type Event map[string]any
 
 type MongoDBClientTLSCertConfig struct {
 	TlsCertPath string
@@ -110,6 +124,17 @@ type ChangeStreamWatcher struct {
 	done chan struct{}
 	// cancel cancels the internal context to stop the event loop
 	cancel context.CancelFunc
+
+	// lag carries the two timestamps change_stream_lag_seconds is derived from. Embedded so
+	// this watcher satisfies the optional lag-state interface pkg/client asserts on.
+	lag lagstate.Tracker
+}
+
+// LagState reports when the watcher last observed itself caught up and the server time of the
+// last event it read. Either may be zero before the first read, which callers must treat as
+// "unknown" rather than as caught up: see ADR-054.
+func (w *ChangeStreamWatcher) LagState() (lastEmptyBatch, lastEventRead time.Time) {
+	return w.lag.LagState()
 }
 
 func NewChangeStreamWatcher(
@@ -127,7 +152,7 @@ func NewChangeStreamWatcher(
 		return nil, fmt.Errorf("error creating mongoDB clientOpts: %w", err)
 	}
 
-	client, err := mongo.Connect(ctx, clientOpts)
+	client, err := mongo.Connect(clientOpts)
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to mongoDB: %w", err)
 	}
@@ -161,15 +186,19 @@ func NewChangeStreamWatcher(
 	tokenCollOpts := options.Collection().SetWriteConcern(wc).SetReadConcern(rc).SetReadPreference(rp)
 	tokenColl := client.Database(tokenConfig.TokenDatabase).Collection(tokenConfig.TokenCollection, tokenCollOpts)
 
-	// Change stream options
-	opts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
+	// Change stream options. MaxAwaitTime is set explicitly rather than left to the server
+	// default: with TryNext in the event loop it is what bounds how long an idle poll blocks,
+	// and therefore the resolution of the caught-up timestamp behind change_stream_lag_seconds.
+	opts := options.ChangeStream().
+		SetFullDocument(options.UpdateLookup).
+		SetMaxAwaitTime(changeStreamMaxAwaitTime)
 
 	var storedToken TokenDoc
 
 	hasResumeToken := false
 
 	// Check if the resume token exists
-	err = tokenColl.FindOne(ctx, bson.M{"clientName": tokenConfig.ClientName}).Decode(&storedToken)
+	err = tokenColl.FindOne(ctx, bson.M{fieldClientName: tokenConfig.ClientName}).Decode(&storedToken)
 	if err == nil {
 		if len(storedToken.ResumeToken) > 0 {
 			slog.Info("ResumeToken found", "token", storedToken.ResumeToken)
@@ -234,7 +263,7 @@ func openChangeStream(
 	client *mongo.Client,
 	mongoConfig MongoDBConfig,
 	pipeline mongo.Pipeline,
-	opts *options.ChangeStreamOptions,
+	opts *options.ChangeStreamOptionsBuilder,
 	hasResumeToken bool,
 	tokenColl *mongo.Collection,
 	clientName string,
@@ -277,7 +306,7 @@ func openChangeStreamWithRetry(
 	client *mongo.Client,
 	mongoConfig MongoDBConfig,
 	pipeline mongo.Pipeline,
-	opts *options.ChangeStreamOptions,
+	opts *options.ChangeStreamOptionsBuilder,
 	retryDeadlineSeconds int,
 	retryIntervalSeconds int,
 	tokenColl *mongo.Collection,
@@ -344,7 +373,7 @@ func recoverFromStaleResumeToken(
 	ctx context.Context,
 	coll *mongo.Collection,
 	pipeline mongo.Pipeline,
-	opts *options.ChangeStreamOptions,
+	opts *options.ChangeStreamOptionsBuilder,
 	tokenColl *mongo.Collection,
 	clientName string,
 ) (*mongo.ChangeStream, error) {
@@ -352,7 +381,7 @@ func recoverFromStaleResumeToken(
 		"client", clientName)
 	resumeTokenRecoveries.WithLabelValues(clientName, "initialization").Inc()
 
-	if _, err := tokenColl.DeleteOne(ctx, bson.M{"clientName": clientName}); err != nil {
+	if _, err := tokenColl.DeleteOne(ctx, bson.M{fieldClientName: clientName}); err != nil {
 		slog.Error("Failed to delete resume token", "client", clientName, "error", err)
 	}
 
@@ -376,8 +405,7 @@ func recoverFromStaleResumeToken(
 //   - 280: ChangeStreamFatalError (general fatal change stream error)
 //   - 286: ChangeStreamHistoryLost (oplog rolled over past the token's position)
 func isUnrecoverableResumeTokenError(err error) bool {
-	var serverErr mongo.ServerError
-	if errors.As(err, &serverErr) {
+	if serverErr, ok := errors.AsType[mongo.ServerError](err); ok {
 		return serverErr.HasErrorCode(9) || serverErr.HasErrorCode(260) ||
 			serverErr.HasErrorCode(280) || serverErr.HasErrorCode(286)
 	}
@@ -406,6 +434,36 @@ func (w *ChangeStreamWatcher) Start(ctx context.Context) {
 	}()
 }
 
+// streamStep is what a single TryNext told the read loop.
+type streamStep int
+
+const (
+	// stepEvent means an event is waiting to be decoded.
+	stepEvent streamStep = iota
+	// stepCaughtUp means the await window closed with nothing to deliver, which is affirmative
+	// evidence of being caught up with this consumer's own filtered stream.
+	stepCaughtUp
+	// stepFailed means the stream has to be reopened.
+	stepFailed
+)
+
+// classifyStreamStep decides what one TryNext meant. Separate from the loop because the
+// closed-cursor case is otherwise only reachable against a live server: TryNext reports it as
+// "no event and no error", which is indistinguishable from an empty batch except by the cursor
+// ID, and treating it as an empty batch spins forever against a dead stream.
+func classifyStreamStep(hasNext bool, csErr error, cursorID int64) (streamStep, error) {
+	switch {
+	case hasNext:
+		return stepEvent, nil
+	case csErr != nil:
+		return stepFailed, csErr
+	case cursorID == 0:
+		return stepFailed, errChangeStreamClosed
+	default:
+		return stepCaughtUp, nil
+	}
+}
+
 func (w *ChangeStreamWatcher) eventLoop(ctx context.Context) {
 	for {
 		select {
@@ -413,17 +471,29 @@ func (w *ChangeStreamWatcher) eventLoop(ctx context.Context) {
 			slog.Info("ChangeStreamWatcher context cancelled, stopping event processing", "client", w.clientName)
 			return
 		default:
-			// Use read lock to allow concurrent Next() calls but prevent Close() during Next()
+			// TryNext rather than Next so an idle stream is distinguishable from a stalled
+			// one: it returns once the server's await window closes with nothing to deliver,
+			// which is the only moment "caught up" can be recorded. Idle cost is unchanged,
+			// because both issue a getMore the server holds for changeStreamMaxAwaitTime.
+			//
+			// Read lock allows concurrent cursor reads but prevents Close() during one.
 			w.closeMu.RLock()
-			hasNext := w.changeStream.Next(ctx)
+			hasNext := w.changeStream.TryNext(ctx)
 			csErr := w.changeStream.Err()
+			cursorID := w.changeStream.ID()
 			w.closeMu.RUnlock()
 
-			if hasNext {
+			step, stepErr := classifyStreamStep(hasNext, csErr, cursorID)
+
+			switch step {
+			case stepEvent:
 				w.processNextEvent(ctx)
-			} else if csErr != nil {
-				w.handleChangeStreamError(csErr)
+			case stepFailed:
+				w.handleChangeStreamError(stepErr)
+
 				return
+			case stepCaughtUp:
+				w.lag.RecordCaughtUp(time.Now())
 			}
 		}
 	}
@@ -441,6 +511,21 @@ func (w *ChangeStreamWatcher) processNextEvent(ctx context.Context) {
 		return
 	}
 
+	// Record the event's own server-side time, not time.Now(): lag is the age of what the
+	// consumer is reading, so a backlog of old events must read as old.
+	w.lag.RecordEventRead(clusterTimeOf(event))
+
+	// Attach this event's resume token (read via mongoEvent.GetResumeToken) so
+	// consumers can checkpoint exactly at the event they processed. The change
+	// stream cursor keeps advancing while consumers work, so checkpointing the
+	// cursor position instead could skip events that were never processed.
+	// The driver-owned bson.Raw aliases the current batch's pooled response
+	// buffer, which is recycled once the event loop calls Next() again — clone
+	// it so the token stays valid after the channel handoff.
+	if token := w.changeStream.ResumeToken(); len(token) > 0 {
+		event["_resumeToken"] = bson.Raw(append([]byte(nil), token...))
+	}
+
 	genericEvent := Event(event)
 
 	select {
@@ -448,6 +533,17 @@ func (w *ChangeStreamWatcher) processNextEvent(ctx context.Context) {
 		slog.Info("Context cancelled while sending event, stopping", "client", w.clientName)
 	case w.eventChannel <- genericEvent:
 	}
+}
+
+// clusterTimeOf extracts a change event's server-side timestamp. Returns the zero time when
+// the field is absent or not a timestamp, which recordEventRead then ignores.
+func clusterTimeOf(event bson.M) time.Time {
+	ts, ok := event["clusterTime"].(bson.Timestamp)
+	if !ok {
+		return time.Time{}
+	}
+
+	return time.Unix(int64(ts.T), 0).UTC()
 }
 
 func (w *ChangeStreamWatcher) handleChangeStreamError(csErr error) {
@@ -469,7 +565,7 @@ func (w *ChangeStreamWatcher) deleteStaleResumeToken() {
 	deleteCtx, deleteCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer deleteCancel()
 
-	if _, delErr := w.resumeTokenCol.DeleteOne(deleteCtx, bson.M{"clientName": w.clientName}); delErr != nil {
+	if _, delErr := w.resumeTokenCol.DeleteOne(deleteCtx, bson.M{fieldClientName: w.clientName}); delErr != nil {
 		slog.Error("Failed to delete stale resume token during event loop recovery",
 			"client", w.clientName, "error", delErr)
 	}
@@ -478,7 +574,7 @@ func (w *ChangeStreamWatcher) deleteStaleResumeToken() {
 func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) error {
 	// Use the change stream resume token if the passed token is empty
 	// This handles the common case where callers pass empty byte slices
-	var resumeTokenToStore interface{}
+	var resumeTokenToStore any
 
 	if len(token) == 0 {
 		// Get the current resume token from the change stream
@@ -495,8 +591,17 @@ func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) e
 
 		slog.Debug("Using change stream resume token", "client", w.clientName)
 	} else {
-		// Use the provided token
-		resumeTokenToStore = token
+		// Use the provided per-event token. Tokens originate from the change
+		// stream as raw BSON documents ({"_data": ...}), so store them as a
+		// document — the same shape SetResumeAfter expects when the token is
+		// read back on startup. Storing the plain byte slice would write a
+		// BSON binary value that fails to decode into TokenDoc.ResumeToken.
+		raw := bson.Raw(token)
+		if err := raw.Validate(); err != nil {
+			return fmt.Errorf("invalid resume token for client %s: %w", w.clientName, err)
+		}
+
+		resumeTokenToStore = raw
 
 		slog.Debug("Using provided resume token", "client", w.clientName)
 	}
@@ -514,9 +619,9 @@ func (w *ChangeStreamWatcher) MarkProcessed(ctx context.Context, token []byte) e
 
 		_, err = w.resumeTokenCol.UpdateOne(
 			ctx,
-			bson.M{"clientName": w.clientName},
+			bson.M{fieldClientName: w.clientName},
 			bson.M{"$set": bson.M{"resumeToken": resumeTokenToStore}},
-			options.Update().SetUpsert(true),
+			options.UpdateOne().SetUpsert(true),
 		)
 		if err == nil {
 			return nil
@@ -536,14 +641,12 @@ func (w *ChangeStreamWatcher) Events() <-chan Event {
 // This leverages MongoDB's default index on _id for efficient querying.
 // Pass in the ObjectID of the event currently being processed.
 // Optional additionalFilters can be provided to further filter the events.
-func (w *ChangeStreamWatcher) GetUnprocessedEventCount(ctx context.Context, lastProcessedID primitive.ObjectID,
+func (w *ChangeStreamWatcher) GetUnprocessedEventCount(ctx context.Context, lastProcessedID bson.ObjectID,
 	additionalFilters ...bson.M) (int64, error) {
 	filter := bson.M{"_id": bson.M{"$gt": lastProcessedID}}
 
 	for _, additionalFilter := range additionalFilters {
-		for key, value := range additionalFilter {
-			filter[key] = value
-		}
+		maps.Copy(filter, additionalFilter)
 	}
 
 	coll := w.client.Database(w.database).Collection(w.collection)
@@ -665,7 +768,7 @@ func GetCollectionClient(
 		return nil, fmt.Errorf("error creating mongoDB clientOpts: %w", err)
 	}
 
-	client, err := mongo.Connect(ctx, clientOpts)
+	client, err := mongo.Connect(clientOpts)
 	if err != nil {
 		return nil, fmt.Errorf("error connecting to mongoDB: %w", err)
 	}
@@ -729,6 +832,19 @@ func constructMongoClientOptions(
 	clientOpts := options.Client().
 		ApplyURI(mongoConfig.URI).
 		SetServerSelectionTimeout(serverSelectionTimeout).
+		// Driver v2 decodes nested documents into bson.D by default, whereas v1
+		// mirrored the ancestor type and produced bson.M. Change stream events and
+		// query results are read as bson.M and their nested fields are type-asserted
+		// as such throughout this package, so keep the v1 shape.
+		//
+		// ObjectIDAsHexString likewise restores v1 behaviour: v2 refuses to decode
+		// an ObjectID into a Go string ("decoding an object ID into a string is not
+		// supported by default"), which breaks structs that bind `bson:"_id"` to a
+		// string field.
+		SetBSONOptions(&options.BSONOptions{
+			DefaultDocumentM:    true,
+			ObjectIDAsHexString: true,
+		}).
 		SetMonitor(otelmongo.NewMonitor(
 			otelmongo.WithTracerProvider(tracing.GetChildOnlyTracerProvider()),
 		))

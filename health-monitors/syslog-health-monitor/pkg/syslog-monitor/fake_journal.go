@@ -16,6 +16,7 @@ package syslogmonitor
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 )
 
@@ -205,6 +206,24 @@ func (j *FakeJournal) SeekCursor(cursor string) error {
 	return fmt.Errorf("cursor not found: %s", cursor)
 }
 
+// SeekHead implements the Journal interface
+func (j *FakeJournal) SeekHead() error {
+	// Allow even if closed for test purposes
+	// Position before the first entry so that Next() advances to it.
+	// Match filtering is handled by Next() itself.
+	j.CurrentPosition = -1
+
+	return nil
+}
+
+// SeekRealtimeUsec implements the Journal interface
+func (j *FakeJournal) SeekRealtimeUsec(usec uint64) error {
+	// Fake journal has no timestamps; behave like SeekHead.
+	j.CurrentPosition = -1
+
+	return nil
+}
+
 // SeekTail implements the Journal interface
 func (j *FakeJournal) SeekTail() error {
 	// Allow even if closed for test purposes
@@ -223,8 +242,8 @@ func (j *FakeJournal) SeekTail() error {
 	}
 
 	// Find the last entry that matches all filters
-	for i := len(j.Entries) - 1; i >= 0; i-- {
-		if j.matchesFilters(j.Entries[i]) {
+	for i, v := range slices.Backward(j.Entries) {
+		if j.matchesFilters(v) {
 			j.CurrentPosition = i
 
 			return nil
@@ -338,7 +357,7 @@ func AddPatternsToJournal(journal *FakeJournal, patterns []string, matchCount in
 		message := fmt.Sprintf("Test message matching pattern: %s", pattern)
 
 		// Add multiple entries for each pattern if needed
-		for j := 0; j < matchCount; j++ {
+		for j := range matchCount {
 			cursor := fmt.Sprintf("pattern-cursor-%d-%d", i, j)
 			journal.AddEntryWithMessage(message, cursor)
 		}

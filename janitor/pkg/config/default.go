@@ -22,8 +22,6 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 )
 
 const (
@@ -37,6 +35,8 @@ const (
 	HostSysVolumeName      = "host-sys"
 	HostSysPath            = "/sys"
 	WriteSyslogEventEnvVar = "WRITE_SYSLOG_EVENT"
+	NodeNameEnvVar         = "NODE_NAME"
+	UploadURLBaseEnvVar    = "UPLOAD_URL_BASE"
 )
 
 func applyConfigDefaults(config *Config) {
@@ -53,7 +53,7 @@ func applyGlobalDefaults(config *Config) {
 	}
 
 	if config.Global.ManualMode == nil {
-		config.Global.ManualMode = ptr.To(false)
+		config.Global.ManualMode = new(false)
 	}
 }
 
@@ -184,7 +184,8 @@ func getImagePullSecrets(imagePullSecrets []ImagePullSecret) []corev1.LocalObjec
 
 // getDefaultGPUResetJobTemplate returns the default JobTemplateSpec for GPU reset jobs.
 func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []ImagePullSecret,
-	resources ResourceRequirements, runtimeClassName string, writeSyslogEvent bool) (*batchv1.JobTemplateSpec, error) {
+	resources ResourceRequirements, runtimeClassName string, writeSyslogEvent bool,
+	uploadURL string) (*batchv1.JobTemplateSpec, error) {
 	imagePullSecrets := getImagePullSecrets(secrets)
 
 	containerResources, err := getResources(resources)
@@ -193,46 +194,36 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 	}
 
 	job := &batchv1.JobTemplateSpec{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: namespace,
-		},
+		Namespace: namespace,
 		Spec: batchv1.JobSpec{
-			ActiveDeadlineSeconds:   ptr.To(int64(300)),
-			BackoffLimit:            ptr.To(int32(2)),
-			TTLSecondsAfterFinished: ptr.To(int32(86400)),
+			ActiveDeadlineSeconds:   new(int64(300)),
+			BackoffLimit:            new(int32(2)),
+			TTLSecondsAfterFinished: new(int32(86400)),
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					Volumes: []corev1.Volume{
 						{
 							Name: HostDevVolumeName,
-							VolumeSource: corev1.VolumeSource{
-								HostPath: &corev1.HostPathVolumeSource{
-									Path: HostDevPath,
-								},
+							HostPath: &corev1.HostPathVolumeSource{
+								Path: HostDevPath,
 							},
 						},
 						{
 							Name: HostDevLogVolumeName,
-							VolumeSource: corev1.VolumeSource{
-								HostPath: &corev1.HostPathVolumeSource{
-									Path: HostDevLogPath,
-								},
+							HostPath: &corev1.HostPathVolumeSource{
+								Path: HostDevLogPath,
 							},
 						},
 						{
 							Name: DriverRootVolumeName,
-							VolumeSource: corev1.VolumeSource{
-								HostPath: &corev1.HostPathVolumeSource{
-									Path: DriverRootPath,
-								},
+							HostPath: &corev1.HostPathVolumeSource{
+								Path: DriverRootPath,
 							},
 						},
 						{
 							Name: HostSysVolumeName,
-							VolumeSource: corev1.VolumeSource{
-								HostPath: &corev1.HostPathVolumeSource{
-									Path: HostSysPath,
-								},
+							HostPath: &corev1.HostPathVolumeSource{
+								Path: HostSysPath,
 							},
 						},
 					},
@@ -255,6 +246,18 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 									Name:  WriteSyslogEventEnvVar,
 									Value: strconv.FormatBool(writeSyslogEvent),
 								},
+								{
+									Name: NodeNameEnvVar,
+									ValueFrom: &corev1.EnvVarSource{
+										FieldRef: &corev1.ObjectFieldSelector{
+											FieldPath: "spec.nodeName",
+										},
+									},
+								},
+								{
+									Name:  UploadURLBaseEnvVar,
+									Value: uploadURL,
+								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
@@ -275,7 +278,7 @@ func getDefaultGPUResetJobTemplate(namespace string, image string, secrets []Ima
 								},
 							},
 							SecurityContext: &corev1.SecurityContext{
-								Privileged: ptr.To(true),
+								Privileged: new(true),
 							},
 						},
 					},

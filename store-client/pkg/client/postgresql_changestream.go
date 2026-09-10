@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -35,7 +36,7 @@ type PostgreSQLChangeStreamWatcher struct {
 	db          *sql.DB
 	table       string
 	tokenConfig TokenConfig
-	pipeline    []map[string]interface{}
+	pipeline    []map[string]any
 
 	eventChan  chan Event
 	stopChan   chan struct{}
@@ -50,9 +51,77 @@ type postgresqlEvent struct {
 	tableName   string
 	recordID    string
 	operation   string
-	oldValues   map[string]interface{}
-	newValues   map[string]interface{}
+	oldValues   map[string]any
+	newValues   map[string]any
 	changedAt   time.Time
+}
+
+// UpdatedFields exposes the flattened document delta for optional consumers.
+func (e *postgresqlEvent) UpdatedFields() map[string]any {
+	if e.operation != "UPDATE" {
+		return nil
+	}
+
+	return changedDocumentFields(e.oldValues, e.newValues)
+}
+
+func changedDocumentFields(oldValues, newValues map[string]any) map[string]any {
+	oldDocument, _ := oldValues["document"].(map[string]any)
+	newDocument, _ := newValues["document"].(map[string]any)
+	updated := make(map[string]any)
+	flattenChangedFields("", oldDocument, newDocument, updated)
+
+	return updated
+}
+
+func flattenChangedFields(prefix string, oldValues, newValues map[string]any, updated map[string]any) {
+	for key, newValue := range newValues {
+		flattenChangedField(changedFieldPath(prefix, key), oldValues, key, newValue, updated)
+	}
+
+	for key := range oldValues {
+		if _, exists := newValues[key]; exists {
+			continue
+		}
+
+		updated[changedFieldPath(prefix, key)] = nil
+	}
+}
+
+func flattenChangedField(
+	path string,
+	oldValues map[string]any,
+	key string,
+	newValue any,
+	updated map[string]any,
+) {
+	oldValue, existed := oldValues[key]
+	newMap, newIsMap := newValue.(map[string]any)
+	oldMap, oldIsMap := oldValue.(map[string]any)
+
+	if newIsMap {
+		if !oldIsMap && len(newMap) == 0 {
+			updated[path] = newValue
+
+			return
+		}
+
+		flattenChangedFields(path, oldMap, newMap, updated)
+
+		return
+	}
+
+	if !existed || !reflect.DeepEqual(oldValue, newValue) {
+		updated[path] = newValue
+	}
+}
+
+func changedFieldPath(prefix, key string) string {
+	if prefix == "" {
+		return key
+	}
+
+	return prefix + "." + key
 }
 
 // GetDocumentID returns the changelog sequence ID (not the record UUID).
@@ -96,17 +165,17 @@ func (e *postgresqlEvent) GetNodeName() (string, error) {
 	)
 }
 
-func extractNodeNameFromValues(values map[string]interface{}) (string, bool) {
+func extractNodeNameFromValues(values map[string]any) (string, bool) {
 	if values == nil {
 		return "", false
 	}
 
-	document, ok := values["document"].(map[string]interface{})
+	document, ok := values["document"].(map[string]any)
 	if !ok {
 		return "", false
 	}
 
-	if healthEvent, ok := document["healthevent"].(map[string]interface{}); ok {
+	if healthEvent, ok := document["healthevent"].(map[string]any); ok {
 		if nodeName, ok := healthEvent["nodename"].(string); ok {
 			return nodeName, true
 		}
@@ -128,10 +197,10 @@ func (e *postgresqlEvent) GetResumeToken() []byte {
 	return []byte(fmt.Sprintf("%d", e.changelogID))
 }
 
-func (e *postgresqlEvent) extractDocument() map[string]interface{} {
+func (e *postgresqlEvent) extractDocument() map[string]any {
 	if e.newValues != nil {
 		if doc, ok := e.newValues["document"]; ok {
-			if m, ok := doc.(map[string]interface{}); ok {
+			if m, ok := doc.(map[string]any); ok {
 				return m
 			}
 		}
@@ -139,7 +208,7 @@ func (e *postgresqlEvent) extractDocument() map[string]interface{} {
 
 	if e.oldValues != nil {
 		if doc, ok := e.oldValues["document"]; ok {
-			if m, ok := doc.(map[string]interface{}); ok {
+			if m, ok := doc.(map[string]any); ok {
 				return m
 			}
 		}
@@ -148,7 +217,7 @@ func (e *postgresqlEvent) extractDocument() map[string]interface{} {
 	return nil
 }
 
-func (e *postgresqlEvent) UnmarshalDocument(v interface{}) error {
+func (e *postgresqlEvent) UnmarshalDocument(v any) error {
 	document := e.extractDocument()
 	if document == nil {
 		return datastore.NewValidationError(
@@ -158,8 +227,8 @@ func (e *postgresqlEvent) UnmarshalDocument(v interface{}) error {
 		)
 	}
 
-	if _, hasID := document["_id"]; !hasID && e.recordID != "" {
-		document["_id"] = e.recordID
+	if _, hasID := document[fieldID]; !hasID && e.recordID != "" {
+		document[fieldID] = e.recordID
 	}
 
 	docJSON, err := json.Marshal(document)
@@ -401,19 +470,19 @@ func (w *PostgreSQLChangeStreamWatcher) matchesPipeline(entry *postgresqlEvent) 
 }
 
 func (w *PostgreSQLChangeStreamWatcher) matchesStage(
-	stage map[string]interface{}, entry *postgresqlEvent,
+	stage map[string]any, entry *postgresqlEvent,
 ) bool {
-	matchFilter, ok := stage["$match"]
+	matchFilter, ok := stage[opMatch]
 	if !ok {
 		return true
 	}
 
-	matchMap, ok := matchFilter.(map[string]interface{})
+	matchMap, ok := matchFilter.(map[string]any)
 	if !ok {
 		return true
 	}
 
-	if opType, ok := matchMap["operationType"]; ok {
+	if opType, ok := matchMap[fieldOperationType]; ok {
 		expectedOps := mapOperationTypes(opType)
 		if len(expectedOps) == 0 || !slices.Contains(expectedOps, entry.operation) {
 			return false
@@ -433,27 +502,27 @@ func (w *PostgreSQLChangeStreamWatcher) matchesStage(
 }
 
 // mapOperationTypes maps MongoDB operation type filters to PostgreSQL operation strings.
-// Handles both single strings ("insert") and $in arrays ({"$in": ["insert", "update"]}).
-func mapOperationTypes(opType interface{}) []string {
+// Handles both single strings (opTypeInsert) and $in arrays ({opIn: [opTypeInsert, "update"]}).
+func mapOperationTypes(opType any) []string {
 	switch v := opType.(type) {
 	case string:
 		if mapped := mapSingleOpType(v); mapped != "" {
 			return []string{mapped}
 		}
-	case map[string]interface{}:
+	case map[string]any:
 		return mapInArrayOpTypes(v)
 	}
 
 	return nil
 }
 
-func mapInArrayOpTypes(filter map[string]interface{}) []string {
-	inArray, ok := filter["$in"]
+func mapInArrayOpTypes(filter map[string]any) []string {
+	inArray, ok := filter[opIn]
 	if !ok {
 		return nil
 	}
 
-	arr, ok := inArray.([]interface{})
+	arr, ok := inArray.([]any)
 	if !ok {
 		return nil
 	}
@@ -473,7 +542,7 @@ func mapInArrayOpTypes(filter map[string]interface{}) []string {
 
 func mapSingleOpType(op string) string {
 	switch op {
-	case "insert":
+	case opTypeInsert:
 		return "INSERT"
 	case "update":
 		return "UPDATE"
@@ -486,12 +555,12 @@ func mapSingleOpType(op string) string {
 
 // matchesFilters checks if event data matches filter criteria
 func (w *PostgreSQLChangeStreamWatcher) matchesFilters(
-	filters map[string]interface{},
-	data map[string]interface{},
+	filters map[string]any,
+	data map[string]any,
 ) bool {
 	for key, expectedValue := range filters {
 		// Skip special operators
-		if key == "operationType" {
+		if key == fieldOperationType {
 			continue
 		}
 
@@ -511,21 +580,21 @@ func (w *PostgreSQLChangeStreamWatcher) matchesFilters(
 // (e.g., "fullDocument.healthevent.isfatal"). Numeric segments are
 // interpreted as array indices when the current value is a slice.
 func (w *PostgreSQLChangeStreamWatcher) extractValue(
-	data map[string]interface{}, path string,
-) interface{} {
+	data map[string]any, path string,
+) any {
 	if path == "" {
 		return nil
 	}
 
 	segments := strings.Split(path, ".")
 
-	var current interface{} = data
+	var current any = data
 
 	for _, seg := range segments {
 		switch v := current.(type) {
-		case map[string]interface{}:
+		case map[string]any:
 			current = v[seg]
-		case []interface{}:
+		case []any:
 			idx, err := strconv.Atoi(seg)
 			if err != nil || idx < 0 || idx >= len(v) {
 				return nil
@@ -557,7 +626,7 @@ func (w *PostgreSQLChangeStreamWatcher) loadResumeToken(ctx context.Context) {
 		return
 	}
 
-	var token map[string]interface{}
+	var token map[string]any
 	if err := json.Unmarshal(tokenJSON, &token); err != nil {
 		slog.Warn("Failed to unmarshal resume token", "error", err)
 
@@ -575,7 +644,7 @@ func (w *PostgreSQLChangeStreamWatcher) loadResumeToken(ctx context.Context) {
 
 // saveResumeToken saves the current changelog ID as resume token
 func (w *PostgreSQLChangeStreamWatcher) saveResumeToken(ctx context.Context, changelogID int64) error {
-	token := map[string]interface{}{
+	token := map[string]any{
 		"lastChangelogID": changelogID,
 	}
 

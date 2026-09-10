@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/nvidia/nvsentinel/commons/pkg/grpcclient"
 	"github.com/nvidia/nvsentinel/commons/pkg/logger"
 	metrics "github.com/nvidia/nvsentinel/commons/pkg/metrics"
 	"github.com/nvidia/nvsentinel/commons/pkg/server"
@@ -61,6 +62,10 @@ var (
 		"Comma separated listed of checks to enable")
 	platformConnectorSocket = flag.String("platform-connector-socket", "unix:///var/run/nvsentinel.sock",
 		"Path to the platform-connector UDS socket.")
+	platformConnectorTokenPath = flag.String("platform-connector-token-path", "",
+		"Path to a projected ServiceAccount token presented to platform-connector. "+
+			"This monitor reports health events only for the node it runs on; the token "+
+			"lets platform-connector confirm that placement. Empty disables token authentication.")
 	nodeNameEnv         = flag.String("node-name", os.Getenv("NODE_NAME"), "Node name. Defaults to NODE_NAME env var.")
 	pollingIntervalFlag = flag.String("polling-interval", defaultPollingInterval,
 		"Polling interval for health checks (e.g., 15m, 1h).")
@@ -81,6 +86,9 @@ var (
 		"Root path for sysfs reads (BDF→driver resolution). Typically a container mount point.")
 	cancellationsConfigPath = flag.String("cancellations-config", "/etc/syslog-health-monitor/cancellations.toml",
 		"Path to per-monitor cancellation rules (TOML). Missing file is treated as no rules.")
+	bootLookbackWindowFlag = flag.String("boot-lookback-window", "2h",
+		"How far back to scan the journal after a reboot (e.g. 30m, 1h). "+
+			"Entries older than this window are skipped to avoid re-processing ancient XIDs.")
 )
 
 var checks []fd.CheckDefinition
@@ -111,7 +119,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(root, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	conn, err := dialPlatformConnector(ctx, *platformConnectorSocket)
+	conn, err := dialPlatformConnector(ctx, *platformConnectorSocket, *platformConnectorTokenPath)
 	if err != nil {
 		return err
 	}
@@ -174,6 +182,32 @@ func run() error {
 	return g.Wait()
 }
 
+// parseBootLookbackWindow parses a duration string for the boot lookback window.
+// Returns an error for invalid or negative durations. Zero is valid (unlimited).
+func parseBootLookbackWindow(s string) (time.Duration, error) {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+
+	if d < 0 {
+		return 0, fmt.Errorf("negative duration %q not allowed", s)
+	}
+
+	return d, nil
+}
+
+// mustParseDuration parses a duration string and exits on failure.
+func mustParseDuration(s string) time.Duration {
+	d, err := parseBootLookbackWindow(s)
+	if err != nil {
+		slog.Error("Invalid boot-lookback-window flag", "value", s, "error", err)
+		os.Exit(1)
+	}
+
+	return d
+}
+
 func validateNodeName() (string, error) {
 	flag.Parse()
 	slog.Info("Parsed command line flags successfully")
@@ -188,10 +222,13 @@ func validateNodeName() (string, error) {
 	return nodeName, nil
 }
 
-func dialPlatformConnector(ctx context.Context, socket string) (*grpc.ClientConn, error) {
-	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+func dialPlatformConnector(ctx context.Context, socket, tokenPath string) (*grpc.ClientConn, error) {
+	dialOpts := append(
+		[]grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
+		grpcclient.DialOptions(tokenPath)...,
+	)
 
-	slog.Info("Creating gRPC client to platform connector", "socket", socket)
+	slog.Info("Creating gRPC client to platform connector", "socket", socket, "tokenAuthEnabled", tokenPath != "")
 
 	conn, err := dialWithRetry(ctx, socket, dialOpts...)
 	if err != nil {
@@ -212,9 +249,10 @@ func dialPlatformConnector(ctx context.Context, socket string) (*grpc.ClientConn
 // GPU runs in the guest VM and XIDs surface via containerd rather than as host
 // kernel entries.
 var kernelOriginChecks = map[string]bool{
-	fd.XIDErrorCheck:     true,
-	fd.SXIDErrorCheck:    true,
-	fd.GPUFallenOffCheck: true,
+	fd.XIDErrorCheck:       true,
+	fd.SXIDErrorCheck:      true,
+	fd.GPUFallenOffCheck:   true,
+	fd.NICDriverErrorCheck: true,
 }
 
 func buildChecksFromFlag() ([]fd.CheckDefinition, error) {
@@ -387,6 +425,7 @@ func createSyslogMonitor(
 		*sysfsRoot,
 		cancellationsCfg,
 		*platformConnectorSocket,
+		mustParseDuration(*bootLookbackWindowFlag),
 	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error creating syslog health monitor: %w", err)
@@ -514,8 +553,8 @@ func dialWithRetry(ctx context.Context, target string, opts ...grpc.DialOption) 
 		)
 
 		// For unix:// ensure the socket path exists before dialing.
-		if strings.HasPrefix(target, "unix://") {
-			socketPath := strings.TrimPrefix(target, "unix://")
+		if after, ok := strings.CutPrefix(target, "unix://"); ok {
+			socketPath := after
 			if _, statErr := os.Stat(socketPath); statErr != nil {
 				slog.Warn("Platform connector socket file does not exist",
 					"attempt", attempt, "maxRetries", maxRetries, "error", statErr)
