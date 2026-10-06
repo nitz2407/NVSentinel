@@ -1,0 +1,92 @@
+# Additive cAdvisor scrape for clusters whose Prometheus was NOT installed by
+# this harness.
+#
+# monitoring/values-kube-prometheus-stack.yaml already sets
+# kubelet.serviceMonitor.cAdvisor: true, but that only applies when the harness
+# installs the stack. On a standing cluster the pre-existing
+# kube-prometheus-stack release owns the `prometheus-kubelet` ServiceMonitor,
+# which ships exactly two endpoints (/metrics filtered down to volume stats, and
+# /metrics/probes) and no /metrics/cadvisor. Nothing then produces
+# container_memory_working_set_bytes, so `harnessctl report` falls back to
+# process_resident_memory_bytes and understates memory: RSS is not what the
+# container is charged for, and for a process that exports no Prometheus metrics
+# of its own (mongod) the fallback measures its exporter sidecar instead of the
+# database. Measured at 50k nodes, that fallback reported MongoDB at 0.58 GB
+# against 6.2 GB actual, and labeler at 13.3 GB against 17.9 GB actual.
+#
+# This object is additive on purpose. The release-owned ServiceMonitor is
+# managed by Helm AND ArgoCD (argocd.argoproj.io/instance: prometheus), so
+# editing it in place would be reverted on the next sync and would change what
+# every other tenant of this Prometheus receives.
+#
+# Discovery: the Prometheus CR carries serviceMonitorSelector: {} and
+# serviceMonitorNamespaceSelector: {}, so it adopts ServiceMonitors from every
+# namespace. Living in nvsentinel keeps this out of the ArgoCD-managed
+# prometheus namespace.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nvsentinel-cadvisor
+  namespace: nvsentinel
+  labels:
+    app.kubernetes.io/name: nvsentinel-cadvisor
+    app.kubernetes.io/part-of: nvsentinel-scale-harness
+spec:
+  # Reuse the kubelet Service the prometheus-operator already maintains rather
+  # than declaring node targets ourselves.
+  namespaceSelector:
+    matchNames: [kube-system]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubelet
+      k8s-app: kubelet
+  # Exposes each target's Node labels as __meta_kubernetes_node_label_*, which is
+  # what lets the drop below match the harness-wide type=kwok convention instead
+  # of a node-name prefix.
+  attachMetadata:
+    node: true
+  endpoints:
+    - path: /metrics/cadvisor
+      port: https-metrics
+      scheme: https
+      interval: 30s
+      honorLabels: true
+      honorTimestamps: true
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tlsConfig:
+        caFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        insecureSkipVerify: true
+      relabelings:
+        - action: replace
+          sourceLabels: [__metrics_path__]
+          targetLabel: metrics_path
+        # KWOK nodes run no kubelet, so their targets would be permanently down
+        # and retried every interval. This cluster's kubelet Endpoints happens to
+        # carry only real-node addresses today, so the drop is a guard rather than
+        # a necessity — keep it, because it is the difference between ~32 targets
+        # and one per simulated node if that ever changes.
+        - action: drop
+          sourceLabels: [__meta_kubernetes_node_label_type]
+          regex: kwok
+      metricRelabelings:
+        # cAdvisor exports a wide surface per container. Keep only what sizing
+        # needs: working set (the figure the kubelet evicts on and the one
+        # `kubectl top` reports), CPU, RSS for comparison against the old
+        # fallback, and the limit so a component pinned at its ceiling is visible
+        # rather than silently reported as demand.
+        - action: keep
+          sourceLabels: [__name__]
+          regex: container_memory_working_set_bytes|container_memory_rss|container_cpu_usage_seconds_total|container_spec_memory_limit_bytes
+        # Restrict to the namespaces the sizing report attributes: NVSentinel's
+        # own components plus MongoDB, and the out-of-namespace janitor
+        # controller. Other tenants of this Prometheus gain nothing from us
+        # scraping their containers.
+        - action: keep
+          sourceLabels: [namespace]
+          regex: nvsentinel|dgxc-janitor-system
+        # cAdvisor also emits per-pod and per-node rollups with an empty
+        # container label. Summing a component without dropping these
+        # double-counts every pod.
+        - action: drop
+          sourceLabels: [container]
+          regex: ^$

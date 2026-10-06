@@ -57,6 +57,9 @@ func groups() []group {
 			{"cleanup", "clear prior-run debris: KWOK nodes + orphaned janitor CRs (+ optional pool)", runCleanup},
 			{"report", "auto-collect latency/throughput/resource/CR/mongo metrics into report.md + report.json", runReport},
 		}},
+		{"sizing", "cross-run fleet sizing (N nodes x P pods/node)", []subcmd{
+			{"curve", "build the N-vs-memory curve by reading per-run report folders; writes a derived sizing-curve.md/.json and never modifies a run's results", runSizingCurve},
+		}},
 		{"nodes", "manage simulated KWOK nodes (P0.2)", []subcmd{
 			{"scale", "register N GPU-shaped KWOK nodes and wait Ready + record ceiling", runScaleNodes},
 			{"ceiling", "ramp node count until degradation and attribute it: harness vs api/etcd", runCeiling},
@@ -65,6 +68,7 @@ func groups() []group {
 			{"inject", "fire every resident injector in the connector pool, attributing events to KWOK node names with correlation IDs; --socket drives a single connector", runInject},
 			{"reconcile", "account every injected event for a run in-cluster via a resident injector; --direct connects to MongoDB directly", runReconcile},
 			{"coldstart", "seed a MongoDB haystack (needles + STORE_ONLY noise), cold-start a consumer, and measure its initial scan time", runColdStart},
+			{"reset-cursor", "cold-start the remediation consumers at now, so a run remediates only its own events and not earlier runs' stored ones", runResetCursor},
 		}},
 		{"janitor", "remediation CR checks (P0.4)", []subcmd{
 			{"check", "create RebootNode + GPUReset CRs and verify completion", runJanitorCheck},

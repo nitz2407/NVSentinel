@@ -307,10 +307,57 @@ func (c *clients) createOneNode(ctx context.Context, cfg Config, idx int) error 
 // isRetryableTeardownErr).
 const kwokListPageSize = 500
 
+// isExpiredContinueErr reports whether a paged LIST failed because the continue
+// token no longer resolves. A 50k-node fleet needs ~100 pages, and every page is
+// an etcd range read pinned to the revision the walk started at, so a compaction
+// mid-walk invalidates the token. The walk has to restart; resuming is impossible
+// and returning the pages gathered so far would undercount the fleet.
+func isExpiredContinueErr(err error) bool {
+	return apierrors.IsResourceExpired(err) || apierrors.IsGone(err)
+}
+
+// listRestarts bounds how many times a paged walk is restarted after its
+// continue token expires. Restarts are cheap relative to a wrong answer, but an
+// unbounded loop against a fleet that churns faster than it can be listed would
+// never terminate.
+const listRestarts = 3
+
+// walkWithRestarts runs a whole paged walk, restarting it from the first page
+// when the continue token expires mid-walk. walk must start a fresh LIST each
+// call, since an expired token cannot be resumed.
+func walkWithRestarts[T any](what string, walk func() (T, error)) (T, error) {
+	for attempt := 0; ; attempt++ {
+		got, err := walk()
+		if err == nil {
+			return got, nil
+		}
+		if !isExpiredContinueErr(err) {
+			var zero T
+			return zero, err
+		}
+		if attempt >= listRestarts {
+			var zero T
+			return zero, fmt.Errorf("%s: continue token expired %d times: %w", what, attempt+1, err)
+		}
+		warnf("%s: continue token expired mid-walk; restarting list (attempt %d/%d)", what, attempt+2, listRestarts+1)
+	}
+}
+
 // countKwokNodes counts simulated nodes, paging through the fleet. It reports
 // list failures rather than hiding them, because a caller that reads a failed
 // LIST as "zero nodes" draws the opposite conclusion from the truth.
+//
+// An expired continue token restarts the walk instead of failing the count: at
+// 50k nodes the token expired often enough to abort `pool create` outright, and
+// a partial count is worse than useless here because the pool sizes itself to
+// the fleet this number describes.
 func (c *clients) countKwokNodes(ctx context.Context) (int, error) {
+	return walkWithRestarts("count kwok nodes", func() (int, error) {
+		return c.countKwokNodesOnce(ctx)
+	})
+}
+
+func (c *clients) countKwokNodesOnce(ctx context.Context) (int, error) {
 	total := 0
 	opts := metav1.ListOptions{LabelSelector: kwokNodeLabel, Limit: kwokListPageSize}
 	for {

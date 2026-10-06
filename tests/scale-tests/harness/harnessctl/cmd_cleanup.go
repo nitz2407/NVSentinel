@@ -1,12 +1,11 @@
+//go:build !injector
+
 /*
 Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
-
-
-//go:build !injector
 
 package main
 
@@ -119,8 +118,8 @@ func isRetryableTeardownErr(err error) bool {
 	return !errors.As(err, &status)
 }
 
-// deleteAllKwokNodes removes every simulated node and blocks until none remain
-// (or timeout).
+// deleteAllKwokNodes removes every simulated node and blocks until none remain,
+// or until teardown stops making progress for idleTimeout.
 //
 // It works in bounded batches — list at most kwokDeleteBatch names, delete them
 // individually with bounded concurrency, repeat — rather than handing the API
@@ -129,8 +128,18 @@ func isRetryableTeardownErr(err error) bool {
 // for well over a minute, and a request that long through a proxy gets abandoned
 // mid-flight. Short requests cannot be abandoned that way, and each pass reports
 // real progress.
-func (c *clients) deleteAllKwokNodes(ctx context.Context, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+//
+// idleTimeout bounds inactivity, not the whole teardown: every pass that removes
+// at least one node pushes the deadline out. A wall-clock budget for the entire
+// fleet cannot be set correctly here, because the cost scales with fleet size
+// while the budget is fixed — a measured 26-32 node deletes/sec (server-bound;
+// tripling client concurrency bought only 20%) puts a 50k fleet at ~30 minutes,
+// so the former fixed 20-minute budget failed teardown that was working fine.
+// Inactivity is the real signal of a wedged teardown, and the stall counter
+// below still catches a fleet that will not drain. The caller's context supplies
+// the absolute upper bound.
+func (c *clients) deleteAllKwokNodes(ctx context.Context, idleTimeout time.Duration) error {
+	deadline := time.Now().Add(idleTimeout)
 	var removed int64
 	stalled := 0
 
@@ -139,7 +148,7 @@ func (c *clients) deleteAllKwokNodes(ctx context.Context, timeout time.Duration)
 			return err
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timed out deleting kwok nodes after removing %d", removed)
+			return fmt.Errorf("kwok node teardown made no progress for %s after removing %d", idleTimeout, removed)
 		}
 
 		names, err := c.listKwokNodeNamesBatch(ctx, kwokDeleteBatch)
@@ -170,6 +179,7 @@ func (c *clients) deleteAllKwokNodes(ctx context.Context, timeout time.Duration)
 		// reported errors. A pass that removes nothing means something is wedged.
 		if deleted > 0 {
 			stalled = 0
+			deadline = time.Now().Add(idleTimeout)
 			continue
 		}
 		stalled++

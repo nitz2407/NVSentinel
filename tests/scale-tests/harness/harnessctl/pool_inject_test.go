@@ -84,3 +84,60 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// Doing: lock -count to event volume, independent of fleet size.
+//
+// injectAcrossPool used to hardcode each connector's count to the number of
+// nodes it represented, so the total was always the fleet size and -count was
+// silently discarded. A spec asking for 40000 events against 1000 nodes got
+// 1000, and reconcile -expect-injected=40000 then failed the run at 97.5%
+// loss.
+func TestShardEventCountSplitsRequestedVolume(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		total, totalConn, npc int
+		wantPerConn, wantSum  int
+	}{{
+		name: "divides evenly", total: 40000, totalConn: 1000, npc: 1,
+		wantPerConn: 40, wantSum: 40000,
+	}, {
+		name: "volume below fleet", total: 100, totalConn: 100, npc: 10,
+		wantPerConn: 1, wantSum: 100,
+	}, {
+		// Uniform COUNT per connector means the total rounds up.
+		name: "rounds up when indivisible", total: 1000, totalConn: 32, npc: 1,
+		wantPerConn: 32, wantSum: 1024,
+	}, {
+		// Unset count keeps the fleet-storm shape the scale rungs rely on.
+		name: "unset falls back to one per node", total: 0, totalConn: 100, npc: 10,
+		wantPerConn: 10, wantSum: 1000,
+	}, {
+		name: "negative treated as unset", total: -1, totalConn: 8, npc: 4,
+		wantPerConn: 4, wantSum: 32,
+	}, {
+		name: "no connectors", total: 500, totalConn: 0, npc: 1,
+		wantPerConn: 0, wantSum: 0,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			perConn, sum := shardEventCount(tc.total, tc.totalConn, tc.npc)
+			if perConn != tc.wantPerConn || sum != tc.wantSum {
+				t.Fatalf("shardEventCount(%d, %d, %d) = (%d, %d), want (%d, %d)",
+					tc.total, tc.totalConn, tc.npc, perConn, sum, tc.wantPerConn, tc.wantSum)
+			}
+		})
+	}
+}
+
+// Doing: the reported expect must be what was sent, not what was asked for.
+// reconcile fails a run on any gap between expect and stored, so reporting the
+// unrounded request would fail every run whose count is not divisible by the
+// connector count.
+func TestShardEventCountExpectMatchesWhatIsSent(t *testing.T) {
+	perConn, expect := shardEventCount(1000, 32, 1)
+	if expect != perConn*32 {
+		t.Fatalf("expect %d is not perConn %d x 32 connectors", expect, perConn)
+	}
+	if expect < 1000 {
+		t.Fatalf("expect %d under-counts the 1000 requested; reconcile would see phantom surplus", expect)
+	}
+}

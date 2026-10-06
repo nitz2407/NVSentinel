@@ -78,10 +78,34 @@ type injectOptions struct {
 
 var ackedRe = regexp.MustCompile(`acked=([0-9]+)`)
 
+// shardEventCount splits a requested event total across the connector pool,
+// returning the per-connector count and the total that will actually be sent.
+//
+// Every connector on a node is driven by one shell invocation sharing a single
+// COUNT, so the split has to be uniform: the per-connector count is rounded up
+// and the real total can exceed the request by up to totalConn-1 events.
+// Reporting that rounded total as expect keeps reconcile's accounting honest,
+// since reconcile compares against what was sent, not what was asked for.
+//
+// total <= 0 means the caller stated no volume, which keeps the historical
+// behaviour of one event per emulated node: the fleet-storm shape the scale
+// rungs are built on, where every node gets exactly one health event.
+func shardEventCount(total, totalConn, npc int) (perConn, expect int) {
+	if totalConn <= 0 {
+		return 0, 0
+	}
+	perConn = npc
+	if total > 0 {
+		perConn = (total + totalConn - 1) / totalConn
+	}
+	return perConn, perConn * totalConn
+}
+
 // injectAcrossPool is the operator-facing distributed injector behind
 // `harnessctl inject` (no -socket): one invocation fans injection out through
-// the resident injectors in parallel — each connector injects one event per
-// emulated node it represents (count/connector = nodes-per-connector).
+// the resident injectors in parallel. -count is the total event volume and is
+// split evenly across connectors; each connector round-robins its share over
+// the node shard it represents, so volume and fleet size are independent.
 // Injection only; accounting is the separate `reconcile` command.
 func (c *clients) injectAcrossPool(ctx context.Context, cfg Config, rate float64, runID string) error {
 	stepf("P0.3 distributed inject across the connector pool")
@@ -89,11 +113,16 @@ func (c *clients) injectAcrossPool(ctx context.Context, cfg Config, rate float64
 	if err != nil {
 		return err
 	}
-	expect := geo.totalConn * geo.npc
-	infof("distributed inject: nodes=%d connectors=%d nodes/conn=%d expect=%d run-id=%s",
-		len(geo.byNode), geo.totalConn, geo.npc, expect, runID)
+	perConn, expect := shardEventCount(cfg.EventCount, geo.totalConn, geo.npc)
+	if cfg.EventCount > 0 && expect != cfg.EventCount {
+		infof("distributed inject: %d events requested rounded up to %d (%d per connector x %d connectors); "+
+			"an exact total needs count divisible by the connector count",
+			cfg.EventCount, expect, perConn, geo.totalConn)
+	}
+	infof("distributed inject: nodes=%d connectors=%d nodes/conn=%d count/conn=%d expect=%d run-id=%s",
+		len(geo.byNode), geo.totalConn, geo.npc, perConn, expect, runID)
 	acked, err := c.injectViaInjectors(ctx, cfg, geo, injectOptions{
-		count: geo.npc, rate: rate, fatalFrac: cfg.FatalFraction, runID: runID,
+		count: perConn, rate: rate, fatalFrac: cfg.FatalFraction, runID: runID,
 		fatalEvent: cfg.FatalEvent, pattern: cfg.Pattern, procStrategy: cfg.ProcessingStrategy,
 	})
 	if err != nil {

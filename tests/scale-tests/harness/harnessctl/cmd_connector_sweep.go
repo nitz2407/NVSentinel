@@ -529,6 +529,14 @@ func (c *clients) mongoUsageFromKubelet(ctx context.Context, pods []corev1.Pod) 
 }
 
 type kubeletSummary struct {
+	Node struct {
+		CPU struct {
+			UsageNanoCores int64 `json:"usageNanoCores"`
+		} `json:"cpu"`
+		Memory struct {
+			WorkingSetBytes int64 `json:"workingSetBytes"`
+		} `json:"memory"`
+	} `json:"node"`
 	Pods []kubeletPodStats `json:"pods"`
 }
 

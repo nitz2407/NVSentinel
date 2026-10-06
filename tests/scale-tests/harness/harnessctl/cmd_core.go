@@ -1,12 +1,11 @@
+//go:build !injector
+
 /*
 Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
-
-
-//go:build !injector
 
 package main
 
@@ -259,6 +258,17 @@ func runBringup(ctx context.Context, args []string) error {
 		}
 	}
 
+	// Managed metrics-server (AKS) ships an addon-resizer nanny that scales with
+	// Node count. KWOK inflates that count; pin so metrics.k8s.io stays Ready.
+	if changed, err := c.pinManagedMetricsServer(ctx); err != nil {
+		warnf("metrics-server pin (nanny): %v — component CPU/mem will use kubelet/Prometheus fallbacks", err)
+	} else if changed {
+		infof("pinned metrics-server: dropped addon-resizer nanny; addon mode EnsureExists")
+		if err := c.waitDeployRollout(ctx, "kube-system", "metrics-server", 3*time.Minute); err != nil {
+			warnf("metrics-server pin rollout: %v", err)
+		}
+	}
+
 	// (4) Verify node inventory.
 	stepf("P0.1 bring-up: verifying nodes")
 	real, kwok, err := c.nodeInventory(ctx)
@@ -339,11 +349,15 @@ func checkScaleNodes(ctx context.Context, c *clients, cfg Config) CheckResult {
 		Started:  started,
 		Finished: time.Now(),
 		Metrics: map[string]any{
-			"target_nodes":            cfg.NodeCount,
-			"ready_nodes":             ready,
-			"created":                 created,
-			"failed":                  failed,
-			"time_to_ready_seconds":   elapsed.Seconds(),
+			"target_nodes":          cfg.NodeCount,
+			"ready_nodes":           ready,
+			"created":               created,
+			"failed":                failed,
+			"time_to_ready_seconds": elapsed.Seconds(),
+			// When the fleet reached its target size. `report` uses this to size
+			// its own PromQL lookback, so peaks belong to THIS fleet instead of
+			// whatever fleet the cluster held before the run.
+			"ready_at_utc":            time.Now().UTC().Format(time.RFC3339),
 			"apiserver_p99_seconds":   fmtFloat(p99, p99ok),
 			"guardrail_p99_seconds":   cfg.MaxAPIServerP99,
 			"cluster_cpu_pct":         util.CPUPct,

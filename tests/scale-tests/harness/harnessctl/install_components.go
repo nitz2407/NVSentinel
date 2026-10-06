@@ -1,12 +1,11 @@
+//go:build !injector
+
 /*
 Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
-
-
-//go:build !injector
 
 package main
 
@@ -21,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -120,6 +120,78 @@ func installMetricsServer(ctx context.Context, c *clients, cfg Config) error {
 	}
 	infof("metrics-server ready in namespace kube-system")
 	return nil
+}
+
+// pinManagedMetricsServer stops the AKS addon-resizer (pod-nanny) from sizing
+// metrics-server as a function of *all* Node objects. At 50k KWOK nodes the
+// nanny formula is ~25 CPU / ~196Gi and the nanny itself OOMs in 300Mi while
+// listing the fleet, so the pod never goes Ready and metrics.k8s.io disappears.
+// Reconcile-mode addon-manager often restores the sidecar within seconds; this
+// pin is best-effort. stack report falls back to kubelet stats/summary and
+// Prometheus process metrics when metrics-server stays down.
+func (c *clients) pinManagedMetricsServer(ctx context.Context) (bool, error) {
+	d, err := c.kube.AppsV1().Deployments("kube-system").Get(ctx, "metrics-server", metav1.GetOptions{})
+	if err != nil {
+		return false, err
+	}
+	changed := false
+	if d.Labels == nil {
+		d.Labels = map[string]string{}
+	}
+	if d.Labels["addonmanager.kubernetes.io/mode"] == "Reconcile" {
+		d.Labels["addonmanager.kubernetes.io/mode"] = "EnsureExists"
+		changed = true
+	}
+	keep := make([]corev1.Container, 0, len(d.Spec.Template.Spec.Containers))
+	for _, ct := range d.Spec.Template.Spec.Containers {
+		if isMetricsServerNanny(ct) {
+			changed = true
+			continue
+		}
+		if ct.Name == "metrics-server" && capMetricsServerResources(&ct) {
+			changed = true
+		}
+		keep = append(keep, ct)
+	}
+	if len(keep) == 0 {
+		return false, fmt.Errorf("metrics-server pin: no non-nanny containers left")
+	}
+	d.Spec.Template.Spec.Containers = keep
+	if !changed {
+		return false, nil
+	}
+	if _, err := c.kube.AppsV1().Deployments("kube-system").Update(ctx, d, metav1.UpdateOptions{}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func isMetricsServerNanny(ct corev1.Container) bool {
+	n := strings.ToLower(ct.Name)
+	img := strings.ToLower(ct.Image)
+	if strings.Contains(n, "nanny") || strings.Contains(n, "vpa") || strings.Contains(n, "resizer") {
+		return true
+	}
+	return strings.Contains(img, "addon-resizer") || strings.Contains(img, "/nanny")
+}
+
+func capMetricsServerResources(ct *corev1.Container) bool {
+	if ct.Resources.Requests == nil {
+		ct.Resources.Requests = corev1.ResourceList{}
+	}
+	mem := ct.Resources.Requests[corev1.ResourceMemory]
+	cpu := ct.Resources.Requests[corev1.ResourceCPU]
+	if mem.Cmp(resource.MustParse("8Gi")) <= 0 && cpu.Cmp(resource.MustParse("4")) <= 0 && mem.Value() > 0 && cpu.MilliValue() > 0 {
+		return false
+	}
+	ct.Resources.Requests[corev1.ResourceCPU] = resource.MustParse("1")
+	ct.Resources.Requests[corev1.ResourceMemory] = resource.MustParse("2Gi")
+	if ct.Resources.Limits == nil {
+		ct.Resources.Limits = corev1.ResourceList{}
+	}
+	ct.Resources.Limits[corev1.ResourceCPU] = resource.MustParse("4")
+	ct.Resources.Limits[corev1.ResourceMemory] = resource.MustParse("8Gi")
+	return true
 }
 
 // ---------------------------------------------------------------------------

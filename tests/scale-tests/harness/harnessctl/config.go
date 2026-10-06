@@ -32,6 +32,11 @@ type Config struct {
 	// (max_over_time) queries — long enough to span a full run.
 	ReportWindow string
 
+	// ReportWindowNote records how ReportWindow was chosen (derived from the
+	// fleet-ready timestamp, set explicitly, or defaulted) so the report can
+	// state which fleet its peaks describe.
+	ReportWindowNote string
+
 	// NVSChartVersion is the TARGET NVSentinel version for version-aware bringup:
 	// the container image tag (e.g. v1.16.0). When set, `bringup` compares it
 	// against the running NVSentinel and helm-upgrades on mismatch; empty leaves

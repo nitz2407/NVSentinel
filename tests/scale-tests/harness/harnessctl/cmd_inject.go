@@ -39,6 +39,11 @@ const (
 // shape of the fatal/healthy mix over the injected node set.
 const (
 	patternFleetStorm      = "fleet-storm"       // independent per-event fatal draw at fatal-fraction across the fleet
+	// defaultPrimitiveCount is the volume a -socket / -direct-mongo primitive
+	// injects when -count says nothing. It was the -count flag default until
+	// that default had to become 0 so distributed mode could tell "unset" from
+	// an explicit volume.
+	defaultPrimitiveCount = 10000
 	patternFlappy          = "flappy"            // alternate fatal/healthy so nodes repeatedly flap state
 	patternSingleNodeBurst = "single-node-burst" // every event fatal (a burst concentrated on the caller's node set)
 )
@@ -136,7 +141,12 @@ func runInject(ctx context.Context, args []string) error {
 	nodeCount := fs.Int("nodes", 50000, "number of simulated node names to spread events across")
 	nodeOffset := fs.Int("node-offset", 0, "start index for generated node names (P0.5 pool sharding: pod N owns [offset, offset+nodes))")
 	nodesFrom := fs.String("nodes-from", "", "optional file of node names (one per line)")
-	total := fs.Int("count", 10000, "total events to inject")
+	// 0 is the sentinel for "caller stated no volume": distributed mode then
+	// injects one event per emulated node (the fleet-storm shape the scale
+	// rungs are built on), and the -socket primitive falls back to
+	// defaultPrimitiveCount. A non-zero default here would make that sentinel
+	// unreachable, since the flag would always look explicitly set.
+	total := fs.Int("count", 0, "total events to inject (0 => one event per emulated node in distributed mode)")
 	rate := fs.Float64("rate", 500, "target events/sec")
 	runID := fs.String("run-id", "", "correlation run id (default: random)")
 	runLabel := fs.String("run-label", "nvs_harness_run", "metadata key stamped with the run id")
@@ -175,6 +185,16 @@ func runInject(ctx context.Context, args []string) error {
 		*runID = fmt.Sprintf("run-%d-%s", time.Now().Unix(), randHex(4))
 	}
 
+	// Only distributed mode can turn "no volume stated" into one event per
+	// emulated node; a primitive is handed an explicit node list and has no
+	// fleet to size against. Resolve the sentinel to the historical default
+	// here so the primitives behave exactly as they did before -count grew one,
+	// and leave *total alone for the distributed dispatch below.
+	primitiveCount := *total
+	if primitiveCount <= 0 {
+		primitiveCount = defaultPrimitiveCount
+	}
+
 	// Primitive direct-MongoDB insert (checked before distributed dispatch so it
 	// does not recurse — mirrors reconcile's -direct). Set automatically inside an
 	// injector by the mongo-mechanism / coldstart orchestration.
@@ -183,7 +203,7 @@ func runInject(ctx context.Context, args []string) error {
 		return runInjectMongoPrimitive(ctx,
 			reconcileParams{uri: *mURI, db: *mDB, coll: *mColl, timeout: *mTimeout,
 				tlsCertDir: *mTLSDir, tlsInsecure: *mTLSInsecure, authMech: *mAuthMech, authSource: *mAuthSrc},
-			mongoInjectOptions{nodes: nodes, total: *total, workers: *mWorkers, batch: *mBatch,
+			mongoInjectOptions{nodes: nodes, total: primitiveCount, workers: *mWorkers, batch: *mBatch,
 				pattern: pat, procStrategy: ps, fatalFrac: *fatalFrac, fatalAgent: *fatalAgent, fatalEvent: fe,
 				runID: *runID, runLabel: *runLabel, idLabel: *idLabel, ledgerPath: *ledgerPath,
 				coldstartRatio: *coldstartRatio})
@@ -192,7 +212,15 @@ func runInject(ctx context.Context, args []string) error {
 	// Distributed mode (operator CLI only): one command fires every resident
 	// injector in the pool. The in-cluster harness-inject binary stubs this path.
 	if *socket == "" {
+		// -fatal-fraction has to be copied across with the rest of the
+		// generation knobs. Both orchestrated paths read cfg.FatalFraction
+		// (pool_inject and mongo_inject_orchestrate), never the flag, so
+		// omitting it here left the flag silently inert on the only paths the
+		// operator CLI takes: every distributed run injected at the 0.08
+		// default however it was invoked, and a run asking to fault the whole
+		// fleet quietly cordoned 8% of it.
 		cfg.FatalEvent, cfg.Pattern, cfg.ProcessingStrategy = fe, pat, ps
+		cfg.FatalFraction = *fatalFrac
 		return dispatchInjectDistributed(ctx, cfg, injectDispatchOpts{
 			mechanism: *mechanism, rate: *rate, runID: *runID,
 			total: *total, workers: *mWorkers, batch: *mBatch,
@@ -202,7 +230,7 @@ func runInject(ctx context.Context, args []string) error {
 	}
 
 	infof("injector run-id=%s socket=%s nodes=%d count=%d rate=%.1f/s pattern=%s fatal-event=%s proc-strategy=%s",
-		*runID, *socket, *nodeCount, *total, *rate, pat, fe, normalizeProcStrategyName(ps))
+		*runID, *socket, *nodeCount, primitiveCount, *rate, pat, fe, normalizeProcStrategyName(ps))
 
 	nodes := buildNodeNames(*nodesFrom, *nodePrefix, *nodeOffset, *nodeCount)
 	if len(nodes) == 0 {
@@ -230,10 +258,10 @@ func runInject(ctx context.Context, args []string) error {
 
 	acked, failed := 0, 0
 	start := time.Now()
-	for i := 0; i < *total; i++ {
+	for i := 0; i < primitiveCount; i++ {
 		select {
 		case <-ctx.Done():
-			warnf("interrupted at %d/%d", i, *total)
+			warnf("interrupted at %d/%d", i, primitiveCount)
 			lw.Flush()
 			return ctx.Err()
 		case <-ticker.C:
@@ -249,11 +277,11 @@ func runInject(ctx context.Context, args []string) error {
 		}
 		writeLedger(lw, ledgerEntry{ID: id, Node: node, Type: kind, SentUnix: time.Now().UnixMilli(), Acked: ok})
 		if (i+1)%1000 == 0 {
-			infof("progress: %d/%d (acked=%d failed=%d, %.0f/s)", i+1, *total, acked, failed, float64(i+1)/time.Since(start).Seconds())
+			infof("progress: %d/%d (acked=%d failed=%d, %.0f/s)", i+1, primitiveCount, acked, failed, float64(i+1)/time.Since(start).Seconds())
 		}
 	}
 	lw.Flush()
-	infof("done: sent=%d acked=%d failed=%d run-id=%s", *total, acked, failed, *runID)
+	infof("done: sent=%d acked=%d failed=%d run-id=%s", primitiveCount, acked, failed, *runID)
 	fmt.Println(*runID)
 	if failed > 0 {
 		return fmt.Errorf("%d events failed to ack", failed)

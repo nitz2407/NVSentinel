@@ -1,12 +1,11 @@
+//go:build !injector
+
 /*
 Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
-
-
-//go:build !injector
 
 package main
 
@@ -273,6 +272,7 @@ func (c *clients) kwokControllerCPUCores(ctx context.Context) (float64, bool) {
 // would mask the real control-plane/worker pressure that actually bounds Phase 2.
 type clusterUtil struct {
 	OK               bool    `json:"ok"`
+	Source           string  `json:"source,omitempty"`
 	RealNodes        int     `json:"real_nodes"`
 	CPUUsedCores     float64 `json:"cpu_used_cores"`
 	CPUCapacityCores float64 `json:"cpu_capacity_cores"`
@@ -288,7 +288,7 @@ type clusterUtil struct {
 // fail spuriously).
 func (c *clients) clusterNodeUtil(ctx context.Context) clusterUtil {
 	var u clusterUtil
-	nodes, err := c.kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	nodes, err := c.kube.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: "type!=kwok"})
 	if err != nil {
 		return u
 	}
@@ -314,7 +314,7 @@ func (c *clients) clusterNodeUtil(ctx context.Context) clusterUtil {
 	raw, err := c.kube.CoreV1().RESTClient().Get().
 		AbsPath("/apis/metrics.k8s.io/v1beta1/nodes").DoRaw(ctx)
 	if err != nil {
-		return u
+		return c.clusterUtilFromKubelet(ctx, real, capCPUmilli, capMemMi)
 	}
 	var nm struct {
 		Items []struct {
@@ -328,13 +328,15 @@ func (c *clients) clusterNodeUtil(ctx context.Context) clusterUtil {
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(raw, &nm); err != nil {
-		return u
+		return c.clusterUtilFromKubelet(ctx, real, capCPUmilli, capMemMi)
 	}
 	var useCPUmilli, useMemMi int64
+	realSamples := 0
 	for _, it := range nm.Items {
 		if !real[it.Metadata.Name] {
 			continue
 		}
+		realSamples++
 		if q, err := resource.ParseQuantity(it.Usage.CPU); err == nil {
 			useCPUmilli += q.MilliValue()
 		}
@@ -342,8 +344,52 @@ func (c *clients) clusterNodeUtil(ctx context.Context) clusterUtil {
 			useMemMi += q.Value() / (1024 * 1024)
 		}
 	}
+	if realSamples == 0 {
+		return c.clusterUtilFromKubelet(ctx, real, capCPUmilli, capMemMi)
+	}
 
 	u.OK = true
+	u.Source = "metrics-server"
+	u.RealNodes = len(real)
+	u.CPUUsedCores = float64(useCPUmilli) / 1000.0
+	u.CPUCapacityCores = float64(capCPUmilli) / 1000.0
+	u.CPUPct = float64(useCPUmilli) / float64(capCPUmilli)
+	u.MemUsedMi = useMemMi
+	u.MemCapacityMi = capMemMi
+	if capMemMi > 0 {
+		u.MemPct = float64(useMemMi) / float64(capMemMi)
+	}
+	return u
+}
+
+// clusterUtilFromKubelet sums real-node kubelet stats/summary. KWOK nodes are
+// skipped — they have no kubelet. Used when metrics-server is down (AKS nanny
+// OOM at large KWOK counts) so P0.2 and stack report still record cluster util.
+func (c *clients) clusterUtilFromKubelet(ctx context.Context, real map[string]bool, capCPUmilli, capMemMi int64) clusterUtil {
+	var u clusterUtil
+	if len(real) == 0 || capCPUmilli == 0 {
+		return u
+	}
+	var useCPUmilli, useMemMi int64
+	samples := 0
+	for name := range real {
+		raw, err := c.kubeletStatsSummaryRaw(ctx, name)
+		if err != nil {
+			continue
+		}
+		var sum kubeletSummary
+		if err := json.Unmarshal(raw, &sum); err != nil {
+			continue
+		}
+		samples++
+		useCPUmilli += nanoCoresToMilli(sum.Node.CPU.UsageNanoCores)
+		useMemMi += sum.Node.Memory.WorkingSetBytes / (1024 * 1024)
+	}
+	if samples == 0 {
+		return u
+	}
+	u.OK = true
+	u.Source = "kubelet-summary"
 	u.RealNodes = len(real)
 	u.CPUUsedCores = float64(useCPUmilli) / 1000.0
 	u.CPUCapacityCores = float64(capCPUmilli) / 1000.0
@@ -360,7 +406,7 @@ func (c *clients) clusterNodeUtil(ctx context.Context) clusterUtil {
 // human-readable summary of the utilization vs the guardrails.
 func (u clusterUtil) breaches(cfg Config) (bool, string) {
 	if !u.OK {
-		return false, "cluster cpu/mem: unavailable (metrics-server absent)"
+		return false, "cluster cpu/mem: unavailable (metrics-server and kubelet summary absent)"
 	}
 	over := u.CPUPct > cfg.MaxClusterCPUPct || u.MemPct > cfg.MaxClusterMemPct
 	return over, fmt.Sprintf("cluster cpu=%.1f%% (%.1f/%.1f cores) mem=%.1f%% (%d/%d Mi) over %d real nodes vs guardrails cpu=%.0f%% mem=%.0f%%",

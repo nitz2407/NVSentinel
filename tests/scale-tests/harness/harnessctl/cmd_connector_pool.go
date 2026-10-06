@@ -182,7 +182,13 @@ func runConnectorPool(ctx context.Context, args []string) error {
 
 	// The emulated fleet the pool must represent IS the live KWOK fleet — derive
 	// it instead of taking a flag, so it always matches what `scale-nodes` created.
-	emulated := c.countKwokNodesOrZero(ctx)
+	//
+	// Keep the LIST error distinct from a genuinely empty fleet: collapsing the two
+	// told an operator staring at 50k Ready nodes to go run `scale-nodes`.
+	emulated, err := c.countKwokNodes(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot size the pool: counting live KWOK nodes failed: %w", err)
+	}
 	if emulated <= 0 {
 		return fmt.Errorf("no live KWOK nodes found: run `scale-nodes -count N` first so the pool can size to the emulated fleet")
 	}

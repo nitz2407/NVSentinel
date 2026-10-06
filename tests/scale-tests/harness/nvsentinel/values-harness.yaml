@@ -117,6 +117,12 @@ node-drainer:
     enabled: false
 
 # labeler lists+watches every node; its cache dominates memory at fleet scale.
+#
+# The limit is deliberately well above observed demand. At 50k nodes the labeler
+# sat at 15.96Gi against a 16Gi limit and OOMKilled 51 times, so that reading was
+# the cap rather than what it actually wanted — useless for sizing. Headroom here
+# means the sizing report measures demand; if it ever pins to this ceiling again,
+# raise it before trusting the number.
 labeler:
   resources:
     requests:
@@ -124,7 +130,7 @@ labeler:
       memory: 4Gi
     limits:
       cpu: "2"
-      memory: 16Gi
+      memory: 32Gi
 
 # fault-remediation holds the remediation queue; OOM'd at the stock limit at 20k+.
 fault-remediation:
@@ -145,6 +151,29 @@ fault-quarantine:
     limits:
       cpu: "2"
       memory: 6Gi
+  # The circuit breaker is off for scale runs, which is the only way P0.4 produces
+  # data on this harness.
+  #
+  # Its threshold is a percentage of *GPU* nodes, counted by listing
+  # `nvidia.com/gpu.present=true`. harnessctl stamps that label on every KWOK node
+  # at creation, but this cluster runs GPU Operator's NFD stack, which owns the
+  # `nvidia.com/gpu.*` namespace and rewrites it to false on nodes where it finds
+  # no GPU. The fleet therefore drops out of the denominator and only the real
+  # nodes remain: 26 here, so the threshold is ceil(26 x 50%) = 13 cordons in 5m,
+  # while a fleet-storm at fatal-fraction 0.08 wants roughly 800. It trips in the
+  # first moment of remediation.
+  #
+  # Once tripped it stays tripped: the state is persisted in the `circuit-breaker`
+  # ConfigMap and halts event dequeuing indefinitely, with no self-reset and no
+  # expiry. That is why the 25k/50k/100k/10k runs before this change all reported
+  # zero cordons and no GPUReset CRs. Disabling skips breaker init outright, so
+  # the stale TRIPPED ConfigMap no longer has to be cleared by hand.
+  #
+  # Safe only because the cordon targets are simulated nodes. Never carry this
+  # into a real cluster — the breaker is what bounds the blast radius of a
+  # fleet-wide false positive.
+  circuitBreaker:
+    enabled: false
 
 # kubernetes-object-monitor mirrors cluster objects; cache is large at fleet scale.
 kubernetes-object-monitor:
@@ -216,6 +245,18 @@ mongodb-store:
       size: 40Gi
     metrics:
       enabled: true
+      # The chart's default preset caps this exporter at 192Mi, which OOMKilled
+      # it 117 times against a 50k-node event store. While it is down Prometheus
+      # has no mongodb series, so the sizing report falls back to a point sample
+      # of process RSS and reports single-digit GB for a store that should be far
+      # larger. Sized explicitly so the MongoDB column is actually measured.
+      resources:
+        requests:
+          cpu: 100m
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 2Gi
       serviceMonitor:
         enabled: true
         interval: 15s

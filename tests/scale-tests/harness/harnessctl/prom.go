@@ -1,12 +1,11 @@
+//go:build !injector
+
 /*
 Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 */
-
-
-//go:build !injector
 
 package main
 
@@ -17,48 +16,72 @@ import (
 	"strconv"
 )
 
+type promVectorSample struct {
+	Metric map[string]string
+	Value  float64
+}
+
 // promInstantQuery runs a Prometheus instant query through the API server
 // service proxy (no port-forward, no curl/jq). Returns the first sample's scalar
 // value, or (0, false) if there is no data.
 func (c *clients) promInstantQuery(ctx context.Context, cfg Config, query string) (float64, bool) {
+	samples := c.promQueryVector(ctx, cfg, query)
+	if len(samples) == 0 {
+		return 0, false
+	}
+	return samples[0].Value, true
+}
+
+func (c *clients) promQueryVector(ctx context.Context, cfg Config, query string) []promVectorSample {
 	raw, err := c.kube.CoreV1().
 		Services(cfg.MonitoringNamespace).
 		ProxyGet("http", cfg.MonPromSvc, cfg.MonPromPort, "/api/v1/query", map[string]string{"query": query}).
 		DoRaw(ctx)
 	if err != nil {
 		warnf("prometheus query failed (%s:%s in %s): %v", cfg.MonPromSvc, cfg.MonPromPort, cfg.MonitoringNamespace, err)
-		return 0, false
+		return nil
 	}
+	samples, err := parsePromQueryResponse(raw)
+	if err != nil {
+		warnf("prometheus response parse error: %v", err)
+		return nil
+	}
+	return samples
+}
 
+func parsePromQueryResponse(raw []byte) ([]promVectorSample, error) {
 	var resp struct {
 		Status string `json:"status"`
 		Data   struct {
 			ResultType string `json:"resultType"`
 			Result     []struct {
-				Value []any `json:"value"` // [ <ts float>, "<value string>" ]
+				Metric map[string]string `json:"metric"`
+				Value  []any             `json:"value"` // [ <ts float>, "<value string>" ]
 			} `json:"result"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		warnf("prometheus response parse error: %v", err)
-		return 0, false
+		return nil, err
 	}
-	if resp.Status != "success" || len(resp.Data.Result) == 0 {
-		return 0, false
+	if resp.Status != "success" {
+		return nil, nil
 	}
-	val := resp.Data.Result[0].Value
-	if len(val) != 2 {
-		return 0, false
+	out := make([]promVectorSample, 0, len(resp.Data.Result))
+	for _, r := range resp.Data.Result {
+		if len(r.Value) != 2 {
+			continue
+		}
+		s, ok := r.Value[1].(string)
+		if !ok {
+			continue
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			continue
+		}
+		out = append(out, promVectorSample{Metric: r.Metric, Value: f})
 	}
-	s, ok := val[1].(string)
-	if !ok {
-		return 0, false
-	}
-	f, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0, false
-	}
-	return f, true
+	return out, nil
 }
 
 const apiserverP99Query = `histogram_quantile(0.99, sum(rate(apiserver_request_duration_seconds_bucket{verb!~"WATCH|CONNECT"}[5m])) by (le))`

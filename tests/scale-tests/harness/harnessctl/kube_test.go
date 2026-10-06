@@ -1,77 +1,122 @@
-/*
-Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-*/
-
-
 //go:build !injector
+
+// SPDX-License-Identifier: Apache-2.0
 
 package main
 
 import (
-	"fmt"
-	"reflect"
+	"errors"
 	"testing"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-func TestMissingIndices(t *testing.T) {
-	cfg := Config{NodeCount: 6, NodePrefix: "kwok-gpu"}
-	mk := func(idxs ...int) map[string]struct{} {
-		s := make(map[string]struct{})
-		for _, i := range idxs {
-			s[fmt.Sprintf("%s-%d", cfg.NodePrefix, i)] = struct{}{}
-		}
-		return s
-	}
+// expiredContinueErr is the error the API server returns once the revision a
+// paged walk started at has been compacted: "The provided continue parameter is
+// too old to display a consistent list result."
+func expiredContinueErr() error {
+	return apierrors.NewResourceExpired("The provided continue parameter is too old to display a consistent list result")
+}
 
-	tests := []struct {
-		name     string
-		existing map[string]struct{}
-		want     []int
+func TestIsExpiredContinueErr(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
 	}{
-		{
-			name:     "empty cluster -> all indices",
-			existing: mk(),
-			want:     []int{0, 1, 2, 3, 4, 5},
-		},
-		{
-			name:     "full cluster -> nothing missing",
-			existing: mk(0, 1, 2, 3, 4, 5),
-			want:     []int{},
-		},
-		{
-			// The exact bug that forced manual cloning: scattered gaps while the
-			// COUNT (4) would have made the old code create indices 4,5 only.
-			name:     "scattered gaps are the missing set, not a tail append",
-			existing: mk(0, 2, 3, 5),
-			want:     []int{1, 4},
-		},
-		{
-			name:     "contiguous tail still works",
-			existing: mk(0, 1, 2, 3),
-			want:     []int{4, 5},
-		},
+		{"expired continue token", expiredContinueErr(), true},
+		{"gone", apierrors.NewGone("too old"), true},
+		{"not found", apierrors.NewNotFound(schema.GroupResource{Resource: "nodes"}, "kwok-gpu-1"), false},
+		{"timeout", apierrors.NewTimeoutError("slow", 1), false},
+		{"plain error", errors.New("connection reset"), false},
 	}
-	for _, tc := range tests {
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := missingIndices(cfg, tc.existing)
-			if len(got) == 0 && len(tc.want) == 0 {
-				return
-			}
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("missingIndices = %v, want %v", got, tc.want)
+			if got := isExpiredContinueErr(tc.err); got != tc.want {
+				t.Fatalf("isExpiredContinueErr(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}
 }
 
-func TestIsTransientCreateErr(t *testing.T) {
-	if isTransientCreateErr(nil) {
-		t.Error("nil should not be transient")
+// A 50k-node walk needs ~100 pages, long enough for etcd to compact the token
+// out from under it. That aborted `pool create` mid-run with "no live KWOK nodes
+// found" while 50,000 nodes were Ready, so a restart must recover the count.
+func TestWalkWithRestartsRecoversFromExpiredToken(t *testing.T) {
+	calls := 0
+	got, err := walkWithRestarts("count", func() (int, error) {
+		calls++
+		if calls <= 2 {
+			return 0, expiredContinueErr()
+		}
+		return 50000, nil
+	})
+	if err != nil {
+		t.Fatalf("expected recovery after restarts, got error: %v", err)
 	}
-	if isTransientCreateErr(fmt.Errorf("some random error")) {
-		t.Error("arbitrary error should not be transient")
+	if got != 50000 {
+		t.Fatalf("count = %d, want 50000", got)
+	}
+	if calls != 3 {
+		t.Fatalf("walk called %d times, want 3 (two expired, one success)", calls)
+	}
+}
+
+// A partial count must never be returned as if it were the whole fleet: the pool
+// sizes itself to this number, and N is the denominator of every per-node rate.
+func TestWalkWithRestartsGivesUpAfterBoundedRestarts(t *testing.T) {
+	calls := 0
+	got, err := walkWithRestarts("count", func() (int, error) {
+		calls++
+		return 17, expiredContinueErr()
+	})
+	if err == nil {
+		t.Fatal("expected an error once restarts are exhausted, got nil")
+	}
+	if got != 0 {
+		t.Fatalf("got %d on failure, want the zero value so no caller mistakes a partial walk for the fleet", got)
+	}
+	if calls != listRestarts+1 {
+		t.Fatalf("walk called %d times, want %d", calls, listRestarts+1)
+	}
+	if !apierrors.IsResourceExpired(err) {
+		t.Fatalf("expected the expiry cause to stay unwrappable, got %v", err)
+	}
+}
+
+// Any other list failure is the caller's problem to report, not something to
+// retry: retrying a permission or connection error just delays the diagnosis.
+func TestWalkWithRestartsDoesNotRetryOtherErrors(t *testing.T) {
+	calls := 0
+	sentinel := apierrors.NewForbidden(schema.GroupResource{Resource: "nodes"}, "", errors.New("nope"))
+	_, err := walkWithRestarts("count", func() (int, error) {
+		calls++
+		return 0, sentinel
+	})
+	if calls != 1 {
+		t.Fatalf("walk called %d times, want 1 (no retry on a non-expiry error)", calls)
+	}
+	if !apierrors.IsForbidden(err) {
+		t.Fatalf("expected the original error to pass through, got %v", err)
+	}
+}
+
+// walkWithRestarts is generic so the report's node-stats walk shares it; check a
+// non-scalar payload survives both the success and failure paths.
+func TestWalkWithRestartsHandlesStructPayload(t *testing.T) {
+	calls := 0
+	ns, err := walkWithRestarts("report: list nodes", func() (nodeStats, error) {
+		calls++
+		if calls == 1 {
+			return nodeStats{Total: 3}, expiredContinueErr()
+		}
+		return nodeStats{Total: 50000}, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ns.Total != 50000 {
+		t.Fatalf("Total = %d, want 50000", ns.Total)
 	}
 }
